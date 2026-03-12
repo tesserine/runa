@@ -1,3 +1,6 @@
+pub mod model;
+pub use model::{ArtifactType, SkillDeclaration, TriggerCondition};
+
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
