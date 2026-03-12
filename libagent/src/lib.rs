@@ -1,6 +1,8 @@
 pub mod manifest;
 pub mod model;
+pub mod validation;
 pub use model::{ArtifactType, Manifest, SkillDeclaration, TriggerCondition};
+pub use validation::ValidationError;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
