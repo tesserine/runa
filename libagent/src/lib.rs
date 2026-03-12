@@ -2,11 +2,13 @@ pub mod graph;
 pub mod manifest;
 pub mod model;
 pub mod store;
+pub mod trigger;
 pub mod validation;
 pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use manifest::ManifestError;
 pub use model::{ArtifactType, Manifest, SkillDeclaration, TriggerCondition};
 pub use store::{ArtifactState, ArtifactStore, StoreError, ValidationStatus};
+pub use trigger::{evaluate as evaluate_trigger, TriggerContext, TriggerResult};
 pub use validation::{ValidationError, Violation};
 
 pub fn version() -> &'static str {
