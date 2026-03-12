@@ -1,3 +1,18 @@
+//! Core library for the runa cognitive runtime.
+//!
+//! libagent provides the data model, parsing, validation, and evaluation logic
+//! that the runtime uses to enforce contracts between methodologies and agents.
+//! The CLI is a thin layer over this library.
+//!
+//! - [`model`] — Core types: `Manifest`, `ArtifactType`, `SkillDeclaration`, `TriggerCondition`
+//! - [`manifest`] — TOML manifest parsing with uniqueness validation
+//! - [`validation`] — JSON Schema validation for artifact instances
+//! - [`graph`] — Dependency graph: topological ordering, cycle detection, blocked-skill identification
+//! - [`store`] — Artifact state tracking: validation status, content hashing, JSON persistence
+//! - [`trigger`] — Trigger condition evaluation against runtime state
+//!
+//! See `ARCHITECTURE.md` in the repository root for data flow and design details.
+
 pub mod graph;
 pub mod manifest;
 pub mod model;
