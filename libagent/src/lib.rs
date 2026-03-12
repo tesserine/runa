@@ -1,6 +1,8 @@
+pub mod graph;
 pub mod manifest;
 pub mod model;
 pub mod validation;
+pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use model::{ArtifactType, Manifest, SkillDeclaration, TriggerCondition};
 pub use validation::{ValidationError, Violation};
 

@@ -13,7 +13,7 @@ Runa is a cognitive runtime for AI agents, written in Rust. It enforces contract
 
 ```bash
 cargo build                        # Debug build
-cargo test --lib                   # Run all unit tests (27 tests)
+cargo test --lib                   # Run all unit tests (48 tests)
 cargo test --lib <test_name>       # Run a single test
 cargo run --bin runa -- --version  # Run CLI
 ```
@@ -21,13 +21,14 @@ cargo run --bin runa -- --version  # Run CLI
 ## Architecture
 
 **Workspace crates:**
-- `libagent` — Core library: data model, TOML manifest parsing, JSON Schema validation
+- `libagent` — Core library: data model, TOML manifest parsing, JSON Schema validation, dependency graph
 - `runa-cli` — CLI binary (minimal, depends on libagent)
 
 **libagent modules:**
 - `model.rs` — Core types: `Manifest`, `ArtifactType`, `SkillDeclaration`, `TriggerCondition`
 - `manifest.rs` — TOML parsing with validation (uniqueness checks at parse time)
 - `validation.rs` — JSON Schema validation for artifact instances, collects all violations before returning
+- `graph.rs` — Dependency graph from skill declarations: topological ordering, cycle detection, blocked-skill identification
 
 **Key design:**
 - `TriggerCondition` uses tagged enum serialization (`#[serde(tag = "type")]`) with `all_of`/`any_of` composition
