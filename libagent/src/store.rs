@@ -280,6 +280,73 @@ impl ArtifactStore {
         Ok(())
     }
 
+    /// True if at least one instance of this type has `Invalid` status.
+    pub fn has_any_invalid(&self, artifact_type: &str) -> bool {
+        self.artifacts.iter().any(|((t, _), state)| {
+            t == artifact_type
+                && matches!(state.status, ValidationStatus::Invalid(_))
+        })
+    }
+
+    /// Returns the most recent `last_modified_ms` across all instances of this
+    /// type, or `None` if no instances are recorded.
+    pub fn latest_modification_ms(&self, artifact_type: &str) -> Option<u64> {
+        self.artifacts
+            .iter()
+            .filter(|((t, _), _)| t == artifact_type)
+            .map(|(_, state)| state.last_modified_ms)
+            .max()
+    }
+
+    /// Record an artifact with an explicit timestamp. Test-only: allows
+    /// deterministic timestamp control for `on_change` trigger tests.
+    #[cfg(test)]
+    pub(crate) fn record_with_timestamp(
+        &mut self,
+        artifact_type: &str,
+        instance_id: &str,
+        path: &Path,
+        data: &Value,
+        timestamp_ms: u64,
+    ) -> Result<(), StoreError> {
+        let at = self.artifact_types.get(artifact_type).ok_or_else(|| {
+            StoreError::UnknownArtifactType(artifact_type.to_string())
+        })?;
+
+        let status = match validate_artifact(data, at) {
+            Ok(()) => ValidationStatus::Valid,
+            Err(ValidationError::InvalidArtifact { violations, .. }) => {
+                ValidationStatus::Invalid(violations)
+            }
+            Err(ValidationError::InvalidSchema {
+                artifact_type,
+                detail,
+            }) => {
+                return Err(StoreError::InvalidSchema {
+                    artifact_type,
+                    detail,
+                });
+            }
+        };
+
+        let hash = content_hash(data);
+
+        let state = ArtifactState {
+            path: path.to_path_buf(),
+            status,
+            last_modified_ms: timestamp_ms,
+            content_hash: hash,
+        };
+
+        self.persist(artifact_type, instance_id, &state)?;
+        self.artifacts.insert(
+            (artifact_type.to_string(), instance_id.to_string()),
+            state,
+        );
+
+        Ok(())
+    }
+
     fn persist(
         &self,
         artifact_type: &str,
@@ -646,5 +713,80 @@ mod tests {
             )
             .unwrap();
         assert!(!store.is_valid("report"));
+    }
+
+    #[test]
+    fn has_any_invalid_true_with_invalid_instance() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"));
+
+        store
+            .record(
+                "report",
+                "bad",
+                Path::new("b.json"),
+                &json!({"score": 1}),
+            )
+            .unwrap();
+        assert!(store.has_any_invalid("report"));
+    }
+
+    #[test]
+    fn has_any_invalid_false_when_all_valid() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"));
+
+        store
+            .record(
+                "report",
+                "good",
+                Path::new("g.json"),
+                &json!({"title": "ok"}),
+            )
+            .unwrap();
+        assert!(!store.has_any_invalid("report"));
+    }
+
+    #[test]
+    fn has_any_invalid_false_with_no_instances() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp.path().join("artifacts"));
+
+        assert!(!store.has_any_invalid("report"));
+    }
+
+    #[test]
+    fn latest_modification_ms_returns_max() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"));
+
+        store
+            .record_with_timestamp(
+                "report",
+                "old",
+                Path::new("old.json"),
+                &json!({"title": "old"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "report",
+                "new",
+                Path::new("new.json"),
+                &json!({"title": "new"}),
+                2000,
+            )
+            .unwrap();
+        assert_eq!(store.latest_modification_ms("report"), Some(2000));
+    }
+
+    #[test]
+    fn latest_modification_ms_none_for_missing_type() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp.path().join("artifacts"));
+
+        assert_eq!(store.latest_modification_ms("report"), None);
+        assert_eq!(store.latest_modification_ms("nonexistent"), None);
     }
 }
