@@ -1,0 +1,10 @@
+# Rust build artifacts
+/target
+
+# Editor swap files
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
