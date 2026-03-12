@@ -150,6 +150,13 @@ impl ArtifactStore {
             }
             let type_name = type_entry.file_name().to_string_lossy().into_owned();
 
+            if !type_map.contains_key(&type_name) {
+                eprintln!(
+                    "warning: skipping unknown artifact type '{type_name}' in store"
+                );
+                continue;
+            }
+
             for inst_entry in
                 std::fs::read_dir(type_entry.path()).map_err(StoreError::Io)?
             {
@@ -257,15 +264,18 @@ impl ArtifactStore {
     }
 
     /// Sets status to Stale for a specific instance. No-op if not recorded.
-    pub fn invalidate(&mut self, artifact_type: &str, instance_id: &str) {
+    pub fn invalidate(
+        &mut self,
+        artifact_type: &str,
+        instance_id: &str,
+    ) -> Result<(), StoreError> {
         let key = (artifact_type.to_string(), instance_id.to_string());
         if let Some(state) = self.artifacts.get_mut(&key) {
             state.status = ValidationStatus::Stale;
-            // Best-effort persist — in-memory state is authoritative during
-            // the store's lifetime; persistence is for cross-session continuity.
             let snapshot = state.clone();
-            let _ = self.persist(artifact_type, instance_id, &snapshot);
+            self.persist(artifact_type, instance_id, &snapshot)?;
         }
+        Ok(())
     }
 
     fn persist(
@@ -277,9 +287,11 @@ impl ArtifactStore {
         let type_dir = self.store_dir.join(artifact_type);
         std::fs::create_dir_all(&type_dir).map_err(StoreError::Io)?;
         let file_path = type_dir.join(format!("{instance_id}.json"));
+        let tmp_path = type_dir.join(format!("{instance_id}.json.tmp"));
         let json = serde_json::to_string_pretty(state)
             .map_err(|e| StoreError::Serialization(e.to_string()))?;
-        std::fs::write(file_path, json).map_err(StoreError::Io)?;
+        std::fs::write(&tmp_path, json).map_err(StoreError::Io)?;
+        std::fs::rename(&tmp_path, &file_path).map_err(StoreError::Io)?;
         Ok(())
     }
 }
@@ -418,7 +430,7 @@ mod tests {
                 &json!({"title": "ok"}),
             )
             .unwrap();
-        store3.invalidate("report", "s");
+        store3.invalidate("report", "s").unwrap();
         assert!(!store3.is_valid("report"));
 
         // Missing type entirely.
@@ -443,7 +455,7 @@ mod tests {
             ValidationStatus::Valid
         );
 
-        store.invalidate("report", "r1");
+        store.invalidate("report", "r1").unwrap();
         assert_eq!(
             store.get("report", "r1").unwrap().status,
             ValidationStatus::Stale
@@ -472,6 +484,7 @@ mod tests {
         assert_eq!(state.status, ValidationStatus::Valid);
         assert_eq!(state.path, path);
         assert_eq!(state.content_hash, content_hash(&data));
+        assert!(state.last_modified_ms > 0);
     }
 
     #[test]
@@ -513,9 +526,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("artifacts"));
 
-        // Should not panic or error.
-        store.invalidate("report", "nonexistent");
-        store.invalidate("nonexistent", "anything");
+        // Should not panic or error — returns Ok for unrecorded instances.
+        store.invalidate("report", "nonexistent").unwrap();
+        store.invalidate("nonexistent", "anything").unwrap();
     }
 
     #[test]
@@ -545,6 +558,64 @@ mod tests {
         assert_eq!(a.path, Path::new("a.json"));
         assert_eq!(b.path, Path::new("b.json"));
         assert_ne!(a.content_hash, b.content_hash);
+    }
+
+    #[test]
+    fn invalidate_persists_to_disk() {
+        let tmp = TempDir::new().unwrap();
+        let store_dir = tmp.path().join("artifacts");
+
+        let types = vec![make_artifact_type("report", simple_schema())];
+
+        // Record, then invalidate.
+        {
+            let mut store =
+                ArtifactStore::new(types.clone(), store_dir.clone()).unwrap();
+            store
+                .record(
+                    "report",
+                    "r1",
+                    Path::new("r1.json"),
+                    &json!({"title": "ok"}),
+                )
+                .unwrap();
+            store.invalidate("report", "r1").unwrap();
+        }
+
+        // Reload from disk — must see Stale, not Valid.
+        let store2 = ArtifactStore::new(types, store_dir).unwrap();
+        assert_eq!(
+            store2.get("report", "r1").unwrap().status,
+            ValidationStatus::Stale
+        );
+    }
+
+    #[test]
+    fn new_skips_unknown_artifact_types() {
+        let tmp = TempDir::new().unwrap();
+        let store_dir = tmp.path().join("artifacts");
+
+        // Record with type "report".
+        {
+            let mut store = make_store(&store_dir);
+            store
+                .record(
+                    "report",
+                    "r1",
+                    Path::new("r1.json"),
+                    &json!({"title": "ok"}),
+                )
+                .unwrap();
+        }
+
+        // Reload with a different set of known types — "report" is now unknown.
+        let other_types = vec![make_artifact_type(
+            "config",
+            json!({"type": "object"}),
+        )];
+        let store2 =
+            ArtifactStore::new(other_types, store_dir).unwrap();
+        assert!(store2.get("report", "r1").is_none());
     }
 
     #[test]
