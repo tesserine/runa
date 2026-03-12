@@ -33,7 +33,7 @@ A skill declaration:
 - **accepts** — zero or more artifact type names
 - **produces** — zero or more artifact type names
 - **may_produce** — zero or more artifact type names
-- **triggers** — one trigger condition (see below)
+- **trigger** — one trigger condition (see below)
 
 Topology is not declared. It emerges from the graph of requires/produces/may_produce relationships across skills. A pipeline emerges when skills chain linearly. A graph emerges when skills fan in or fan out. A cycle emerges when a skill produces an artifact type that another skill's trigger monitors for change. The methodology does not tell runa what shape it is. runa computes the shape from declarations.
 
