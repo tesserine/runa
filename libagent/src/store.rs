@@ -196,46 +196,11 @@ impl ArtifactStore {
         path: &Path,
         data: &Value,
     ) -> Result<(), StoreError> {
-        let at = self.artifact_types.get(artifact_type).ok_or_else(|| {
-            StoreError::UnknownArtifactType(artifact_type.to_string())
-        })?;
-
-        let status = match validate_artifact(data, at) {
-            Ok(()) => ValidationStatus::Valid,
-            Err(ValidationError::InvalidArtifact { violations, .. }) => {
-                ValidationStatus::Invalid(violations)
-            }
-            Err(ValidationError::InvalidSchema {
-                artifact_type,
-                detail,
-            }) => {
-                return Err(StoreError::InvalidSchema {
-                    artifact_type,
-                    detail,
-                });
-            }
-        };
-
-        let hash = content_hash(data);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock before UNIX epoch")
             .as_millis() as u64;
-
-        let state = ArtifactState {
-            path: path.to_path_buf(),
-            status,
-            last_modified_ms: now,
-            content_hash: hash,
-        };
-
-        self.persist(artifact_type, instance_id, &state)?;
-        self.artifacts.insert(
-            (artifact_type.to_string(), instance_id.to_string()),
-            state,
-        );
-
-        Ok(())
+        self.record_inner(artifact_type, instance_id, path, data, now)
     }
 
     /// Returns current state of a specific instance.
@@ -302,6 +267,17 @@ impl ArtifactStore {
     /// deterministic timestamp control for `on_change` trigger tests.
     #[cfg(test)]
     pub(crate) fn record_with_timestamp(
+        &mut self,
+        artifact_type: &str,
+        instance_id: &str,
+        path: &Path,
+        data: &Value,
+        timestamp_ms: u64,
+    ) -> Result<(), StoreError> {
+        self.record_inner(artifact_type, instance_id, path, data, timestamp_ms)
+    }
+
+    fn record_inner(
         &mut self,
         artifact_type: &str,
         instance_id: &str,

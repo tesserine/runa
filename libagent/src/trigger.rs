@@ -106,16 +106,18 @@ pub fn evaluate(
                     "any_of with no conditions".to_string(),
                 );
             }
-            let mut last_reason = String::new();
+            let mut reasons = Vec::new();
             for child in conditions {
                 match evaluate(child, context, skill_name) {
                     TriggerResult::Satisfied => return TriggerResult::Satisfied,
                     TriggerResult::NotSatisfied(reason) => {
-                        last_reason = reason;
+                        reasons.push(reason);
                     }
                 }
             }
-            TriggerResult::NotSatisfied(last_reason)
+            TriggerResult::NotSatisfied(
+                format!("none satisfied: {}", reasons.join("; ")),
+            )
         }
     }
 }
@@ -359,6 +361,45 @@ mod tests {
             evaluate(&cond, &ctx, "skill"),
             TriggerResult::NotSatisfied(_)
         ));
+    }
+
+    #[test]
+    fn on_change_satisfied_when_one_of_multiple_instances_newer() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        // Old instance — before activation.
+        store
+            .record_with_timestamp(
+                "doc",
+                "old",
+                Path::new("old.json"),
+                &json!({"title": "old"}),
+                500,
+            )
+            .unwrap();
+        // New instance — after activation.
+        store
+            .record_with_timestamp(
+                "doc",
+                "new",
+                Path::new("new.json"),
+                &json!({"title": "new"}),
+                2000,
+            )
+            .unwrap();
+
+        let timestamps = HashMap::from([("skill".to_string(), 1000u64)]);
+        let signals = HashSet::new();
+        let ctx = TriggerContext {
+            store: &store,
+            activation_timestamps: &timestamps,
+            active_signals: &signals,
+        };
+        let cond = TriggerCondition::OnChange {
+            name: "doc".into(),
+        };
+        // Any single instance newer than activation → satisfied.
+        assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
     }
 
     // --- OnInvalid ---
