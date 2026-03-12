@@ -11,3 +11,5 @@ license = "MIT"
 libagent = { path = "libagent" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
+toml = "0.8"

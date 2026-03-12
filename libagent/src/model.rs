@@ -1,5 +1,22 @@
 use serde::{Deserialize, Serialize};
 
+/// A methodology's complete registration with the runa runtime.
+///
+/// The manifest is the methodology's only interface with the runtime.
+/// It declares the methodology's artifact types and skill declarations.
+/// runa reads it, builds the dependency graph, and begins monitoring.
+///
+/// Format: TOML. See `manifest::parse` for reading from files.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Manifest {
+    /// Methodology name.
+    pub name: String,
+    /// Artifact types declared by this methodology.
+    pub artifact_types: Vec<ArtifactType>,
+    /// Skills declared by this methodology.
+    pub skills: Vec<SkillDeclaration>,
+}
+
 /// A named category of work product with a machine-checkable schema contract.
 ///
 /// Methodologies define artifact types. The runtime validates instances
@@ -21,12 +38,16 @@ pub struct SkillDeclaration {
     /// Unique identifier for the skill.
     pub name: String,
     /// Artifact types that must exist and validate before execution.
+    #[serde(default)]
     pub requires: Vec<String>,
     /// Artifact types consumed if available; skill operates without them.
+    #[serde(default)]
     pub accepts: Vec<String>,
     /// Artifact types that must exist and validate after execution.
+    #[serde(default)]
     pub produces: Vec<String>,
     /// Artifact types that may be produced; validated if present.
+    #[serde(default)]
     pub may_produce: Vec<String>,
     /// Condition that activates this skill.
     pub trigger: TriggerCondition,
