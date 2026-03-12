@@ -21,7 +21,7 @@ cargo run --bin runa -- --version  # Run CLI
 ## Architecture
 
 **Workspace crates:**
-- `libagent` — Core library: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking
+- `libagent` — Core library: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation
 - `runa-cli` — CLI binary (minimal, depends on libagent)
 
 **libagent modules:**
@@ -30,6 +30,7 @@ cargo run --bin runa -- --version  # Run CLI
 - `validation.rs` — JSON Schema validation for artifact instances, collects all violations before returning
 - `graph.rs` — Dependency graph from skill declarations: topological ordering, cycle detection, blocked-skill identification
 - `store.rs` — Artifact state tracking: validation status, content hashing, JSON persistence in `.runa/artifacts/`
+- `trigger.rs` — Trigger condition evaluation: recursive evaluator, six condition variants, pure function against TriggerContext
 
 **Key design:**
 - `TriggerCondition` uses tagged enum serialization (`#[serde(tag = "type")]`) with `all_of`/`any_of` composition
@@ -48,3 +49,20 @@ Decisions trace to principles in `docs/PRINCIPLES.md` and ADRs in `docs/adr/`. K
 ## Dependencies
 
 Rust 2024 edition, resolver v3. Minimal dependency set: serde, serde_json, toml, jsonschema, sha2. No async/network dependencies.
+
+## Development Discipline
+
+**Ground before designing.** Define the need before reading the code. What must this change enable, and for whom?
+
+**BDD first.** Behavioral spec → test → implementation → verification. Tests describe what a system should do, not how it does it.
+
+**Coherence on landing.** Every PR that ships must update affected documentation:
+- CLI changes → README.md
+- Module, data flow, or disk layout changes → ARCHITECTURE.md
+- Module list, build commands, or pattern changes → CLAUDE.md Architecture section
+
+**Conventions:**
+- Conventional commits (e.g., `feat(trigger):`, `fix(store):`, `docs:`)
+- Branch names: `issue-N/brief-description`
+- One issue per PR
+- `cargo fmt` and `cargo clippy` clean before merge
