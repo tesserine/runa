@@ -13,7 +13,7 @@ Runa is a cognitive runtime for AI agents, written in Rust. It enforces contract
 
 ```bash
 cargo build                        # Debug build
-cargo test --lib                   # Run all unit tests (48 tests)
+cargo test --lib                   # Run all unit tests
 cargo test --lib <test_name>       # Run a single test
 cargo run --bin runa -- --version  # Run CLI
 ```
@@ -21,7 +21,7 @@ cargo run --bin runa -- --version  # Run CLI
 ## Architecture
 
 **Workspace crates:**
-- `libagent` — Core library: data model, TOML manifest parsing, JSON Schema validation, dependency graph
+- `libagent` — Core library: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking
 - `runa-cli` — CLI binary (minimal, depends on libagent)
 
 **libagent modules:**
@@ -29,6 +29,7 @@ cargo run --bin runa -- --version  # Run CLI
 - `manifest.rs` — TOML parsing with validation (uniqueness checks at parse time)
 - `validation.rs` — JSON Schema validation for artifact instances, collects all violations before returning
 - `graph.rs` — Dependency graph from skill declarations: topological ordering, cycle detection, blocked-skill identification
+- `store.rs` — Artifact state tracking: validation status, content hashing, JSON persistence in `.runa/artifacts/`
 
 **Key design:**
 - `TriggerCondition` uses tagged enum serialization (`#[serde(tag = "type")]`) with `all_of`/`any_of` composition
@@ -46,4 +47,4 @@ Decisions trace to principles in `docs/PRINCIPLES.md` and ADRs in `docs/adr/`. K
 
 ## Dependencies
 
-Rust 2024 edition, resolver v3. Minimal dependency set: serde, serde_json, toml, jsonschema. No async/network dependencies.
+Rust 2024 edition, resolver v3. Minimal dependency set: serde, serde_json, toml, jsonschema, sha2. No async/network dependencies.
