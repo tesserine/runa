@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::model::ArtifactType;
 
 /// A single schema violation found during artifact validation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Violation {
     /// The artifact type that was being validated.
     pub artifact_type: String,
