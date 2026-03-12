@@ -13,6 +13,8 @@ pub struct Violation {
     pub description: String,
     /// JSON Pointer into the schema that triggered this violation.
     pub schema_path: String,
+    /// JSON Pointer into the instance data where the violation occurred.
+    pub instance_path: String,
 }
 
 /// Errors that can occur when validating an artifact against its schema.
@@ -84,6 +86,7 @@ pub fn validate_artifact(
             artifact_type: artifact_type.name.clone(),
             description: e.to_string(),
             schema_path: e.schema_path().to_string(),
+            instance_path: e.instance_path().to_string(),
         })
         .collect();
 
@@ -336,13 +339,20 @@ mod tests {
                     "expected at least 3 violations for 3 missing required fields, got {}",
                     violations.len()
                 );
+                // Root-level required field violations have an empty
+                // instance_path (the root object itself). Verify the
+                // field is populated consistently.
+                assert!(
+                    violations.iter().all(|v| v.instance_path.is_empty()),
+                    "root-level violations should have empty instance_path"
+                );
             }
             other => panic!("expected InvalidArtifact, got: {other}"),
         }
     }
 
     #[test]
-    fn violations_carry_distinct_schema_paths() {
+    fn violations_carry_distinct_paths() {
         let at = make_artifact_type(
             "record",
             json!({
@@ -360,11 +370,17 @@ mod tests {
         match err {
             ValidationError::InvalidArtifact { violations, .. } => {
                 assert_eq!(violations.len(), 2);
-                let paths: Vec<&str> =
+                let schema_paths: Vec<&str> =
                     violations.iter().map(|v| v.schema_path.as_str()).collect();
                 assert_ne!(
-                    paths[0], paths[1],
+                    schema_paths[0], schema_paths[1],
                     "violations should have distinct schema paths"
+                );
+                let instance_paths: Vec<&str> =
+                    violations.iter().map(|v| v.instance_path.as_str()).collect();
+                assert_ne!(
+                    instance_paths[0], instance_paths[1],
+                    "violations should have distinct instance paths"
                 );
             }
             other => panic!("expected InvalidArtifact, got: {other}"),
