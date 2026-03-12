@@ -1,0 +1,193 @@
+use serde::{Deserialize, Serialize};
+
+/// A named category of work product with a machine-checkable schema contract.
+///
+/// Methodologies define artifact types. The runtime validates instances
+/// against their schemas.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArtifactType {
+    /// Unique identifier within the methodology.
+    pub name: String,
+    /// JSON Schema defining what a valid instance contains.
+    pub schema: serde_json::Value,
+}
+
+/// A skill's declared relationship to artifacts and its activation condition.
+///
+/// Skills declare what they require, accept, produce, and may produce.
+/// Topology emerges from the graph of these relationships across skills.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkillDeclaration {
+    /// Unique identifier for the skill.
+    pub name: String,
+    /// Artifact types that must exist and validate before execution.
+    pub requires: Vec<String>,
+    /// Artifact types consumed if available; skill operates without them.
+    pub accepts: Vec<String>,
+    /// Artifact types that must exist and validate after execution.
+    pub produces: Vec<String>,
+    /// Artifact types that may be produced; validated if present.
+    pub may_produce: Vec<String>,
+    /// Condition that activates this skill.
+    pub trigger: TriggerCondition,
+}
+
+/// Defines when the runtime should activate a skill.
+///
+/// Primitive conditions test artifact state or external events.
+/// Composite conditions combine primitives with `AllOf` and `AnyOf`.
+/// Nesting is permitted to arbitrary depth.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TriggerCondition {
+    /// The named artifact exists and satisfies its schema.
+    OnArtifact { name: String },
+    /// The named artifact has been modified since the skill's last activation.
+    OnChange { name: String },
+    /// The named artifact exists but fails schema validation.
+    OnInvalid { name: String },
+    /// An external event (operator action, webhook, scheduler).
+    OnSignal { name: String },
+    /// All conditions must be satisfied.
+    AllOf {
+        conditions: Vec<TriggerCondition>,
+    },
+    /// At least one condition must be satisfied.
+    AnyOf {
+        conditions: Vec<TriggerCondition>,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artifact_type_round_trip() {
+        let at = ArtifactType {
+            name: "constraints".into(),
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "description": { "type": "string" }
+                },
+                "required": ["description"]
+            }),
+        };
+        let json = serde_json::to_string(&at).unwrap();
+        let deserialized: ArtifactType = serde_json::from_str(&json).unwrap();
+        assert_eq!(at, deserialized);
+    }
+
+    #[test]
+    fn skill_declaration_round_trip() {
+        let skill = SkillDeclaration {
+            name: "design".into(),
+            requires: vec!["constraints".into()],
+            accepts: vec!["prior-design".into()],
+            produces: vec!["design-doc".into()],
+            may_produce: vec!["design-notes".into()],
+            trigger: TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        };
+        let json = serde_json::to_string(&skill).unwrap();
+        let deserialized: SkillDeclaration = serde_json::from_str(&json).unwrap();
+        assert_eq!(skill, deserialized);
+    }
+
+    #[test]
+    fn trigger_condition_simple_round_trip() {
+        let cases = vec![
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+            TriggerCondition::OnChange {
+                name: "design-doc".into(),
+            },
+            TriggerCondition::OnInvalid {
+                name: "test-evidence".into(),
+            },
+            TriggerCondition::OnSignal {
+                name: "approved".into(),
+            },
+        ];
+        for tc in cases {
+            let json = serde_json::to_string(&tc).unwrap();
+            let deserialized: TriggerCondition = serde_json::from_str(&json).unwrap();
+            assert_eq!(tc, deserialized);
+        }
+    }
+
+    #[test]
+    fn trigger_condition_nested_round_trip() {
+        let tc = TriggerCondition::AllOf {
+            conditions: vec![
+                TriggerCondition::OnArtifact {
+                    name: "constraints".into(),
+                },
+                TriggerCondition::AnyOf {
+                    conditions: vec![
+                        TriggerCondition::OnSignal {
+                            name: "approved".into(),
+                        },
+                        TriggerCondition::OnArtifact {
+                            name: "auto-approve".into(),
+                        },
+                    ],
+                },
+            ],
+        };
+        let json = serde_json::to_string(&tc).unwrap();
+        let deserialized: TriggerCondition = serde_json::from_str(&json).unwrap();
+        assert_eq!(tc, deserialized);
+    }
+
+    #[test]
+    fn trigger_condition_json_shape() {
+        let tc = TriggerCondition::OnArtifact {
+            name: "constraints".into(),
+        };
+        let value = serde_json::to_value(&tc).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "on_artifact",
+                "name": "constraints"
+            })
+        );
+
+        let tc = TriggerCondition::AllOf {
+            conditions: vec![TriggerCondition::OnSignal {
+                name: "go".into(),
+            }],
+        };
+        let value = serde_json::to_value(&tc).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "all_of",
+                "conditions": [
+                    { "type": "on_signal", "name": "go" }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn skill_declaration_empty_vecs() {
+        let skill = SkillDeclaration {
+            name: "signal-only".into(),
+            requires: vec![],
+            accepts: vec![],
+            produces: vec![],
+            may_produce: vec![],
+            trigger: TriggerCondition::OnSignal {
+                name: "manual".into(),
+            },
+        };
+        let json = serde_json::to_string(&skill).unwrap();
+        let deserialized: SkillDeclaration = serde_json::from_str(&json).unwrap();
+        assert_eq!(skill, deserialized);
+    }
+}
