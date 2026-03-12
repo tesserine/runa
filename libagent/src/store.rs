@@ -270,10 +270,12 @@ impl ArtifactStore {
         instance_id: &str,
     ) -> Result<(), StoreError> {
         let key = (artifact_type.to_string(), instance_id.to_string());
-        if let Some(state) = self.artifacts.get_mut(&key) {
-            state.status = ValidationStatus::Stale;
-            let snapshot = state.clone();
+        if let Some(state) = self.artifacts.get(&key) {
+            let mut snapshot = state.clone();
+            snapshot.status = ValidationStatus::Stale;
             self.persist(artifact_type, instance_id, &snapshot)?;
+            self.artifacts.get_mut(&key).unwrap().status =
+                ValidationStatus::Stale;
         }
         Ok(())
     }
