@@ -43,12 +43,6 @@ impl std::error::Error for InitError {
     }
 }
 
-impl From<libagent::ManifestError> for InitError {
-    fn from(e: libagent::ManifestError) -> Self {
-        InitError::ManifestInvalid(e)
-    }
-}
-
 #[derive(Serialize)]
 struct State {
     methodology_path: String,
@@ -65,11 +59,13 @@ pub fn run(working_dir: &Path, methodology: &Path) -> Result<InitSummary, InitEr
     let manifest =
         libagent::manifest::parse(methodology).map_err(InitError::ManifestInvalid)?;
 
+    let canonical_path = fs::canonicalize(methodology).map_err(InitError::Io)?;
+
     let runa_dir = working_dir.join(RUNA_DIR);
     fs::create_dir_all(&runa_dir).map_err(InitError::Io)?;
 
     let state = State {
-        methodology_path: methodology.display().to_string(),
+        methodology_path: canonical_path.display().to_string(),
         methodology_name: manifest.name.clone(),
     };
     let state_toml = toml::to_string(&state).expect("State serialization should not fail");
@@ -197,9 +193,10 @@ trigger = { type = "on_artifact", name = "design-doc" }
             state_content.contains("groundwork"),
             "state file should contain methodology name"
         );
+        let canonical = fs::canonicalize(&manifest_path).unwrap();
         assert!(
-            state_content.contains(&manifest_path.display().to_string()),
-            "state file should contain methodology path"
+            state_content.contains(&canonical.display().to_string()),
+            "state file should contain canonical methodology path"
         );
     }
 }
