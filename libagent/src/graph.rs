@@ -223,7 +223,7 @@ impl DependencyGraph {
     }
 
     /// Return skills whose `requires` are not all present in `available_artifacts`.
-    pub fn blocked_skills<'a>(&'a self, available_artifacts: &HashSet<String>) -> Vec<&'a str> {
+    pub fn blocked_skills(&self, available_artifacts: &HashSet<String>) -> Vec<&str> {
         self.requires_per_skill
             .iter()
             .enumerate()
