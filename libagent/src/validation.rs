@@ -4,6 +4,17 @@ use serde_json::Value;
 
 use crate::model::ArtifactType;
 
+/// A single schema violation found during artifact validation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Violation {
+    /// The artifact type that was being validated.
+    pub artifact_type: String,
+    /// Human-readable description of what failed.
+    pub description: String,
+    /// JSON Pointer into the schema that triggered this violation.
+    pub schema_path: String,
+}
+
 /// Errors that can occur when validating an artifact against its schema.
 #[derive(Debug)]
 pub enum ValidationError {
@@ -12,11 +23,10 @@ pub enum ValidationError {
         artifact_type: String,
         detail: String,
     },
-    /// The artifact data violates the schema.
+    /// The artifact data violates the schema. Contains all violations found.
     InvalidArtifact {
         artifact_type: String,
-        description: String,
-        schema_path: String,
+        violations: Vec<Violation>,
     },
 }
 
@@ -32,12 +42,19 @@ impl fmt::Display for ValidationError {
             ),
             ValidationError::InvalidArtifact {
                 artifact_type,
-                description,
-                schema_path,
-            } => write!(
-                f,
-                "artifact type '{artifact_type}' validation failed at {schema_path}: {description}"
-            ),
+                violations,
+            } => {
+                write!(
+                    f,
+                    "artifact type '{artifact_type}' validation failed ({} violation{}):",
+                    violations.len(),
+                    if violations.len() == 1 { "" } else { "s" }
+                )?;
+                for v in violations {
+                    write!(f, "\n  - {}: {}", v.schema_path, v.description)?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -48,6 +65,7 @@ impl std::error::Error for ValidationError {}
 ///
 /// Returns `Ok(())` if the data conforms to the schema, or an appropriate
 /// `ValidationError` if the schema is malformed or the data violates it.
+/// All violations are collected so the caller can address them in one pass.
 pub fn validate_artifact(
     artifact_data: &Value,
     artifact_type: &ArtifactType,
@@ -60,13 +78,23 @@ pub fn validate_artifact(
             }
         })?;
 
-    validator.validate(artifact_data).map_err(|e| {
-        ValidationError::InvalidArtifact {
+    let violations: Vec<Violation> = validator
+        .iter_errors(artifact_data)
+        .map(|e| Violation {
             artifact_type: artifact_type.name.clone(),
             description: e.to_string(),
-            schema_path: e.schema_path.to_string(),
-        }
-    })
+            schema_path: e.schema_path().to_string(),
+        })
+        .collect();
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(ValidationError::InvalidArtifact {
+            artifact_type: artifact_type.name.clone(),
+            violations,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -227,8 +255,14 @@ mod tests {
         let err = validate_artifact(&data, &at).unwrap_err();
         match err {
             ValidationError::InvalidArtifact {
-                artifact_type, ..
-            } => assert_eq!(artifact_type, "my-special-type"),
+                artifact_type,
+                violations,
+            } => {
+                assert_eq!(artifact_type, "my-special-type");
+                assert!(violations
+                    .iter()
+                    .all(|v| v.artifact_type == "my-special-type"));
+            }
             other => panic!("expected InvalidArtifact, got: {other}"),
         }
     }
@@ -245,8 +279,12 @@ mod tests {
         let data = json!({});
         let err = validate_artifact(&data, &at).unwrap_err();
         match err {
-            ValidationError::InvalidArtifact { schema_path, .. } => {
-                assert!(!schema_path.is_empty(), "schema_path should be non-empty");
+            ValidationError::InvalidArtifact { violations, .. } => {
+                assert!(!violations.is_empty());
+                assert!(
+                    violations.iter().all(|v| !v.schema_path.is_empty()),
+                    "all violations should have a non-empty schema_path"
+                );
             }
             other => panic!("expected InvalidArtifact, got: {other}"),
         }
@@ -271,6 +309,65 @@ mod tests {
                 assert!(!detail.is_empty());
             }
             other => panic!("expected InvalidSchema, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn multiple_violations_collected() {
+        let at = make_artifact_type(
+            "profile",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "age": { "type": "integer" },
+                    "email": { "type": "string" }
+                },
+                "required": ["name", "age", "email"]
+            }),
+        );
+        // All three required fields missing.
+        let data = json!({});
+        let err = validate_artifact(&data, &at).unwrap_err();
+        match err {
+            ValidationError::InvalidArtifact { violations, .. } => {
+                assert!(
+                    violations.len() >= 3,
+                    "expected at least 3 violations for 3 missing required fields, got {}",
+                    violations.len()
+                );
+            }
+            other => panic!("expected InvalidArtifact, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn violations_carry_distinct_schema_paths() {
+        let at = make_artifact_type(
+            "record",
+            json!({
+                "type": "object",
+                "properties": {
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" }
+                },
+                "required": ["x", "y"]
+            }),
+        );
+        // Both fields present but wrong type.
+        let data = json!({ "x": "not-int", "y": "also-not-int" });
+        let err = validate_artifact(&data, &at).unwrap_err();
+        match err {
+            ValidationError::InvalidArtifact { violations, .. } => {
+                assert_eq!(violations.len(), 2);
+                let paths: Vec<&str> =
+                    violations.iter().map(|v| v.schema_path.as_str()).collect();
+                assert_ne!(
+                    paths[0], paths[1],
+                    "violations should have distinct schema paths"
+                );
+            }
+            other => panic!("expected InvalidArtifact, got: {other}"),
         }
     }
 }
