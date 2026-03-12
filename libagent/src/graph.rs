@@ -82,6 +82,8 @@ pub struct DependencyGraph {
     soft_deps: Vec<Vec<usize>>,
     /// Reverse hard edges: `hard_dependents[i]` = indices of skills that depend on skill i.
     hard_dependents: Vec<Vec<usize>>,
+    /// Reverse soft edges: `soft_dependents[i]` = indices of skills that softly depend on skill i.
+    soft_dependents: Vec<Vec<usize>>,
 }
 
 impl DependencyGraph {
@@ -131,6 +133,7 @@ impl DependencyGraph {
         let mut hard_deps = vec![Vec::new(); n];
         let mut soft_deps = vec![Vec::new(); n];
         let mut hard_dependents = vec![Vec::new(); n];
+        let mut soft_dependents = vec![Vec::new(); n];
         let mut requires_per_skill = Vec::with_capacity(n);
 
         for (idx, skill) in skills.iter().enumerate() {
@@ -148,6 +151,7 @@ impl DependencyGraph {
                 } else if let Some(&producer_idx) = soft_producer.get(artifact) {
                     if producer_idx != idx {
                         soft_deps[idx].push(producer_idx);
+                        soft_dependents[producer_idx].push(idx);
                     }
                 } else {
                     return Err(GraphError::UnmetDependency {
@@ -163,13 +167,27 @@ impl DependencyGraph {
                 if let Some(&producer_idx) = hard_producer.get(artifact) {
                     if producer_idx != idx {
                         soft_deps[idx].push(producer_idx);
+                        soft_dependents[producer_idx].push(idx);
                     }
                 } else if let Some(&producer_idx) = soft_producer.get(artifact) {
                     if producer_idx != idx {
                         soft_deps[idx].push(producer_idx);
+                        soft_dependents[producer_idx].push(idx);
                     }
                 }
             }
+        }
+
+        // Deduplicate adjacency lists.
+        for idx in 0..n {
+            hard_deps[idx].sort_unstable();
+            hard_deps[idx].dedup();
+            soft_deps[idx].sort_unstable();
+            soft_deps[idx].dedup();
+            hard_dependents[idx].sort_unstable();
+            hard_dependents[idx].dedup();
+            soft_dependents[idx].sort_unstable();
+            soft_dependents[idx].dedup();
         }
 
         Ok(DependencyGraph {
@@ -179,6 +197,7 @@ impl DependencyGraph {
             hard_deps,
             soft_deps,
             hard_dependents,
+            soft_dependents,
         })
     }
 
@@ -245,12 +264,6 @@ impl DependencyGraph {
         let n = self.skill_names.len();
         let mut in_degree = vec![0usize; n];
 
-        for idx in 0..n {
-            for &dep_idx in &self.hard_deps[idx] {
-                let _ = dep_idx; // counted below
-            }
-        }
-
         // Compute in-degrees.
         for idx in 0..n {
             in_degree[idx] += self.hard_deps[idx].len();
@@ -266,12 +279,15 @@ impl DependencyGraph {
         while let Some(node) = queue.pop() {
             order.push(node);
 
-            // Decrease in-degree for nodes that depend on this one.
-            // We need reverse edges: who lists `node` in their hard_deps/soft_deps?
-            for dependent in 0..n {
-                let is_edge = self.hard_deps[dependent].contains(&node)
-                    || (include_soft && self.soft_deps[dependent].contains(&node));
-                if is_edge {
+            // Decrease in-degree for dependents via reverse adjacency lists.
+            for &dependent in &self.hard_dependents[node] {
+                in_degree[dependent] -= 1;
+                if in_degree[dependent] == 0 {
+                    queue.push(dependent);
+                }
+            }
+            if include_soft {
+                for &dependent in &self.soft_dependents[node] {
                     in_degree[dependent] -= 1;
                     if in_degree[dependent] == 0 {
                         queue.push(dependent);
@@ -481,6 +497,18 @@ mod tests {
         assert_eq!(order.len(), 3);
         assert_before(&order, "A", "B");
         assert!(order.contains(&"isolated"));
+    }
+
+    #[test]
+    fn self_referencing_skill() {
+        // A skill that requires an artifact it also produces.
+        // The producer_idx != idx guard should prevent a self-edge.
+        let skills = vec![skill("A", &["X"], &["X"])];
+        let graph = DependencyGraph::build(&skills).unwrap();
+        let order = graph.topological_order().unwrap();
+        assert_eq!(order, vec!["A"]);
+        assert!(graph.dependencies_of("A").is_empty());
+        assert!(graph.dependents_of("A").is_empty());
     }
 
     // --- Cycle detection ---
