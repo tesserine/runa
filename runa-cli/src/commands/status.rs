@@ -159,7 +159,8 @@ pub fn run(
             TriggerResult::NotSatisfied(_) => TriggerState::NotSatisfied,
         };
 
-        let scan_failures = scan_incomplete_failures(skill, &scan_findings);
+        let scan_failures =
+            scan_incomplete_failures(skill, &context, &scan_findings, &skill.name, trigger_state);
         let entry = if !scan_failures.is_empty() {
             SkillEntry {
                 name: skill.name.clone(),
@@ -327,23 +328,31 @@ fn failure_entry(failure: &libagent::ArtifactFailure) -> FailureEntry {
 
 fn scan_incomplete_failures(
     skill: &libagent::SkillDeclaration,
+    context: &TriggerContext<'_>,
     scan_findings: &ScanFindings,
+    skill_name: &str,
+    trigger_state: TriggerState,
 ) -> Vec<FailureEntry> {
-    let mut artifact_types = collect_trigger_artifact_types(&skill.trigger);
+    let mut artifact_types = doubtful_trigger_artifact_types(
+        &skill.trigger,
+        context,
+        skill_name,
+        &scan_findings.affected_types,
+        trigger_state,
+    );
 
     for artifact_type in &skill.requires {
-        if !artifact_types.contains(artifact_type) {
+        if scan_findings
+            .affected_types
+            .contains(artifact_type.as_str())
+            && !artifact_types.contains(artifact_type)
+        {
             artifact_types.push(artifact_type.clone());
         }
     }
 
     artifact_types
         .into_iter()
-        .filter(|artifact_type| {
-            scan_findings
-                .affected_types
-                .contains(artifact_type.as_str())
-        })
         .map(|artifact_type| FailureEntry {
             artifact_type,
             reason: "scan_incomplete",
@@ -351,17 +360,80 @@ fn scan_incomplete_failures(
         .collect()
 }
 
-fn collect_trigger_artifact_types(condition: &libagent::TriggerCondition) -> Vec<String> {
+fn doubtful_trigger_artifact_types(
+    condition: &libagent::TriggerCondition,
+    context: &TriggerContext<'_>,
+    skill_name: &str,
+    affected_types: &HashSet<String>,
+    trigger_state: TriggerState,
+) -> Vec<String> {
+    if !matches!(trigger_state, TriggerState::Satisfied) {
+        return Vec::new();
+    }
+
     match condition {
-        libagent::TriggerCondition::OnArtifact { name }
-        | libagent::TriggerCondition::OnChange { name }
-        | libagent::TriggerCondition::OnInvalid { name } => vec![name.clone()],
-        libagent::TriggerCondition::OnSignal { .. } => Vec::new(),
-        libagent::TriggerCondition::AllOf { conditions }
-        | libagent::TriggerCondition::AnyOf { conditions } => conditions
-            .iter()
-            .flat_map(collect_trigger_artifact_types)
-            .collect(),
+        libagent::TriggerCondition::OnArtifact { name } => {
+            if affected_types.contains(name.as_str()) {
+                vec![name.clone()]
+            } else {
+                Vec::new()
+            }
+        }
+        libagent::TriggerCondition::OnChange { .. }
+        | libagent::TriggerCondition::OnInvalid { .. }
+        | libagent::TriggerCondition::OnSignal { .. } => Vec::new(),
+        libagent::TriggerCondition::AllOf { conditions } => {
+            let mut refs = Vec::new();
+            for child in conditions {
+                append_unique(
+                    &mut refs,
+                    doubtful_trigger_artifact_types(
+                        child,
+                        context,
+                        skill_name,
+                        affected_types,
+                        TriggerState::Satisfied,
+                    ),
+                );
+            }
+            refs
+        }
+        libagent::TriggerCondition::AnyOf { conditions } => {
+            let mut satisfied_children = Vec::new();
+
+            for child in conditions {
+                if matches!(
+                    evaluate_trigger(child, context, skill_name),
+                    TriggerResult::Satisfied
+                ) {
+                    let child_refs = doubtful_trigger_artifact_types(
+                        child,
+                        context,
+                        skill_name,
+                        affected_types,
+                        TriggerState::Satisfied,
+                    );
+                    if child_refs.is_empty() {
+                        return Vec::new();
+                    }
+                    satisfied_children.push(child_refs);
+                }
+            }
+
+            let mut refs = Vec::new();
+            for child_refs in satisfied_children {
+                append_unique(&mut refs, child_refs);
+            }
+            refs
+        }
+    }
+}
+
+fn append_unique(target: &mut Vec<String>, values: Vec<String>) {
+    for value in values {
+        if !target.contains(&value) {
+            target.push(value);
+        }
     }
 }
 
