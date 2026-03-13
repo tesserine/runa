@@ -11,10 +11,12 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for workspace structure, data flow, modul
 ## Usage
 
 ```bash
-runa init --methodology path/to/manifest.toml
+runa init --methodology path/to/manifest.toml [--artifacts-dir path/to/artifacts]
 ```
 
-Parses the methodology manifest, validates its structure, and creates a `.runa/` directory with `state.toml` recording the canonical methodology path and name. Reports the artifact type and skill counts on success.
+Parses the methodology manifest, validates its structure, and creates a `.runa/` directory with `config.toml` (operator configuration: methodology path, optional artifacts directory) and `state.toml` (runtime state: initialization timestamp, runa version). Reports the artifact type and skill counts on success.
+
+All commands support `--config <PATH>` to override the config file location. The `RUNA_CONFIG` env var serves the same purpose. For `init`, `--config` controls where the config file is written; for other commands, it controls where the config file is read from.
 
 ```bash
 runa list

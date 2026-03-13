@@ -29,13 +29,13 @@ cargo run --bin runa -- --version  # Run CLI
 - `manifest.rs` — TOML parsing with validation (uniqueness checks at parse time)
 - `validation.rs` — JSON Schema validation for artifact instances, collects all violations before returning
 - `graph.rs` — Dependency graph from skill declarations: topological ordering, cycle detection, blocked-skill identification
-- `store.rs` — Artifact state tracking: validation status, content hashing, JSON persistence in `.runa/artifacts/`
+- `store.rs` — Artifact state tracking: validation status, content hashing, JSON persistence in `.runa/artifacts/` (configurable via `artifacts_dir` in config)
 - `trigger.rs` — Trigger condition evaluation: recursive evaluator, six condition variants, pure function against TriggerContext
 - `enforcement.rs` — Pre/post-execution enforcement: `enforce_preconditions` checks `requires`, `enforce_postconditions` checks `produces`/`may_produce`, three failure variants (Missing, Invalid, Stale)
 
 **runa-cli modules:**
-- `project.rs` — Shared `State` struct and `load()` function: reads `.runa/state.toml`, parses manifest, builds graph, opens store
-- `commands/init.rs` — `runa init`: parse manifest, create `.runa/state.toml`
+- `project.rs` — `Config` and `State` structs, config resolution chain (`--config` / `RUNA_CONFIG` / `.runa/config.toml` / XDG), `load()` function: resolves config, reads state, parses manifest, builds graph, opens store
+- `commands/init.rs` — `runa init`: parse manifest, create `.runa/config.toml` and `.runa/state.toml`
 - `commands/list.rs` — `runa list`: display skills in execution order with dependencies and blocked status
 - `commands/doctor.rs` — `runa doctor`: check artifact health, skill readiness, cycle detection; exit 1 on problems
 

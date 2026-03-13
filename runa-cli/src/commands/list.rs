@@ -25,8 +25,8 @@ impl std::error::Error for ListError {
     }
 }
 
-pub fn run(working_dir: &Path) -> Result<(), ListError> {
-    let loaded = project::load(working_dir).map_err(ListError::Project)?;
+pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), ListError> {
+    let loaded = project::load(working_dir, config_override).map_err(ListError::Project)?;
 
     println!("Methodology: {}", loaded.manifest.name);
 

@@ -27,8 +27,8 @@ impl std::error::Error for DoctorError {
 }
 
 /// Run the doctor command. Returns `true` if healthy, `false` if problems found.
-pub fn run(working_dir: &Path) -> Result<bool, DoctorError> {
-    let loaded = project::load(working_dir).map_err(DoctorError::Project)?;
+pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, DoctorError> {
+    let loaded = project::load(working_dir, config_override).map_err(DoctorError::Project)?;
 
     let mut problems = 0;
 

@@ -59,19 +59,22 @@ Returns `EnforcementError` on failure, containing the skill name, enforcement ph
 
 ```
 .runa/
-  state.toml                    # Created by `runa init`: methodology_path, methodology_name
-  artifacts/                    # Created by ArtifactStore (not by init)
+  config.toml                   # Created by `runa init`: methodology_path, optional artifacts_dir
+  state.toml                    # Created by `runa init`: initialized_at, runa_version
+  artifacts/                    # Default artifact storage (configurable via artifacts_dir)
     {type_name}/
       {instance_id}.json        # ArtifactState: path, status, last_modified_ms, content_hash
 ```
 
 ## CLI Commands
 
-All commands that operate on an initialized project share `project::load`, which reads `.runa/state.toml`, parses the referenced methodology manifest, builds the dependency graph, and opens the artifact store.
+All commands that operate on an initialized project share `project::load`, which resolves the config file, reads the methodology path from it, parses the manifest, builds the dependency graph, and opens the artifact store.
 
-### `runa init --methodology <PATH>`
+Config resolution is whole-file (first found wins, no per-field merging): `--config` CLI flag → `RUNA_CONFIG` env var → `.runa/config.toml` → `$XDG_CONFIG_HOME/runa/config.toml` → error.
 
-Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes the path, creates `.runa/state.toml` containing the canonical methodology path and name. Reports the artifact type and skill counts on success.
+### `runa init --methodology <PATH> [--artifacts-dir <DIR>] [--config <PATH>]`
+
+Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes the path, creates `.runa/config.toml` (or writes to the `--config` path) containing the canonical methodology path and optional artifacts directory. Creates `.runa/state.toml` recording initialization timestamp and runa version. Reports the artifact type and skill counts on success.
 
 ### `runa list`
 
