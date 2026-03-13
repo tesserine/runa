@@ -272,6 +272,29 @@ impl ArtifactStore {
         Ok(())
     }
 
+    /// Refresh the stored filesystem path for an existing instance.
+    pub fn update_path(
+        &mut self,
+        artifact_type: &str,
+        instance_id: &str,
+        path: &Path,
+    ) -> Result<(), StoreError> {
+        let key = (artifact_type.to_string(), instance_id.to_string());
+        let Some(existing) = self.artifacts.get(&key).cloned() else {
+            return Ok(());
+        };
+
+        if existing.path == path {
+            return Ok(());
+        }
+
+        let mut updated = existing;
+        updated.path = path.to_path_buf();
+        self.persist(artifact_type, instance_id, &updated)?;
+        self.artifacts.insert(key, updated);
+        Ok(())
+    }
+
     /// True if at least one instance of this type has `Invalid` or `Malformed` status.
     pub fn has_any_invalid(&self, artifact_type: &str) -> bool {
         self.artifacts.iter().any(|((t, _), state)| {
@@ -1012,6 +1035,40 @@ mod tests {
                 ("a".to_string(), "one".to_string()),
                 ("b".to_string(), "two".to_string())
             ]
+        );
+    }
+
+    #[test]
+    fn update_path_persists_new_path_without_other_changes() {
+        let tmp = TempDir::new().unwrap();
+        let store_dir = tmp.path().join("artifacts");
+        let mut store = make_store(&store_dir, vec!["report"]);
+
+        store
+            .record(
+                "report",
+                "item",
+                Path::new("old/item.json"),
+                &json!({"title": "ok"}),
+            )
+            .unwrap();
+
+        let before = store.get("report", "item").unwrap().clone();
+        store
+            .update_path("report", "item", Path::new("new/item.json"))
+            .unwrap();
+
+        let after = store.get("report", "item").unwrap();
+        assert_eq!(after.path, Path::new("new/item.json"));
+        assert_eq!(after.status, before.status);
+        assert_eq!(after.content_hash, before.content_hash);
+        assert_eq!(after.schema_hash, before.schema_hash);
+        assert_eq!(after.last_modified_ms, before.last_modified_ms);
+
+        let reloaded = make_store(&store_dir, vec!["report"]);
+        assert_eq!(
+            reloaded.get("report", "item").unwrap().path,
+            Path::new("new/item.json")
         );
     }
 }

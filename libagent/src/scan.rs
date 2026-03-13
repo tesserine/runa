@@ -277,7 +277,13 @@ fn handle_json_artifact(
                 .map_err(ScanError::Store)?;
             result.revalidated.push(artifact.as_ref());
         }
-        ScanDisposition::Unchanged => {}
+        ScanDisposition::Unchanged => {
+            if existing.is_some_and(|state| state.path != artifact.path) {
+                store
+                    .update_path(artifact.artifact_type, artifact.instance_id, artifact.path)
+                    .map_err(ScanError::Store)?;
+            }
+        }
     }
 
     let Some(state) = store.get(artifact.artifact_type, artifact.instance_id) else {
@@ -354,7 +360,13 @@ fn handle_malformed_artifact(
                 .map_err(ScanError::Store)?;
             result.revalidated.push(artifact.as_ref());
         }
-        ScanDisposition::Unchanged => {}
+        ScanDisposition::Unchanged => {
+            if existing.is_some_and(|state| state.path != artifact.path) {
+                store
+                    .update_path(artifact.artifact_type, artifact.instance_id, artifact.path)
+                    .map_err(ScanError::Store)?;
+            }
+        }
     }
 
     result.malformed.push(MalformedArtifact {
@@ -650,5 +662,34 @@ mod tests {
         let result = scan(&workspace, &mut store).unwrap();
 
         assert_eq!(result, ScanResult::default());
+    }
+
+    #[test]
+    fn unchanged_artifact_refreshes_stored_path_when_workspace_moves() {
+        let tmp = TempDir::new().unwrap();
+        let old_workspace = tmp.path().join("old-workspace");
+        let new_workspace = tmp.path().join("new-workspace");
+        let old_path = old_workspace.join("report/item.json");
+        let new_path = new_workspace.join("report/item.json");
+        write_file(&new_path, r#"{"title":"ok"}"#);
+
+        let store_dir = tmp.path().join("store");
+        let mut store = make_store(&store_dir, vec!["report"]);
+        store
+            .record_with_timestamp(
+                "report",
+                "item",
+                &old_path,
+                &json!({"title": "ok"}),
+                1234,
+            )
+            .unwrap();
+
+        let result = scan(&new_workspace, &mut store).unwrap();
+        let state = store.get("report", "item").unwrap();
+
+        assert_eq!(result, ScanResult::default());
+        assert_eq!(state.path, new_path);
+        assert_eq!(state.last_modified_ms, 1234);
     }
 }
