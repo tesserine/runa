@@ -13,25 +13,10 @@ name = "groundwork"
 name = "constraints"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[artifact_types]]
-name = "design-doc"
-schema = { type = "object" }
-
 [[skills]]
 name = "ground"
 produces = ["constraints"]
 trigger = { type = "on_signal", name = "init" }
-
-[[skills]]
-name = "design"
-requires = ["constraints"]
-produces = ["design-doc"]
-trigger = { type = "on_artifact", name = "constraints" }
-
-[[skills]]
-name = "review"
-requires = ["design-doc"]
-trigger = { type = "on_artifact", name = "design-doc" }
 "#
 }
 
@@ -51,7 +36,7 @@ fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) 
 }
 
 #[test]
-fn list_shows_skills_in_order() {
+fn scan_formats_output_and_succeeds_with_findings() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = dir.path().join("manifest.toml");
     fs::write(&manifest_path, valid_manifest_toml()).unwrap();
@@ -60,8 +45,29 @@ fn list_shows_skills_in_order() {
     fs::create_dir(&project_dir).unwrap();
     init_project(&project_dir, &manifest_path);
 
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("unknown")).unwrap();
+    fs::write(workspace.join("constraints/good.json"), r#"{"title":"ok"}"#).unwrap();
+    fs::write(workspace.join("constraints/invalid.json"), r#"{"score":1}"#).unwrap();
+    fs::write(workspace.join("constraints/bad.json"), r#"{ nope }"#).unwrap();
+
+    let store_dir = project_dir.join(".runa/store/constraints");
+    fs::create_dir_all(&store_dir).unwrap();
+    let removed_state = serde_json::json!({
+        "path": project_dir.join(".runa/workspace/constraints/removed.json"),
+        "status": "valid",
+        "last_modified_ms": 1000,
+        "content_hash": "sha256:old"
+    });
+    fs::write(
+        store_dir.join("removed.json"),
+        serde_json::to_string_pretty(&removed_state).unwrap(),
+    )
+    .unwrap();
+
     let output = runa_bin()
-        .arg("list")
+        .arg("scan")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -73,24 +79,19 @@ fn list_shows_skills_in_order() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Summary:"), "stdout: {stdout}");
+    assert!(stdout.contains("New:"), "stdout: {stdout}");
+    assert!(stdout.contains("Invalid:"), "stdout: {stdout}");
+    assert!(stdout.contains("Malformed:"), "stdout: {stdout}");
+    assert!(stdout.contains("Removed:"), "stdout: {stdout}");
     assert!(
-        stdout.contains("Methodology: groundwork"),
+        stdout.contains("Unrecognized directories:"),
         "stdout: {stdout}"
     );
-    assert!(stdout.contains("1. ground"), "stdout: {stdout}");
-    assert!(stdout.contains("produces: constraints"), "stdout: {stdout}");
-    assert!(stdout.contains("trigger:"), "stdout: {stdout}");
-
-    // Verify ordering: ground before design, design before review.
-    let ground_pos = stdout.find("ground").unwrap();
-    let design_pos = stdout.find("design").unwrap();
-    let review_pos = stdout.find("review").unwrap();
-    assert!(ground_pos < design_pos, "ground should be before design");
-    assert!(design_pos < review_pos, "design should be before review");
 }
 
 #[test]
-fn list_shows_blocked_status() {
+fn scan_returns_non_zero_on_workspace_io_failure() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = dir.path().join("manifest.toml");
     fs::write(&manifest_path, valid_manifest_toml()).unwrap();
@@ -99,29 +100,20 @@ fn list_shows_blocked_status() {
     fs::create_dir(&project_dir).unwrap();
     init_project(&project_dir, &manifest_path);
 
+    let workspace = project_dir.join(".runa/workspace");
+    fs::remove_dir_all(&workspace).unwrap();
+    fs::write(&workspace, "not a directory").unwrap();
+
     let output = runa_bin()
-        .arg("list")
+        .arg("scan")
         .current_dir(&project_dir)
         .output()
         .unwrap();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // design requires constraints which has no valid instances → BLOCKED.
-    assert!(stdout.contains("BLOCKED"), "stdout: {stdout}");
-    assert!(stdout.contains("constraints"), "stdout: {stdout}");
-}
-
-#[test]
-fn list_errors_on_uninitialized_project() {
-    let dir = tempfile::tempdir().unwrap();
-
-    let output = runa_bin()
-        .arg("list")
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
-    assert!(!output.status.success());
+    assert!(
+        !output.status.success(),
+        "scan should fail on unreadable workspace"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("no config found"), "stderr: {stderr}");
+    assert!(stderr.contains("I/O error"), "stderr: {stderr}");
 }

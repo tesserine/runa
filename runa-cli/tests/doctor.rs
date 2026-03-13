@@ -126,7 +126,7 @@ fn doctor_with_invalid_artifacts_exit_one() {
     init_project(&project_dir, &manifest_path);
 
     // Write an invalid artifact state file directly.
-    let artifact_dir = project_dir.join(".runa/artifacts/constraints");
+    let artifact_dir = project_dir.join(".runa/store/constraints");
     fs::create_dir_all(&artifact_dir).unwrap();
     let invalid_state = serde_json::json!({
         "path": "c.json",
@@ -165,6 +165,47 @@ fn doctor_with_invalid_artifacts_exit_one() {
 }
 
 #[test]
+fn doctor_with_malformed_artifacts_exit_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let artifact_dir = project_dir.join(".runa/store/constraints");
+    fs::create_dir_all(&artifact_dir).unwrap();
+    let malformed_state = serde_json::json!({
+        "path": "c.json",
+        "status": {
+            "malformed": "expected value at line 1 column 1"
+        },
+        "last_modified_ms": 1000,
+        "content_hash": "sha256:abc123"
+    });
+    fs::write(
+        artifact_dir.join("bad.json"),
+        serde_json::to_string_pretty(&malformed_state).unwrap(),
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("doctor")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "should exit 1 with malformed artifacts"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("malformed"), "stdout: {stdout}");
+}
+
+#[test]
 fn doctor_errors_on_uninitialized_project() {
     let dir = tempfile::tempdir().unwrap();
 
@@ -176,5 +217,5 @@ fn doctor_errors_on_uninitialized_project() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not a runa project"), "stderr: {stderr}");
+    assert!(stderr.contains("no config found"), "stderr: {stderr}");
 }

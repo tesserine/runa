@@ -371,6 +371,25 @@ mod tests {
     }
 
     #[test]
+    fn on_invalid_satisfied_with_malformed_instance() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        store
+            .record_malformed(
+                "doc",
+                "bad",
+                Path::new("b.json"),
+                b"not json",
+                "expected value",
+            )
+            .unwrap();
+
+        let ctx = empty_context(&store);
+        let cond = TriggerCondition::OnInvalid { name: "doc".into() };
+        assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
+    }
+
+    #[test]
     fn on_invalid_not_satisfied_when_all_valid() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);

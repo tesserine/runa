@@ -64,8 +64,9 @@ fn init_creates_runa_directory() {
     assert!(stdout.contains("3 skills"), "stdout: {stdout}");
 
     assert!(project_dir.join(".runa").is_dir());
-    let state = fs::read_to_string(project_dir.join(".runa/state.toml")).unwrap();
-    assert!(state.contains("groundwork"));
+    assert!(project_dir.join(".runa/state.toml").is_file());
+    assert!(project_dir.join(".runa/store").is_dir());
+    assert!(project_dir.join(".runa/workspace").is_dir());
 }
 
 #[test]

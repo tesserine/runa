@@ -8,7 +8,8 @@ use libagent::{ArtifactStore, DependencyGraph, GraphError, Manifest, ManifestErr
 pub const RUNA_DIR: &str = ".runa";
 pub const CONFIG_FILENAME: &str = "config.toml";
 pub const STATE_FILENAME: &str = "state.toml";
-const DEFAULT_ARTIFACTS_DIR: &str = "artifacts";
+pub(crate) const DEFAULT_WORKSPACE_DIR: &str = "workspace";
+pub(crate) const STORE_DIRNAME: &str = "store";
 
 /// On-disk format for `.runa/config.toml` — operator configuration.
 #[derive(Serialize, Deserialize)]
@@ -30,6 +31,7 @@ pub struct LoadedProject {
     pub manifest: Manifest,
     pub graph: DependencyGraph,
     pub store: ArtifactStore,
+    pub workspace_dir: PathBuf,
 }
 
 /// Errors that can occur when loading a runa project.
@@ -173,18 +175,21 @@ pub fn load(
 
     let graph = DependencyGraph::build(&manifest.skills).map_err(ProjectError::GraphInvalid)?;
 
-    // Resolve artifacts dir: explicit config value or default, relative to working dir.
-    let artifacts_dir = match &config.artifacts_dir {
+    // Resolve artifact workspace dir: explicit config value or default,
+    // relative to the project `.runa/` directory.
+    let workspace_dir = match &config.artifacts_dir {
         Some(dir) => working_dir.join(dir),
-        None => runa_dir.join(DEFAULT_ARTIFACTS_DIR),
+        None => runa_dir.join(DEFAULT_WORKSPACE_DIR),
     };
-    let store = ArtifactStore::new(manifest.artifact_types.clone(), artifacts_dir)
+    let store_dir = runa_dir.join(STORE_DIRNAME);
+    let store = ArtifactStore::new(manifest.artifact_types.clone(), store_dir)
         .map_err(ProjectError::StoreError)?;
 
     Ok(LoadedProject {
         manifest,
         graph,
         store,
+        workspace_dir,
     })
 }
 
@@ -254,6 +259,7 @@ trigger = { type = "on_signal", name = "init" }
 
         let loaded = load(&working, None).unwrap();
         assert_eq!(loaded.manifest.name, "test-methodology");
+        assert_eq!(loaded.workspace_dir, working.join(".runa/workspace"));
     }
 
     #[test]
@@ -324,7 +330,8 @@ trigger = { type = "on_signal", name = "init" }
         .unwrap();
 
         // load succeeds — artifacts_dir is resolved but doesn't need to exist yet
-        let _loaded = load(&working, None).unwrap();
+        let loaded = load(&working, None).unwrap();
+        assert_eq!(loaded.workspace_dir, working.join("custom-artifacts"));
     }
 
     #[test]

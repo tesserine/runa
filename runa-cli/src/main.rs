@@ -25,7 +25,7 @@ enum Commands {
         #[arg(long)]
         methodology: PathBuf,
 
-        /// Directory for artifact storage (default: .runa/artifacts/)
+        /// Directory for artifact workspace files (default: .runa/workspace/)
         #[arg(long)]
         artifacts_dir: Option<String>,
     },
@@ -33,6 +33,8 @@ enum Commands {
     List,
     /// Check project health: validate artifacts, identify problems
     Doctor,
+    /// Scan the artifact workspace and reconcile it into the store
+    Scan,
 }
 
 fn main() {
@@ -114,6 +116,20 @@ fn main() {
                     eprintln!("error: {e}");
                     process::exit(1);
                 }
+            }
+        }
+        Commands::Scan => {
+            let working_dir = match std::env::current_dir() {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    process::exit(1);
+                }
+            };
+
+            if let Err(e) = commands::scan::run(&working_dir, config_override.as_deref()) {
+                eprintln!("error: {e}");
+                process::exit(1);
             }
         }
     }

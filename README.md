@@ -11,10 +11,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for workspace structure, data flow, modul
 ## Usage
 
 ```bash
-runa init --methodology path/to/manifest.toml [--artifacts-dir path/to/artifacts]
+runa init --methodology path/to/manifest.toml [--artifacts-dir path/to/workspace]
 ```
 
-Parses the methodology manifest, validates its structure, and creates a `.runa/` directory with `config.toml` (operator configuration: methodology path, optional artifacts directory) and `state.toml` (runtime state: initialization timestamp, runa version). Reports the artifact type and skill counts on success.
+Parses the methodology manifest, validates its structure, and creates a `.runa/` directory with `config.toml` (operator configuration: methodology path, optional artifact workspace directory), `state.toml` (runtime state: initialization timestamp, runa version), `.runa/workspace/` (default artifact workspace), and `.runa/store/` (internal artifact state store). Reports the artifact type and skill counts on success.
 
 All commands support `--config <PATH>` to override the config file location. The `RUNA_CONFIG` env var serves the same purpose. For `init`, `--config` controls where the config file is written; for other commands, it controls where the config file is read from.
 
@@ -29,6 +29,12 @@ runa doctor
 ```
 
 Checks project health: artifact validity, skill readiness, and dependency cycles. Exits 0 if healthy, 1 if problems found.
+
+```bash
+runa scan
+```
+
+Scans the artifact workspace, reconciles it into `.runa/store/`, records valid, invalid, and malformed artifacts, and reports new/modified/removed instances plus unrecognized workspace directories. Exits 0 if reconciliation succeeds, even when findings are present.
 
 ## Build
 

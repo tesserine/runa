@@ -9,6 +9,7 @@
 //! - [`validation`] — JSON Schema validation for artifact instances
 //! - [`graph`] — Dependency graph: topological ordering, cycle detection, blocked-skill identification
 //! - [`store`] — Artifact state tracking: validation status, content hashing, JSON persistence
+//! - [`scan`] — Filesystem reconciliation from artifact workspace into store state
 //! - [`trigger`] — Trigger condition evaluation against runtime state
 //! - [`enforcement`] — Pre/post-execution enforcement of skill contracts
 //!
@@ -18,6 +19,7 @@ pub mod enforcement;
 pub mod graph;
 pub mod manifest;
 pub mod model;
+pub mod scan;
 pub mod store;
 #[cfg(test)]
 pub(crate) mod test_helpers;
@@ -30,6 +32,7 @@ pub use enforcement::{
 pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use manifest::ManifestError;
 pub use model::{ArtifactType, Manifest, SkillDeclaration, TriggerCondition};
+pub use scan::{ArtifactRef, InvalidArtifact, MalformedArtifact, ScanError, ScanResult, scan};
 pub use store::{ArtifactState, ArtifactStore, StoreError, ValidationStatus};
 pub use trigger::{TriggerContext, TriggerResult, evaluate as evaluate_trigger};
 pub use validation::{ValidationError, Violation};

@@ -2,7 +2,9 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::project::{CONFIG_FILENAME, Config, RUNA_DIR, STATE_FILENAME, State};
+use crate::project::{
+    CONFIG_FILENAME, Config, DEFAULT_WORKSPACE_DIR, RUNA_DIR, STATE_FILENAME, STORE_DIRNAME, State,
+};
 
 #[derive(Debug)]
 pub struct InitSummary {
@@ -62,6 +64,12 @@ pub fn run(
 
     let runa_dir = working_dir.join(RUNA_DIR);
     fs::create_dir_all(&runa_dir).map_err(InitError::Io)?;
+    fs::create_dir_all(runa_dir.join(STORE_DIRNAME)).map_err(InitError::Io)?;
+
+    let workspace_dir = artifacts_dir
+        .map(|dir| working_dir.join(dir))
+        .unwrap_or_else(|| runa_dir.join(DEFAULT_WORKSPACE_DIR));
+    fs::create_dir_all(&workspace_dir).map_err(InitError::Io)?;
 
     // Write config.
     let config = Config {

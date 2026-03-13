@@ -53,17 +53,19 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, D
         let total = instances.len();
         let mut valid_count = 0;
         let mut invalid_count = 0;
+        let mut malformed_count = 0;
         let mut stale_count = 0;
 
         for (_, state) in &instances {
             match &state.status {
                 ValidationStatus::Valid => valid_count += 1,
                 ValidationStatus::Invalid(_) => invalid_count += 1,
+                ValidationStatus::Malformed(_) => malformed_count += 1,
                 ValidationStatus::Stale => stale_count += 1,
             }
         }
 
-        if invalid_count == 0 && stale_count == 0 {
+        if invalid_count == 0 && malformed_count == 0 && stale_count == 0 {
             println!(
                 "  {type_name}: {total} instance{}, all valid",
                 if total == 1 { "" } else { "s" }
@@ -75,6 +77,9 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, D
             }
             if invalid_count > 0 {
                 parts.push(format!("{invalid_count} invalid"));
+            }
+            if malformed_count > 0 {
+                parts.push(format!("{malformed_count} malformed"));
             }
             if stale_count > 0 {
                 parts.push(format!("{stale_count} stale"));
@@ -94,6 +99,11 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, D
                         for v in violations {
                             println!("      - {}: {}", v.schema_path, v.description);
                         }
+                    }
+                    ValidationStatus::Malformed(error) => {
+                        problems += 1;
+                        println!("    {instance_id}: malformed");
+                        println!("      - {error}");
                     }
                     ValidationStatus::Stale => {
                         problems += 1;
