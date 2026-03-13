@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// A methodology's complete registration with the runa runtime.
@@ -70,13 +72,40 @@ pub enum TriggerCondition {
     /// An external event (operator action, webhook, scheduler).
     OnSignal { name: String },
     /// All conditions must be satisfied.
-    AllOf {
-        conditions: Vec<TriggerCondition>,
-    },
+    AllOf { conditions: Vec<TriggerCondition> },
     /// At least one condition must be satisfied.
-    AnyOf {
-        conditions: Vec<TriggerCondition>,
-    },
+    AnyOf { conditions: Vec<TriggerCondition> },
+}
+
+impl fmt::Display for TriggerCondition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TriggerCondition::OnArtifact { name } => write!(f, "on_artifact({name})"),
+            TriggerCondition::OnChange { name } => write!(f, "on_change({name})"),
+            TriggerCondition::OnInvalid { name } => write!(f, "on_invalid({name})"),
+            TriggerCondition::OnSignal { name } => write!(f, "on_signal({name})"),
+            TriggerCondition::AllOf { conditions } => {
+                write!(f, "all_of(")?;
+                for (i, c) in conditions.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{c}")?;
+                }
+                write!(f, ")")
+            }
+            TriggerCondition::AnyOf { conditions } => {
+                write!(f, "any_of(")?;
+                for (i, c) in conditions.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{c}")?;
+                }
+                write!(f, ")")
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -179,9 +208,7 @@ mod tests {
         );
 
         let tc = TriggerCondition::AllOf {
-            conditions: vec![TriggerCondition::OnSignal {
-                name: "go".into(),
-            }],
+            conditions: vec![TriggerCondition::OnSignal { name: "go".into() }],
         };
         let value = serde_json::to_value(&tc).unwrap();
         assert_eq!(
@@ -210,5 +237,56 @@ mod tests {
         let json = serde_json::to_string(&skill).unwrap();
         let deserialized: SkillDeclaration = serde_json::from_str(&json).unwrap();
         assert_eq!(skill, deserialized);
+    }
+
+    #[test]
+    fn display_on_artifact() {
+        let tc = TriggerCondition::OnArtifact {
+            name: "constraints".into(),
+        };
+        assert_eq!(tc.to_string(), "on_artifact(constraints)");
+    }
+
+    #[test]
+    fn display_on_change() {
+        let tc = TriggerCondition::OnChange {
+            name: "design-doc".into(),
+        };
+        assert_eq!(tc.to_string(), "on_change(design-doc)");
+    }
+
+    #[test]
+    fn display_on_invalid() {
+        let tc = TriggerCondition::OnInvalid {
+            name: "test-evidence".into(),
+        };
+        assert_eq!(tc.to_string(), "on_invalid(test-evidence)");
+    }
+
+    #[test]
+    fn display_on_signal() {
+        let tc = TriggerCondition::OnSignal {
+            name: "approved".into(),
+        };
+        assert_eq!(tc.to_string(), "on_signal(approved)");
+    }
+
+    #[test]
+    fn display_nested_composite() {
+        let tc = TriggerCondition::AllOf {
+            conditions: vec![
+                TriggerCondition::OnArtifact { name: "X".into() },
+                TriggerCondition::AnyOf {
+                    conditions: vec![
+                        TriggerCondition::OnSignal { name: "go".into() },
+                        TriggerCondition::OnArtifact { name: "Y".into() },
+                    ],
+                },
+            ],
+        };
+        assert_eq!(
+            tc.to_string(),
+            "all_of(on_artifact(X), any_of(on_signal(go), on_artifact(Y)))"
+        );
     }
 }

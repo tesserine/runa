@@ -84,9 +84,7 @@ pub fn evaluate(
             if context.active_signals.contains(name) {
                 TriggerResult::Satisfied
             } else {
-                TriggerResult::NotSatisfied(format!(
-                    "signal '{name}' is not active"
-                ))
+                TriggerResult::NotSatisfied(format!("signal '{name}' is not active"))
             }
         }
 
@@ -102,9 +100,7 @@ pub fn evaluate(
 
         TriggerCondition::AnyOf { conditions } => {
             if conditions.is_empty() {
-                return TriggerResult::NotSatisfied(
-                    "any_of with no conditions".to_string(),
-                );
+                return TriggerResult::NotSatisfied("any_of with no conditions".to_string());
             }
             let mut reasons = Vec::new();
             for child in conditions {
@@ -115,9 +111,7 @@ pub fn evaluate(
                     }
                 }
             }
-            TriggerResult::NotSatisfied(
-                format!("none satisfied: {}", reasons.join("; ")),
-            )
+            TriggerResult::NotSatisfied(format!("none satisfied: {}", reasons.join("; ")))
         }
     }
 }
@@ -171,9 +165,7 @@ mod tests {
             .unwrap();
 
         let ctx = empty_context(&store);
-        let cond = TriggerCondition::OnArtifact {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnArtifact { name: "doc".into() };
         assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
     }
 
@@ -189,9 +181,7 @@ mod tests {
             .unwrap();
 
         let ctx = empty_context(&store);
-        let cond = TriggerCondition::OnArtifact {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnArtifact { name: "doc".into() };
         assert!(matches!(
             evaluate(&cond, &ctx, "skill"),
             TriggerResult::NotSatisfied(_)
@@ -204,9 +194,7 @@ mod tests {
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
         let ctx = empty_context(&store);
-        let cond = TriggerCondition::OnArtifact {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnArtifact { name: "doc".into() };
         assert!(matches!(
             evaluate(&cond, &ctx, "skill"),
             TriggerResult::NotSatisfied(_)
@@ -223,9 +211,7 @@ mod tests {
         store.invalidate("doc", "a").unwrap();
 
         let ctx = empty_context(&store);
-        let cond = TriggerCondition::OnArtifact {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnArtifact { name: "doc".into() };
         assert!(matches!(
             evaluate(&cond, &ctx, "skill"),
             TriggerResult::NotSatisfied(_)
@@ -255,9 +241,7 @@ mod tests {
             activation_timestamps: &timestamps,
             active_signals: &signals,
         };
-        let cond = TriggerCondition::OnChange {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnChange { name: "doc".into() };
         assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
     }
 
@@ -282,9 +266,7 @@ mod tests {
             activation_timestamps: &timestamps,
             active_signals: &signals,
         };
-        let cond = TriggerCondition::OnChange {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnChange { name: "doc".into() };
         assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
     }
 
@@ -309,9 +291,7 @@ mod tests {
             activation_timestamps: &timestamps,
             active_signals: &signals,
         };
-        let cond = TriggerCondition::OnChange {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnChange { name: "doc".into() };
         assert!(matches!(
             evaluate(&cond, &ctx, "skill"),
             TriggerResult::NotSatisfied(_)
@@ -324,9 +304,7 @@ mod tests {
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
         let ctx = empty_context(&store);
-        let cond = TriggerCondition::OnChange {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnChange { name: "doc".into() };
         assert!(matches!(
             evaluate(&cond, &ctx, "skill"),
             TriggerResult::NotSatisfied(_)
@@ -354,9 +332,7 @@ mod tests {
             activation_timestamps: &timestamps,
             active_signals: &signals,
         };
-        let cond = TriggerCondition::OnChange {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnChange { name: "doc".into() };
         assert!(matches!(
             evaluate(&cond, &ctx, "skill"),
             TriggerResult::NotSatisfied(_)
@@ -395,9 +371,7 @@ mod tests {
             activation_timestamps: &timestamps,
             active_signals: &signals,
         };
-        let cond = TriggerCondition::OnChange {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnChange { name: "doc".into() };
         // Any single instance newer than activation → satisfied.
         assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
     }
@@ -413,9 +387,7 @@ mod tests {
             .unwrap();
 
         let ctx = empty_context(&store);
-        let cond = TriggerCondition::OnInvalid {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnInvalid { name: "doc".into() };
         assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
     }
 
@@ -428,9 +400,7 @@ mod tests {
             .unwrap();
 
         let ctx = empty_context(&store);
-        let cond = TriggerCondition::OnInvalid {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnInvalid { name: "doc".into() };
         assert!(matches!(
             evaluate(&cond, &ctx, "skill"),
             TriggerResult::NotSatisfied(_)
@@ -443,9 +413,7 @@ mod tests {
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
         let ctx = empty_context(&store);
-        let cond = TriggerCondition::OnInvalid {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnInvalid { name: "doc".into() };
         assert!(matches!(
             evaluate(&cond, &ctx, "skill"),
             TriggerResult::NotSatisfied(_)
@@ -462,9 +430,7 @@ mod tests {
         store.invalidate("doc", "a").unwrap();
 
         let ctx = empty_context(&store);
-        let cond = TriggerCondition::OnInvalid {
-            name: "doc".into(),
-        };
+        let cond = TriggerCondition::OnInvalid { name: "doc".into() };
         // Stale is not Invalid — should not satisfy on_invalid.
         assert!(matches!(
             evaluate(&cond, &ctx, "skill"),
@@ -527,12 +493,8 @@ mod tests {
 
         let cond = TriggerCondition::AllOf {
             conditions: vec![
-                TriggerCondition::OnArtifact {
-                    name: "doc".into(),
-                },
-                TriggerCondition::OnSignal {
-                    name: "go".into(),
-                },
+                TriggerCondition::OnArtifact { name: "doc".into() },
+                TriggerCondition::OnSignal { name: "go".into() },
             ],
         };
         assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
@@ -550,9 +512,7 @@ mod tests {
 
         let cond = TriggerCondition::AllOf {
             conditions: vec![
-                TriggerCondition::OnArtifact {
-                    name: "doc".into(),
-                },
+                TriggerCondition::OnArtifact { name: "doc".into() },
                 TriggerCondition::OnSignal {
                     name: "missing".into(),
                 },
@@ -570,9 +530,7 @@ mod tests {
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
         let ctx = empty_context(&store);
 
-        let cond = TriggerCondition::AllOf {
-            conditions: vec![],
-        };
+        let cond = TriggerCondition::AllOf { conditions: vec![] };
         assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
     }
 
@@ -593,12 +551,8 @@ mod tests {
 
         let cond = TriggerCondition::AnyOf {
             conditions: vec![
-                TriggerCondition::OnArtifact {
-                    name: "doc".into(),
-                },
-                TriggerCondition::OnSignal {
-                    name: "go".into(),
-                },
+                TriggerCondition::OnArtifact { name: "doc".into() },
+                TriggerCondition::OnSignal { name: "go".into() },
             ],
         };
         assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
@@ -612,9 +566,7 @@ mod tests {
 
         let cond = TriggerCondition::AnyOf {
             conditions: vec![
-                TriggerCondition::OnArtifact {
-                    name: "doc".into(),
-                },
+                TriggerCondition::OnArtifact { name: "doc".into() },
                 TriggerCondition::OnSignal {
                     name: "missing".into(),
                 },
@@ -632,9 +584,7 @@ mod tests {
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
         let ctx = empty_context(&store);
 
-        let cond = TriggerCondition::AnyOf {
-            conditions: vec![],
-        };
+        let cond = TriggerCondition::AnyOf { conditions: vec![] };
         assert!(matches!(
             evaluate(&cond, &ctx, "skill"),
             TriggerResult::NotSatisfied(_)
@@ -646,8 +596,7 @@ mod tests {
     #[test]
     fn nested_all_of_with_any_of() {
         let tmp = TempDir::new().unwrap();
-        let mut store =
-            make_store(&tmp.path().join("s"), vec!["doc", "approval"]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "approval"]);
         store
             .record("doc", "a", Path::new("a.json"), &json!({"title": "A"}))
             .unwrap();
@@ -665,9 +614,7 @@ mod tests {
         // doc is valid, signal "approved" is active → satisfied.
         let cond = TriggerCondition::AllOf {
             conditions: vec![
-                TriggerCondition::OnArtifact {
-                    name: "doc".into(),
-                },
+                TriggerCondition::OnArtifact { name: "doc".into() },
                 TriggerCondition::AnyOf {
                     conditions: vec![
                         TriggerCondition::OnSignal {
@@ -686,8 +633,7 @@ mod tests {
     #[test]
     fn nested_all_of_with_any_of_not_satisfied() {
         let tmp = TempDir::new().unwrap();
-        let mut store =
-            make_store(&tmp.path().join("s"), vec!["doc", "approval"]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "approval"]);
         store
             .record("doc", "a", Path::new("a.json"), &json!({"title": "A"}))
             .unwrap();
@@ -698,9 +644,7 @@ mod tests {
         // doc is valid but neither signal nor approval artifact → not satisfied.
         let cond = TriggerCondition::AllOf {
             conditions: vec![
-                TriggerCondition::OnArtifact {
-                    name: "doc".into(),
-                },
+                TriggerCondition::OnArtifact { name: "doc".into() },
                 TriggerCondition::AnyOf {
                     conditions: vec![
                         TriggerCondition::OnSignal {
