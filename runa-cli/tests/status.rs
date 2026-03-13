@@ -493,3 +493,160 @@ fn status_blocks_skills_with_partial_required_types_and_reports_scan_warnings() 
         "stdout: {stdout}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn status_keeps_waiting_skills_waiting_when_partial_scan_only_affects_preconditions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[skills]]
+name = "implement"
+requires = ["constraints"]
+trigger = { type = "on_signal", name = "begin" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship status"}"#,
+    )
+    .unwrap();
+    let unreadable = workspace.join("constraints/spec-2.json");
+    fs::write(&unreadable, r#"{"title":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let skills = value["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["name"], "implement");
+    assert_eq!(skills[0]["status"], "waiting");
+    assert_eq!(skills[0]["trigger"], "not_satisfied");
+    assert_eq!(
+        skills[0]["unsatisfied_conditions"],
+        serde_json::json!(["on_signal(begin)"])
+    );
+    assert!(skills[0].get("precondition_failures").is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn status_reports_all_partial_required_types_as_scan_incomplete_failures() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[artifact_types]]
+name = "implementation"
+schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
+
+[[skills]]
+name = "verify"
+requires = ["constraints", "implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("implementation")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship status"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("implementation/impl-1.json"),
+        r#"{"done":true}"#,
+    )
+    .unwrap();
+    let unreadable_constraints = workspace.join("constraints/spec-2.json");
+    fs::write(&unreadable_constraints, r#"{"title":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable_constraints, fs::Permissions::from_mode(0o0)).unwrap();
+    let unreadable_implementation = workspace.join("implementation/impl-2.json");
+    fs::write(&unreadable_implementation, r#"{"done":false}"#).unwrap();
+    fs::set_permissions(&unreadable_implementation, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable_constraints, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::set_permissions(
+        &unreadable_implementation,
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let skills = value["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["name"], "verify");
+    assert_eq!(skills[0]["status"], "blocked");
+    assert_eq!(
+        skills[0]["precondition_failures"],
+        serde_json::json!([
+            {
+                "artifact_type": "constraints",
+                "reason": "scan_incomplete"
+            },
+            {
+                "artifact_type": "implementation",
+                "reason": "scan_incomplete"
+            }
+        ])
+    );
+}

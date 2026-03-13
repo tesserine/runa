@@ -159,26 +159,16 @@ pub fn run(
             TriggerResult::NotSatisfied(_) => TriggerState::NotSatisfied,
         };
 
-        let entry = if let Some(artifact_type) = skill.requires.iter().find(|artifact_type| {
-            scan_findings
-                .affected_types
-                .contains(artifact_type.as_str())
-        }) {
-            SkillEntry {
-                name: skill.name.clone(),
-                status: SkillStatus::Blocked,
-                trigger: trigger_state,
-                inputs: Vec::new(),
-                precondition_failures: vec![FailureEntry {
-                    artifact_type: artifact_type.clone(),
-                    reason: "scan_incomplete",
-                }],
-                unsatisfied_conditions: Vec::new(),
-            }
-        } else {
-            match trigger_state {
-                TriggerState::Satisfied => match enforce_preconditions(skill, &loaded.store) {
-                    Ok(()) => SkillEntry {
+        let entry = match trigger_state {
+            TriggerState::Satisfied => {
+                let mut precondition_failures = scan_incomplete_failures(skill, &scan_findings);
+
+                if let Err(err) = enforce_preconditions(skill, &loaded.store) {
+                    precondition_failures.extend(err.failures.iter().map(failure_entry));
+                }
+
+                if precondition_failures.is_empty() {
+                    SkillEntry {
                         name: skill.name.clone(),
                         status: SkillStatus::Ready,
                         trigger: TriggerState::Satisfied,
@@ -190,29 +180,30 @@ pub fn run(
                         ),
                         precondition_failures: Vec::new(),
                         unsatisfied_conditions: Vec::new(),
-                    },
-                    Err(err) => SkillEntry {
+                    }
+                } else {
+                    SkillEntry {
                         name: skill.name.clone(),
                         status: SkillStatus::Blocked,
                         trigger: TriggerState::Satisfied,
                         inputs: Vec::new(),
-                        precondition_failures: err.failures.iter().map(failure_entry).collect(),
+                        precondition_failures,
                         unsatisfied_conditions: Vec::new(),
-                    },
-                },
-                TriggerState::NotSatisfied => SkillEntry {
-                    name: skill.name.clone(),
-                    status: SkillStatus::Waiting,
-                    trigger: TriggerState::NotSatisfied,
-                    inputs: Vec::new(),
-                    precondition_failures: Vec::new(),
-                    unsatisfied_conditions: collect_unsatisfied_conditions(
-                        &skill.trigger,
-                        &context,
-                        &skill.name,
-                    ),
-                },
+                    }
+                }
             }
+            TriggerState::NotSatisfied => SkillEntry {
+                name: skill.name.clone(),
+                status: SkillStatus::Waiting,
+                trigger: TriggerState::NotSatisfied,
+                inputs: Vec::new(),
+                precondition_failures: Vec::new(),
+                unsatisfied_conditions: collect_unsatisfied_conditions(
+                    &skill.trigger,
+                    &context,
+                    &skill.name,
+                ),
+            },
         };
 
         match entry.status {
@@ -320,6 +311,25 @@ fn failure_entry(failure: &libagent::ArtifactFailure) -> FailureEntry {
             reason: "stale",
         },
     }
+}
+
+fn scan_incomplete_failures(
+    skill: &libagent::SkillDeclaration,
+    scan_findings: &ScanFindings,
+) -> Vec<FailureEntry> {
+    skill
+        .requires
+        .iter()
+        .filter(|artifact_type| {
+            scan_findings
+                .affected_types
+                .contains(artifact_type.as_str())
+        })
+        .map(|artifact_type| FailureEntry {
+            artifact_type: artifact_type.clone(),
+            reason: "scan_incomplete",
+        })
+        .collect()
 }
 
 fn collect_scan_findings(scan_result: &libagent::ScanResult, workspace_dir: &Path) -> ScanFindings {
