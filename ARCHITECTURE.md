@@ -11,7 +11,7 @@ Two crates, Rust 2024 edition, resolver v3:
 
 ## Data Flow
 
-These are library capabilities exposed by libagent. No runtime loop exists yet. `runa init` is the only CLI integration point (uses manifest parsing only).
+These are library capabilities exposed by libagent. No runtime loop exists yet.
 
 1. **TOML manifest → model types.** `manifest::parse` reads a methodology manifest file, deserializes TOML into `Manifest` (containing `ArtifactType` and `SkillDeclaration` vectors), and validates name uniqueness at parse time.
 
