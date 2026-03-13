@@ -5,7 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::store::{ArtifactStore, StoreError, ValidationStatus, content_hash, raw_content_hash};
+use crate::store::{
+    ArtifactState, ArtifactStore, StoreError, ValidationStatus, content_hash, raw_content_hash,
+};
 use crate::validation::Violation;
 
 struct ArtifactInput<'a> {
@@ -51,6 +53,7 @@ pub struct MalformedArtifact {
 pub struct ScanResult {
     pub new: Vec<ArtifactRef>,
     pub modified: Vec<ArtifactRef>,
+    pub revalidated: Vec<ArtifactRef>,
     pub invalid: Vec<InvalidArtifact>,
     pub malformed: Vec<MalformedArtifact>,
     pub removed: Vec<ArtifactRef>,
@@ -61,6 +64,7 @@ pub struct ScanResult {
 pub enum ScanError {
     Io(std::io::Error),
     Store(StoreError),
+    WorkspaceMissing(PathBuf),
 }
 
 impl fmt::Display for ScanError {
@@ -68,6 +72,9 @@ impl fmt::Display for ScanError {
         match self {
             ScanError::Io(err) => write!(f, "I/O error: {err}"),
             ScanError::Store(err) => write!(f, "{err}"),
+            ScanError::WorkspaceMissing(path) => {
+                write!(f, "workspace directory is missing: {}", path.display())
+            }
         }
     }
 }
@@ -77,8 +84,16 @@ impl std::error::Error for ScanError {
         match self {
             ScanError::Io(err) => Some(err),
             ScanError::Store(err) => Some(err),
+            ScanError::WorkspaceMissing(_) => None,
         }
     }
+}
+
+enum ScanDisposition {
+    New,
+    Modified,
+    Revalidated,
+    Unchanged,
 }
 
 pub fn scan(workspace_dir: &Path, store: &mut ArtifactStore) -> Result<ScanResult, ScanError> {
@@ -92,29 +107,34 @@ pub fn scan(workspace_dir: &Path, store: &mut ArtifactStore) -> Result<ScanResul
     let mut seen_keys = HashSet::new();
     let mut result = ScanResult::default();
 
-    if workspace_dir.exists() {
-        for entry in std::fs::read_dir(workspace_dir).map_err(ScanError::Io)? {
-            let entry = entry.map_err(ScanError::Io)?;
-            let file_type = entry.file_type().map_err(ScanError::Io)?;
-            if !file_type.is_dir() {
-                continue;
-            }
-
-            let type_name = entry.file_name().to_string_lossy().into_owned();
-            if !known_types.contains(&type_name) {
-                result.unrecognized_dirs.push(type_name);
-                continue;
-            }
-
-            scan_type_dir(
-                &entry.path(),
-                &type_name,
-                store,
-                scan_timestamp_ms,
-                &mut seen_keys,
-                &mut result,
-            )?;
+    if !workspace_dir.exists() {
+        if existing_keys.is_empty() {
+            return Ok(result);
         }
+        return Err(ScanError::WorkspaceMissing(workspace_dir.to_path_buf()));
+    }
+
+    for entry in std::fs::read_dir(workspace_dir).map_err(ScanError::Io)? {
+        let entry = entry.map_err(ScanError::Io)?;
+        let file_type = entry.file_type().map_err(ScanError::Io)?;
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let type_name = entry.file_name().to_string_lossy().into_owned();
+        if !known_types.contains(&type_name) {
+            result.unrecognized_dirs.push(type_name);
+            continue;
+        }
+
+        scan_type_dir(
+            &entry.path(),
+            &type_name,
+            store,
+            scan_timestamp_ms,
+            &mut seen_keys,
+            &mut result,
+        )?;
     }
 
     result.unrecognized_dirs.sort();
@@ -173,14 +193,15 @@ fn scan_type_dir(
 
         let existing = store.get(artifact_type, &instance_id).cloned();
         let bytes = std::fs::read(&path).map_err(ScanError::Io)?;
+        let artifact = ArtifactInput {
+            artifact_type,
+            instance_id: &instance_id,
+            path: &path,
+        };
 
         match serde_json::from_slice::<Value>(&bytes) {
             Ok(data) => handle_json_artifact(
-                ArtifactInput {
-                    artifact_type,
-                    instance_id: &instance_id,
-                    path: &path,
-                },
+                artifact,
                 &data,
                 existing.as_ref(),
                 store,
@@ -188,11 +209,7 @@ fn scan_type_dir(
                 result,
             )?,
             Err(err) => handle_malformed_artifact(
-                ArtifactInput {
-                    artifact_type,
-                    instance_id: &instance_id,
-                    path: &path,
-                },
+                artifact,
                 &bytes,
                 err.to_string(),
                 existing.as_ref(),
@@ -209,25 +226,58 @@ fn scan_type_dir(
 fn handle_json_artifact(
     artifact: ArtifactInput<'_>,
     data: &Value,
-    existing: Option<&crate::store::ArtifactState>,
+    existing: Option<&ArtifactState>,
     store: &mut ArtifactStore,
     scan_timestamp_ms: u64,
     result: &mut ScanResult,
 ) -> Result<(), ScanError> {
     let new_hash = content_hash(data);
-    let change_ref = classify_change(&artifact, existing, &new_hash);
+    let current_schema_hash = store
+        .schema_hash_for(artifact.artifact_type)
+        .map_err(ScanError::Store)?;
+    let disposition = classify_disposition(existing, &new_hash, &current_schema_hash);
 
-    if let Some(change_ref) = change_ref {
-        store
-            .record_with_timestamp(
-                artifact.artifact_type,
-                artifact.instance_id,
-                artifact.path,
-                data,
-                scan_timestamp_ms,
-            )
-            .map_err(ScanError::Store)?;
-        push_change(result, existing.is_some(), change_ref);
+    match disposition {
+        ScanDisposition::New => {
+            store
+                .record_with_timestamp(
+                    artifact.artifact_type,
+                    artifact.instance_id,
+                    artifact.path,
+                    data,
+                    scan_timestamp_ms,
+                )
+                .map_err(ScanError::Store)?;
+            result.new.push(artifact.as_ref());
+        }
+        ScanDisposition::Modified => {
+            store
+                .record_with_timestamp(
+                    artifact.artifact_type,
+                    artifact.instance_id,
+                    artifact.path,
+                    data,
+                    scan_timestamp_ms,
+                )
+                .map_err(ScanError::Store)?;
+            result.modified.push(artifact.as_ref());
+        }
+        ScanDisposition::Revalidated => {
+            let last_modified_ms = existing
+                .expect("revalidated artifact must already exist")
+                .last_modified_ms;
+            store
+                .record_with_timestamp(
+                    artifact.artifact_type,
+                    artifact.instance_id,
+                    artifact.path,
+                    data,
+                    last_modified_ms,
+                )
+                .map_err(ScanError::Store)?;
+            result.revalidated.push(artifact.as_ref());
+        }
+        ScanDisposition::Unchanged => {}
     }
 
     let Some(state) = store.get(artifact.artifact_type, artifact.instance_id) else {
@@ -250,26 +300,61 @@ fn handle_malformed_artifact(
     artifact: ArtifactInput<'_>,
     bytes: &[u8],
     error: String,
-    existing: Option<&crate::store::ArtifactState>,
+    existing: Option<&ArtifactState>,
     store: &mut ArtifactStore,
     scan_timestamp_ms: u64,
     result: &mut ScanResult,
 ) -> Result<(), ScanError> {
     let new_hash = raw_content_hash(bytes);
-    let change_ref = classify_change(&artifact, existing, &new_hash);
+    let current_schema_hash = store
+        .schema_hash_for(artifact.artifact_type)
+        .map_err(ScanError::Store)?;
+    let disposition = classify_disposition(existing, &new_hash, &current_schema_hash);
 
-    if let Some(change_ref) = change_ref {
-        store
-            .record_malformed_with_timestamp(
-                artifact.artifact_type,
-                artifact.instance_id,
-                artifact.path,
-                bytes,
-                error.clone(),
-                scan_timestamp_ms,
-            )
-            .map_err(ScanError::Store)?;
-        push_change(result, existing.is_some(), change_ref);
+    match disposition {
+        ScanDisposition::New => {
+            store
+                .record_malformed_with_timestamp(
+                    artifact.artifact_type,
+                    artifact.instance_id,
+                    artifact.path,
+                    bytes,
+                    error.clone(),
+                    scan_timestamp_ms,
+                )
+                .map_err(ScanError::Store)?;
+            result.new.push(artifact.as_ref());
+        }
+        ScanDisposition::Modified => {
+            store
+                .record_malformed_with_timestamp(
+                    artifact.artifact_type,
+                    artifact.instance_id,
+                    artifact.path,
+                    bytes,
+                    error.clone(),
+                    scan_timestamp_ms,
+                )
+                .map_err(ScanError::Store)?;
+            result.modified.push(artifact.as_ref());
+        }
+        ScanDisposition::Revalidated => {
+            let last_modified_ms = existing
+                .expect("revalidated artifact must already exist")
+                .last_modified_ms;
+            store
+                .record_malformed_with_timestamp(
+                    artifact.artifact_type,
+                    artifact.instance_id,
+                    artifact.path,
+                    bytes,
+                    error.clone(),
+                    last_modified_ms,
+                )
+                .map_err(ScanError::Store)?;
+            result.revalidated.push(artifact.as_ref());
+        }
+        ScanDisposition::Unchanged => {}
     }
 
     result.malformed.push(MalformedArtifact {
@@ -282,23 +367,16 @@ fn handle_malformed_artifact(
     Ok(())
 }
 
-fn classify_change(
-    artifact: &ArtifactInput<'_>,
-    existing: Option<&crate::store::ArtifactState>,
+fn classify_disposition(
+    existing: Option<&ArtifactState>,
     new_hash: &str,
-) -> Option<ArtifactRef> {
+    current_schema_hash: &str,
+) -> ScanDisposition {
     match existing {
-        None => Some(artifact.as_ref()),
-        Some(state) if state.content_hash != new_hash => Some(artifact.as_ref()),
-        Some(_) => None,
-    }
-}
-
-fn push_change(result: &mut ScanResult, was_present: bool, artifact: ArtifactRef) {
-    if was_present {
-        result.modified.push(artifact);
-    } else {
-        result.new.push(artifact);
+        None => ScanDisposition::New,
+        Some(state) if state.content_hash != new_hash => ScanDisposition::Modified,
+        Some(state) if state.schema_hash != current_schema_hash => ScanDisposition::Revalidated,
+        Some(_) => ScanDisposition::Unchanged,
     }
 }
 
@@ -312,13 +390,107 @@ fn current_time_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::make_store;
+    use crate::test_helpers::{make_artifact_type, make_store};
     use serde_json::json;
     use tempfile::TempDir;
 
     fn write_file(path: &Path, content: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn missing_workspace_is_empty_only_for_fresh_store() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let mut store = make_store(&tmp.path().join("store"), vec!["report"]);
+
+        let result = scan(&workspace, &mut store).unwrap();
+
+        assert_eq!(result, ScanResult::default());
+    }
+
+    #[test]
+    fn missing_workspace_with_existing_state_errors() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let store_dir = tmp.path().join("store");
+        let mut store = make_store(&store_dir, vec!["report"]);
+        store
+            .record(
+                "report",
+                "alpha",
+                Path::new("report/alpha.json"),
+                &json!({"title": "ok"}),
+            )
+            .unwrap();
+
+        let err = scan(&workspace, &mut store).unwrap_err();
+
+        assert!(matches!(err, ScanError::WorkspaceMissing(_)));
+        assert!(store.get("report", "alpha").is_some());
+        assert!(store_dir.join("report/alpha.json").exists());
+    }
+
+    #[test]
+    fn schema_change_revalidates_unchanged_file() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let artifact_path = workspace.join("report/alpha.json");
+        write_file(&artifact_path, r#"{"title":"ok"}"#);
+
+        let store_dir = tmp.path().join("store");
+        let mut old_store = crate::store::ArtifactStore::new(
+            vec![make_artifact_type(
+                "report",
+                json!({
+                    "type": "object",
+                    "required": ["title"],
+                    "properties": { "title": { "type": "string" } }
+                }),
+            )],
+            store_dir.clone(),
+        )
+        .unwrap();
+        old_store
+            .record_with_timestamp(
+                "report",
+                "alpha",
+                &artifact_path,
+                &json!({"title": "ok"}),
+                1234,
+            )
+            .unwrap();
+
+        let mut new_store = crate::store::ArtifactStore::new(
+            vec![make_artifact_type(
+                "report",
+                json!({
+                    "type": "object",
+                    "required": ["title", "status"],
+                    "properties": {
+                        "title": { "type": "string" },
+                        "status": { "type": "string" }
+                    }
+                }),
+            )],
+            store_dir,
+        )
+        .unwrap();
+
+        let result = scan(&workspace, &mut new_store).unwrap();
+
+        assert!(result.new.is_empty());
+        assert!(result.modified.is_empty());
+        assert_eq!(result.revalidated.len(), 1);
+        assert_eq!(
+            new_store.get("report", "alpha").unwrap().last_modified_ms,
+            1234
+        );
+        assert!(matches!(
+            new_store.get("report", "alpha").unwrap().status,
+            ValidationStatus::Invalid(_)
+        ));
     }
 
     #[test]
@@ -345,6 +517,7 @@ mod tests {
 
         assert_eq!(result.new.len(), 1);
         assert!(result.modified.is_empty());
+        assert!(result.revalidated.is_empty());
         assert!(result.invalid.is_empty());
         assert!(result.malformed.is_empty());
         assert_eq!(
@@ -363,6 +536,7 @@ mod tests {
         let result = scan(&workspace, &mut store).unwrap();
 
         assert_eq!(result.new.len(), 1);
+        assert!(result.revalidated.is_empty());
         assert_eq!(result.invalid.len(), 1);
         assert!(matches!(
             store.get("report", "bad").unwrap().status,
@@ -380,6 +554,7 @@ mod tests {
         let result = scan(&workspace, &mut store).unwrap();
 
         assert_eq!(result.new.len(), 1);
+        assert!(result.revalidated.is_empty());
         assert_eq!(result.malformed.len(), 1);
         assert!(matches!(
             store.get("report", "bad").unwrap().status,
@@ -408,6 +583,7 @@ mod tests {
         let result = scan(&workspace, &mut store).unwrap();
 
         assert_eq!(result.modified.len(), 1);
+        assert!(result.revalidated.is_empty());
         assert!(store.get("report", "item").unwrap().last_modified_ms > 1000);
     }
 

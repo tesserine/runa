@@ -38,9 +38,10 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), Sca
     println!("Workspace: {}", loaded.workspace_dir.display());
     println!();
     println!(
-        "Summary: {} new, {} modified, {} invalid, {} malformed, {} removed, {} unrecognized dir{}",
+        "Summary: {} new, {} modified, {} revalidated, {} invalid, {} malformed, {} removed, {} unrecognized dir{}",
         result.new.len(),
         result.modified.len(),
+        result.revalidated.len(),
         result.invalid.len(),
         result.malformed.len(),
         result.removed.len(),
@@ -54,6 +55,7 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), Sca
 
     print_refs("New", &result.new);
     print_refs("Modified", &result.modified);
+    print_refs("Revalidated", &result.revalidated);
     print_invalid("Invalid", &result.invalid);
     print_malformed("Malformed", &result.malformed);
     print_refs("Removed", &result.removed);

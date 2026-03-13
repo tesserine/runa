@@ -81,6 +81,7 @@ fn scan_formats_output_and_succeeds_with_findings() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Summary:"), "stdout: {stdout}");
     assert!(stdout.contains("New:"), "stdout: {stdout}");
+    assert!(stdout.contains("revalidated"), "stdout: {stdout}");
     assert!(stdout.contains("Invalid:"), "stdout: {stdout}");
     assert!(stdout.contains("Malformed:"), "stdout: {stdout}");
     assert!(stdout.contains("Removed:"), "stdout: {stdout}");
@@ -116,4 +117,48 @@ fn scan_returns_non_zero_on_workspace_io_failure() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("I/O error"), "stderr: {stderr}");
+}
+
+#[test]
+fn scan_returns_non_zero_when_workspace_is_missing_and_store_has_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    let store_dir = project_dir.join(".runa/store/constraints");
+    fs::create_dir_all(&store_dir).unwrap();
+    let stored_state = serde_json::json!({
+        "path": project_dir.join(".runa/workspace/constraints/good.json"),
+        "status": "valid",
+        "last_modified_ms": 1000,
+        "content_hash": "sha256:abc123",
+        "schema_hash": "sha256:def456"
+    });
+    fs::write(
+        store_dir.join("good.json"),
+        serde_json::to_string_pretty(&stored_state).unwrap(),
+    )
+    .unwrap();
+    fs::remove_dir_all(&workspace).unwrap();
+
+    let output = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "scan should fail when workspace is missing but store has state"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("workspace directory is missing"),
+        "stderr: {stderr}"
+    );
 }

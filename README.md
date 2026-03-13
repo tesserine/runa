@@ -34,7 +34,7 @@ Checks project health: artifact validity, skill readiness, and dependency cycles
 runa scan
 ```
 
-Scans the artifact workspace, reconciles it into `.runa/store/`, records valid, invalid, and malformed artifacts, and reports new/modified/removed instances plus unrecognized workspace directories. Exits 0 if reconciliation succeeds, even when findings are present.
+Scans the artifact workspace, reconciles it into `.runa/store/`, records valid, invalid, and malformed artifacts, and reports new/modified/revalidated/removed instances plus unrecognized workspace directories. If the workspace is missing, scan succeeds only when the store is still empty; otherwise it fails to avoid wiping stored state. Exits 0 if reconciliation succeeds, even when findings are present.
 
 ## Build
 

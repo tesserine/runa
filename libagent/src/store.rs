@@ -29,6 +29,9 @@ pub struct ArtifactState {
     pub last_modified_ms: u64,
     /// Content hash in the format `"sha256:<hex>"`.
     pub content_hash: String,
+    /// Schema hash in the format `"sha256:<hex>"`.
+    #[serde(default)]
+    pub schema_hash: String,
 }
 
 /// Validation status of an artifact instance.
@@ -120,6 +123,10 @@ fn canonical_json(value: &Value) -> String {
 pub(crate) fn content_hash(value: &Value) -> String {
     let canonical = canonical_json(value);
     raw_content_hash(canonical.as_bytes())
+}
+
+pub(crate) fn schema_hash(value: &Value) -> String {
+    content_hash(value)
 }
 
 pub(crate) fn raw_content_hash(bytes: &[u8]) -> String {
@@ -338,13 +345,23 @@ impl ArtifactStore {
         error: impl Into<String>,
         timestamp_ms: u64,
     ) -> Result<(), StoreError> {
+        let schema_hash = self.schema_hash_for(artifact_type)?;
         let state = ArtifactState {
             path: path.to_path_buf(),
             status: ValidationStatus::Malformed(error.into()),
             last_modified_ms: timestamp_ms,
             content_hash: raw_content_hash(raw_bytes),
+            schema_hash,
         };
         self.record_inner(artifact_type, instance_id, state)
+    }
+
+    pub(crate) fn schema_hash_for(&self, artifact_type: &str) -> Result<String, StoreError> {
+        let at = self
+            .artifact_types
+            .get(artifact_type)
+            .ok_or_else(|| StoreError::UnknownArtifactType(artifact_type.to_string()))?;
+        Ok(schema_hash(&at.schema))
     }
 
     fn build_state_from_json(
@@ -382,6 +399,7 @@ impl ArtifactStore {
             status,
             last_modified_ms: timestamp_ms,
             content_hash: hash,
+            schema_hash: schema_hash(&at.schema),
         })
     }
 
@@ -443,6 +461,7 @@ mod tests {
         assert_eq!(state.status, ValidationStatus::Valid);
         assert_eq!(state.path, path);
         assert!(state.content_hash.starts_with("sha256:"));
+        assert_eq!(state.schema_hash, schema_hash(&simple_schema()));
         assert!(state.last_modified_ms > 0);
     }
 
@@ -486,6 +505,7 @@ mod tests {
             ValidationStatus::Malformed("expected value".to_string())
         );
         assert_eq!(state.content_hash, raw_content_hash(br#"{ not json }"#));
+        assert_eq!(state.schema_hash, schema_hash(&simple_schema()));
     }
 
     #[test]
@@ -607,6 +627,7 @@ mod tests {
         assert_eq!(state.status, ValidationStatus::Valid);
         assert_eq!(state.path, path);
         assert_eq!(state.content_hash, content_hash(&data));
+        assert_eq!(state.schema_hash, schema_hash(&simple_schema()));
         assert!(state.last_modified_ms > 0);
     }
 

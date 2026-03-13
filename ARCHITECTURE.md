@@ -41,11 +41,11 @@ Dependency graph built from skill declarations. Edges derive from artifact relat
 
 ### `store.rs`
 
-Artifact state tracking keyed by `(type_name, instance_id)`. Each `ArtifactState` records the filesystem path, `ValidationStatus` (Valid, Invalid with violations, Malformed with a parse error, or Stale), millisecond-precision modification timestamp, and a `sha256:<hex>` content hash. Parsed JSON uses canonical JSON hashing (recursively sorted keys); malformed files hash raw bytes. Persists as JSON files under `.runa/store/{type_name}/{instance_id}.json`. Uses atomic write (tmp + rename).
+Artifact state tracking keyed by `(type_name, instance_id)`. Each `ArtifactState` records the filesystem path, `ValidationStatus` (Valid, Invalid with violations, Malformed with a parse error, or Stale), millisecond-precision modification timestamp, a `sha256:<hex>` content hash, and a `schema_hash` for the artifact type schema used during validation. Parsed JSON uses canonical JSON hashing (recursively sorted keys); malformed files hash raw bytes. Persists as JSON files under `.runa/store/{type_name}/{instance_id}.json`. Uses atomic write (tmp + rename).
 
 ### `scan.rs`
 
-Filesystem reconciliation from the artifact workspace into the store. `scan` treats `<workspace>/<type_name>/<instance_id>.json` as the artifact convention, ignores non-JSON files, reports unrecognized top-level directories, classifies new/modified/removed instances, and records invalid or malformed artifacts in store state. Modified means the content hash changed and `last_modified_ms` was updated to the scan timestamp.
+Filesystem reconciliation from the artifact workspace into the store. `scan` treats `<workspace>/<type_name>/<instance_id>.json` as the artifact convention, ignores non-JSON files, reports unrecognized top-level directories, classifies new/modified/revalidated/removed instances, and records invalid or malformed artifacts in store state. Modified means the content hash changed and `last_modified_ms` was updated to the scan timestamp. Revalidated means the artifact content was unchanged but the schema hash changed, so validation was rerun without updating `last_modified_ms`. If the workspace directory is missing, scan returns an error unless the store is still empty.
 
 ### `trigger.rs`
 
@@ -70,7 +70,7 @@ Returns `EnforcementError` on failure, containing the skill name, enforcement ph
       {instance_id}.json        # Agent-produced artifact file
   store/                        # Internal artifact state store (not configurable)
     {type_name}/
-      {instance_id}.json        # ArtifactState: path, status, last_modified_ms, content_hash
+      {instance_id}.json        # ArtifactState: path, status, last_modified_ms, content_hash, schema_hash
 ```
 
 ## CLI Commands
@@ -98,7 +98,7 @@ Exits 0 if no problems found, 1 otherwise.
 
 ### `runa scan`
 
-Runs the workspace reconciliation pass. Reads artifact files from the resolved workspace directory, updates `.runa/store/`, reports new/modified/removed artifacts, reports invalid and malformed artifacts separately, and lists unrecognized top-level workspace directories. Exits 0 on successful reconciliation and non-zero only for load/store/I/O failures.
+Runs the workspace reconciliation pass. Reads artifact files from the resolved workspace directory, updates `.runa/store/`, reports new/modified/revalidated/removed artifacts, reports invalid and malformed artifacts separately, and lists unrecognized top-level workspace directories. A missing workspace is treated as an error unless the store is still empty. Exits 0 on successful reconciliation and non-zero only for load/store/I/O failures.
 
 ## Key Design Patterns
 
