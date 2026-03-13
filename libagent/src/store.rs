@@ -342,39 +342,14 @@ impl ArtifactStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{make_artifact_type, make_store, simple_schema};
     use serde_json::json;
     use tempfile::TempDir;
-
-    fn make_artifact_type(name: &str, schema: Value) -> ArtifactType {
-        ArtifactType {
-            name: name.into(),
-            schema,
-        }
-    }
-
-    fn simple_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "title": { "type": "string" },
-                "score": { "type": "integer" }
-            },
-            "required": ["title"]
-        })
-    }
-
-    fn make_store(dir: &Path) -> ArtifactStore {
-        ArtifactStore::new(
-            vec![make_artifact_type("report", simple_schema())],
-            dir.to_path_buf(),
-        )
-        .unwrap()
-    }
 
     #[test]
     fn record_valid_artifact() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         let data = json!({"title": "Q1", "score": 95});
         let path = Path::new("reports/q1.json");
@@ -390,7 +365,7 @@ mod tests {
     #[test]
     fn record_invalid_artifact() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         let data = json!({"score": 42}); // missing required "title"
         store
@@ -409,7 +384,7 @@ mod tests {
     #[test]
     fn unknown_artifact_type_errors() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         let result = store.record("nonexistent", "x", Path::new("x.json"), &json!({}));
         assert!(matches!(
@@ -421,7 +396,7 @@ mod tests {
     #[test]
     fn is_valid_true_for_valid_false_for_invalid_stale_missing() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         // No instances recorded — false.
         assert!(!store.is_valid("report"));
@@ -454,7 +429,7 @@ mod tests {
 
         // Stale.
         let tmp3 = TempDir::new().unwrap();
-        let mut store3 = make_store(&tmp3.path().join("artifacts"));
+        let mut store3 = make_store(&tmp3.path().join("artifacts"), vec!["report"]);
         store3
             .record("report", "s", Path::new("s.json"), &json!({"title": "ok"}))
             .unwrap();
@@ -468,7 +443,7 @@ mod tests {
     #[test]
     fn invalidate_marks_stale() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         store
             .record(
@@ -528,7 +503,7 @@ mod tests {
     #[test]
     fn content_hash_changes_on_different_data() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         let data1 = json!({"title": "first"});
         let data2 = json!({"title": "second"});
@@ -548,7 +523,7 @@ mod tests {
     #[test]
     fn invalidate_noop_on_missing() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         // Should not panic or error — returns Ok for unrecorded instances.
         store.invalidate("report", "nonexistent").unwrap();
@@ -558,7 +533,7 @@ mod tests {
     #[test]
     fn multiple_instances_of_same_type() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         store
             .record(
@@ -620,7 +595,7 @@ mod tests {
 
         // Record with type "report".
         {
-            let mut store = make_store(&store_dir);
+            let mut store = make_store(&store_dir, vec!["report"]);
             store
                 .record(
                     "report",
@@ -640,7 +615,7 @@ mod tests {
     #[test]
     fn is_valid_checks_all_instances() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         // One valid instance.
         store
@@ -663,7 +638,7 @@ mod tests {
     #[test]
     fn has_any_invalid_true_with_invalid_instance() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         store
             .record("report", "bad", Path::new("b.json"), &json!({"score": 1}))
@@ -674,7 +649,7 @@ mod tests {
     #[test]
     fn has_any_invalid_false_when_all_valid() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         store
             .record(
@@ -690,7 +665,7 @@ mod tests {
     #[test]
     fn has_any_invalid_false_with_no_instances() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp.path().join("artifacts"));
+        let store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         assert!(!store.has_any_invalid("report"));
     }
@@ -698,7 +673,7 @@ mod tests {
     #[test]
     fn latest_modification_ms_returns_max() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         store
             .record_with_timestamp(
@@ -724,7 +699,7 @@ mod tests {
     #[test]
     fn latest_modification_ms_none_for_missing_type() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp.path().join("artifacts"));
+        let store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         assert_eq!(store.latest_modification_ms("report"), None);
         assert_eq!(store.latest_modification_ms("nonexistent"), None);
@@ -761,7 +736,7 @@ mod tests {
     #[test]
     fn instances_of_returns_sorted_pairs() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         store
             .record(
@@ -801,7 +776,7 @@ mod tests {
     #[test]
     fn instances_of_unknown_type_returns_empty() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp.path().join("artifacts"));
+        let store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         assert!(store.instances_of("nonexistent").is_empty());
     }
@@ -809,7 +784,7 @@ mod tests {
     #[test]
     fn instances_of_mixed_valid_invalid() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("artifacts"));
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         // Valid instance.
         store

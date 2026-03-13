@@ -21,7 +21,7 @@ cargo run --bin runa -- --version  # Run CLI
 ## Architecture
 
 **Workspace crates:**
-- `libagent` — Core library: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation
+- `libagent` — Core library: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, pre/post-execution enforcement
 - `runa-cli` — CLI binary (minimal, depends on libagent). Commands in `commands/`, shared project loading in `project.rs`
 
 **libagent modules:**
@@ -31,6 +31,7 @@ cargo run --bin runa -- --version  # Run CLI
 - `graph.rs` — Dependency graph from skill declarations: topological ordering, cycle detection, blocked-skill identification
 - `store.rs` — Artifact state tracking: validation status, content hashing, JSON persistence in `.runa/artifacts/`
 - `trigger.rs` — Trigger condition evaluation: recursive evaluator, six condition variants, pure function against TriggerContext
+- `enforcement.rs` — Pre/post-execution enforcement: `enforce_preconditions` checks `requires`, `enforce_postconditions` checks `produces`/`may_produce`, three failure variants (Missing, Invalid, Stale)
 
 **runa-cli modules:**
 - `project.rs` — Shared `State` struct and `load()` function: reads `.runa/state.toml`, parses manifest, builds graph, opens store

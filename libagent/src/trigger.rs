@@ -119,31 +119,10 @@ pub fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ArtifactType;
+    use crate::test_helpers::make_store;
     use serde_json::json;
     use std::path::Path;
     use tempfile::TempDir;
-
-    fn simple_schema() -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "title": { "type": "string" }
-            },
-            "required": ["title"]
-        })
-    }
-
-    fn make_store(dir: &Path, types: Vec<&str>) -> ArtifactStore {
-        let artifact_types: Vec<ArtifactType> = types
-            .into_iter()
-            .map(|name| ArtifactType {
-                name: name.into(),
-                schema: simple_schema(),
-            })
-            .collect();
-        ArtifactStore::new(artifact_types, dir.to_path_buf()).unwrap()
-    }
 
     fn empty_context(store: &ArtifactStore) -> TriggerContext<'_> {
         // Leaked to avoid lifetime issues in tests — fine for test code.
