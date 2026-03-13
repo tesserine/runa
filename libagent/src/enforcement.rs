@@ -90,9 +90,9 @@ impl fmt::Display for ArtifactFailure {
                     )
                 }
                 Relationship::MayProduce => {
-                    write!(
-                        f,
-                        "may_produce artifact type '{artifact_type}' which is missing"
+                    unreachable!(
+                        "may_produce artifacts are never reported as Missing — \
+                         absent may_produce is skipped, not an enforcement failure"
                     )
                 }
             },
@@ -420,6 +420,31 @@ mod tests {
         for failure in &err.failures {
             assert!(matches!(failure, ArtifactFailure::Missing { .. }));
         }
+    }
+
+    #[test]
+    fn mixed_invalid_and_stale_instances() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        // One invalid instance (missing required "title").
+        store
+            .record("doc", "bad", Path::new("b.json"), &json!({"bad": true}))
+            .unwrap();
+        // One valid instance, then mark it stale.
+        store
+            .record("doc", "ok", Path::new("ok.json"), &json!({"title": "ok"}))
+            .unwrap();
+        store.invalidate("doc", "ok").unwrap();
+
+        let skill = make_skill("design", &["doc"], &[], &[], &[]);
+        let err = enforce_preconditions(&skill, &store).unwrap_err();
+        assert_eq!(err.failures.len(), 1);
+        // Invalid takes precedence over Stale.
+        assert!(matches!(
+            &err.failures[0],
+            ArtifactFailure::Invalid { artifact_type, relationship: Relationship::Requires, violations }
+            if artifact_type == "doc" && !violations.is_empty()
+        ));
     }
 
     // --- Post-execution: enforce_postconditions ---
