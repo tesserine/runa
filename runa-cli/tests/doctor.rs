@@ -116,6 +116,34 @@ fn doctor_unready_skills_exit_one() {
 }
 
 #[test]
+fn doctor_implicitly_scans_workspace_before_reporting() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    fs::create_dir_all(project_dir.join(".runa/workspace/constraints")).unwrap();
+    fs::write(
+        project_dir.join(".runa/workspace/constraints/good.json"),
+        r#"{"title":"ok"}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("doctor")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "review should still be unready");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("design: ok"), "stdout: {stdout}");
+}
+
+#[test]
 fn doctor_with_invalid_artifacts_exit_one() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = dir.path().join("manifest.toml");
@@ -125,27 +153,10 @@ fn doctor_with_invalid_artifacts_exit_one() {
     fs::create_dir(&project_dir).unwrap();
     init_project(&project_dir, &manifest_path);
 
-    // Write an invalid artifact state file directly.
-    let artifact_dir = project_dir.join(".runa/store/constraints");
-    fs::create_dir_all(&artifact_dir).unwrap();
-    let invalid_state = serde_json::json!({
-        "path": "c.json",
-        "status": {
-            "invalid": [
-                {
-                    "artifact_type": "constraints",
-                    "description": "missing required field 'title'",
-                    "schema_path": "/required",
-                    "instance_path": ""
-                }
-            ]
-        },
-        "last_modified_ms": 1000,
-        "content_hash": "sha256:abc123"
-    });
+    fs::create_dir_all(project_dir.join(".runa/workspace/constraints")).unwrap();
     fs::write(
-        artifact_dir.join("bad.json"),
-        serde_json::to_string_pretty(&invalid_state).unwrap(),
+        project_dir.join(".runa/workspace/constraints/bad.json"),
+        r#"{"score":1}"#,
     )
     .unwrap();
 
@@ -174,19 +185,10 @@ fn doctor_with_malformed_artifacts_exit_one() {
     fs::create_dir(&project_dir).unwrap();
     init_project(&project_dir, &manifest_path);
 
-    let artifact_dir = project_dir.join(".runa/store/constraints");
-    fs::create_dir_all(&artifact_dir).unwrap();
-    let malformed_state = serde_json::json!({
-        "path": "c.json",
-        "status": {
-            "malformed": "expected value at line 1 column 1"
-        },
-        "last_modified_ms": 1000,
-        "content_hash": "sha256:abc123"
-    });
+    fs::create_dir_all(project_dir.join(".runa/workspace/constraints")).unwrap();
     fs::write(
-        artifact_dir.join("bad.json"),
-        serde_json::to_string_pretty(&malformed_state).unwrap(),
+        project_dir.join(".runa/workspace/constraints/bad.json"),
+        r#"{ nope }"#,
     )
     .unwrap();
 

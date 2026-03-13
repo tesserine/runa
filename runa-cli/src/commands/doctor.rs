@@ -1,19 +1,21 @@
 use std::fmt;
 use std::path::Path;
 
-use libagent::ValidationStatus;
+use libagent::{ScanError as StoreScanError, ValidationStatus};
 
 use crate::project::{self, ProjectError};
 
 #[derive(Debug)]
 pub enum DoctorError {
     Project(ProjectError),
+    Scan(StoreScanError),
 }
 
 impl fmt::Display for DoctorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DoctorError::Project(e) => write!(f, "{e}"),
+            DoctorError::Scan(e) => write!(f, "{e}"),
         }
     }
 }
@@ -22,13 +24,15 @@ impl std::error::Error for DoctorError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             DoctorError::Project(e) => Some(e),
+            DoctorError::Scan(e) => Some(e),
         }
     }
 }
 
 /// Run the doctor command. Returns `true` if healthy, `false` if problems found.
 pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, DoctorError> {
-    let loaded = project::load(working_dir, config_override).map_err(DoctorError::Project)?;
+    let mut loaded = project::load(working_dir, config_override).map_err(DoctorError::Project)?;
+    libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(DoctorError::Scan)?;
 
     let mut problems = 0;
 

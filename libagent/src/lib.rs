@@ -32,7 +32,10 @@ pub use enforcement::{
 pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use manifest::ManifestError;
 pub use model::{ArtifactType, Manifest, SkillDeclaration, TriggerCondition};
-pub use scan::{ArtifactRef, InvalidArtifact, MalformedArtifact, ScanError, ScanResult, scan};
+pub use scan::{
+    ArtifactRef, InvalidArtifact, MalformedArtifact, ScanError, ScanResult, UnreadableArtifact,
+    scan,
+};
 pub use store::{ArtifactState, ArtifactStore, StoreError, ValidationStatus};
 pub use trigger::{TriggerContext, TriggerResult, evaluate as evaluate_trigger};
 pub use validation::{ValidationError, Violation};

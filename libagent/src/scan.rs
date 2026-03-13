@@ -49,6 +49,12 @@ pub struct MalformedArtifact {
     pub error: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnreadableArtifact {
+    pub path: PathBuf,
+    pub error: String,
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ScanResult {
     pub new: Vec<ArtifactRef>,
@@ -56,6 +62,7 @@ pub struct ScanResult {
     pub revalidated: Vec<ArtifactRef>,
     pub invalid: Vec<InvalidArtifact>,
     pub malformed: Vec<MalformedArtifact>,
+    pub unreadable: Vec<UnreadableArtifact>,
     pub removed: Vec<ArtifactRef>,
     pub unrecognized_dirs: Vec<String>,
 }
@@ -105,6 +112,7 @@ pub fn scan(workspace_dir: &Path, store: &mut ArtifactStore) -> Result<ScanResul
         .collect();
     let existing_keys = store.all_instance_keys();
     let mut seen_keys = HashSet::new();
+    let mut skipped_types = HashSet::new();
     let mut result = ScanResult::default();
 
     if !workspace_dir.exists() {
@@ -133,13 +141,20 @@ pub fn scan(workspace_dir: &Path, store: &mut ArtifactStore) -> Result<ScanResul
             store,
             scan_timestamp_ms,
             &mut seen_keys,
+            &mut skipped_types,
             &mut result,
         )?;
     }
 
     result.unrecognized_dirs.sort();
+    result
+        .unreadable
+        .sort_by(|left, right| left.path.cmp(&right.path));
 
     for (artifact_type, instance_id) in existing_keys {
+        if skipped_types.contains(&artifact_type) {
+            continue;
+        }
         if seen_keys.contains(&(artifact_type.clone(), instance_id.clone())) {
             continue;
         }
@@ -170,16 +185,47 @@ fn scan_type_dir(
     store: &mut ArtifactStore,
     scan_timestamp_ms: u64,
     seen_keys: &mut HashSet<(String, String)>,
+    skipped_types: &mut HashSet<String>,
     result: &mut ScanResult,
 ) -> Result<(), ScanError> {
-    for entry in std::fs::read_dir(type_dir).map_err(ScanError::Io)? {
-        let entry = entry.map_err(ScanError::Io)?;
-        let file_type = entry.file_type().map_err(ScanError::Io)?;
+    let entries = match std::fs::read_dir(type_dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            skipped_types.insert(artifact_type.to_string());
+            result.unreadable.push(UnreadableArtifact {
+                path: type_dir.to_path_buf(),
+                error: err.to_string(),
+            });
+            return Ok(());
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                result.unreadable.push(UnreadableArtifact {
+                    path: type_dir.to_path_buf(),
+                    error: err.to_string(),
+                });
+                continue;
+            }
+        };
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(err) => {
+                result.unreadable.push(UnreadableArtifact {
+                    path,
+                    error: err.to_string(),
+                });
+                continue;
+            }
+        };
         if !file_type.is_file() {
             continue;
         }
 
-        let path = entry.path();
         if path.extension().is_none_or(|ext| ext != "json") {
             continue;
         }
@@ -192,7 +238,16 @@ fn scan_type_dir(
         seen_keys.insert((artifact_type.to_string(), instance_id.clone()));
 
         let existing = store.get(artifact_type, &instance_id).cloned();
-        let bytes = std::fs::read(&path).map_err(ScanError::Io)?;
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                result.unreadable.push(UnreadableArtifact {
+                    path: path.clone(),
+                    error: err.to_string(),
+                });
+                continue;
+            }
+        };
         let artifact = ArtifactInput {
             artifact_type,
             instance_id: &instance_id,
@@ -676,13 +731,7 @@ mod tests {
         let store_dir = tmp.path().join("store");
         let mut store = make_store(&store_dir, vec!["report"]);
         store
-            .record_with_timestamp(
-                "report",
-                "item",
-                &old_path,
-                &json!({"title": "ok"}),
-                1234,
-            )
+            .record_with_timestamp("report", "item", &old_path, &json!({"title": "ok"}), 1234)
             .unwrap();
 
         let result = scan(&new_workspace, &mut store).unwrap();
@@ -691,5 +740,39 @@ mod tests {
         assert_eq!(result, ScanResult::default());
         assert_eq!(state.path, new_path);
         assert_eq!(state.last_modified_ms, 1234);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_file_is_reported_and_existing_state_is_preserved() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let unreadable_path = workspace.join("report/item.json");
+        write_file(&unreadable_path, r#"{"title":"ok"}"#);
+        std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o0)).unwrap();
+
+        let store_dir = tmp.path().join("store");
+        let mut store = make_store(&store_dir, vec!["report"]);
+        store
+            .record_with_timestamp(
+                "report",
+                "item",
+                Path::new("old/report/item.json"),
+                &json!({"title": "ok"}),
+                1234,
+            )
+            .unwrap();
+
+        let result = scan(&workspace, &mut store).unwrap();
+        let state = store.get("report", "item").unwrap();
+
+        assert_eq!(result.unreadable.len(), 1);
+        assert_eq!(result.unreadable[0].path, unreadable_path);
+        assert_eq!(state.path, Path::new("old/report/item.json"));
+        assert_eq!(state.last_modified_ms, 1234);
+
+        std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 }

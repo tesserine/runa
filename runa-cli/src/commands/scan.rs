@@ -1,7 +1,7 @@
 use std::fmt;
 use std::path::Path;
 
-use libagent::{InvalidArtifact, MalformedArtifact, ScanError as LibScanError};
+use libagent::{InvalidArtifact, MalformedArtifact, ScanError as LibScanError, UnreadableArtifact};
 
 use crate::project::{self, ProjectError};
 
@@ -38,12 +38,13 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), Sca
     println!("Workspace: {}", loaded.workspace_dir.display());
     println!();
     println!(
-        "Summary: {} new, {} modified, {} revalidated, {} invalid, {} malformed, {} removed, {} unrecognized dir{}",
+        "Summary: {} new, {} modified, {} revalidated, {} invalid, {} malformed, {} unreadable, {} removed, {} unrecognized dir{}",
         result.new.len(),
         result.modified.len(),
         result.revalidated.len(),
         result.invalid.len(),
         result.malformed.len(),
+        result.unreadable.len(),
         result.removed.len(),
         result.unrecognized_dirs.len(),
         if result.unrecognized_dirs.len() == 1 {
@@ -58,6 +59,7 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), Sca
     print_refs("Revalidated", &result.revalidated);
     print_invalid("Invalid", &result.invalid);
     print_malformed("Malformed", &result.malformed);
+    print_unreadable("Unreadable", &result.unreadable);
     print_refs("Removed", &result.removed);
 
     if !result.unrecognized_dirs.is_empty() {
@@ -123,5 +125,17 @@ fn print_malformed(label: &str, artifacts: &[MalformedArtifact]) {
             artifact.path.display(),
             artifact.error
         );
+    }
+}
+
+fn print_unreadable(label: &str, artifacts: &[UnreadableArtifact]) {
+    if artifacts.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("{label}:");
+    for artifact in artifacts {
+        println!("  {}: {}", artifact.path.display(), artifact.error);
     }
 }

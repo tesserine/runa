@@ -30,15 +30,15 @@ cargo run --bin runa -- --version  # Run CLI
 - `validation.rs` — JSON Schema validation for artifact instances, collects all violations before returning
 - `graph.rs` — Dependency graph from skill declarations: topological ordering, cycle detection, blocked-skill identification
 - `store.rs` — Artifact state tracking: validation status, content hashing, schema hashing, JSON persistence in `.runa/store/`
-- `scan.rs` — Workspace reconciliation: walk `artifacts_dir`, classify new/modified/revalidated/removed instances, record invalid and malformed artifacts in store state, and fail if a previously-populated workspace disappears
+- `scan.rs` — Workspace reconciliation: walk `artifacts_dir`, classify new/modified/revalidated/removed instances, record invalid and malformed artifacts in store state, collect unreadable file findings, and fail if a previously-populated workspace disappears
 - `trigger.rs` — Trigger condition evaluation: recursive evaluator, six condition variants, pure function against TriggerContext
 - `enforcement.rs` — Pre/post-execution enforcement: `enforce_preconditions` checks `requires`, `enforce_postconditions` checks `produces`/`may_produce`, three failure variants (Missing, Invalid, Stale)
 
 **runa-cli modules:**
 - `project.rs` — `Config` and `State` structs, config resolution chain (`--config` / `RUNA_CONFIG` / `.runa/config.toml` / XDG), `load()` function: resolves workspace and store paths, reads state, parses manifest, builds graph, opens store
 - `commands/init.rs` — `runa init`: parse manifest, create `.runa/config.toml`, `.runa/state.toml`, `.runa/store/`, and the artifact workspace
-- `commands/list.rs` — `runa list`: display skills in execution order with dependencies and blocked status
-- `commands/doctor.rs` — `runa doctor`: check artifact health, skill readiness, cycle detection; exit 1 on problems
+- `commands/list.rs` — `runa list`: implicitly scan, then display skills in execution order with dependencies and blocked status
+- `commands/doctor.rs` — `runa doctor`: implicitly scan, then check artifact health, skill readiness, cycle detection; exit 1 on problems
 - `commands/scan.rs` — `runa scan`: reconcile the artifact workspace into the internal store and report findings
 
 **Key design:**

@@ -112,6 +112,37 @@ fn list_shows_blocked_status() {
 }
 
 #[test]
+fn list_implicitly_scans_workspace_before_reporting() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    fs::create_dir_all(project_dir.join(".runa/workspace/constraints")).unwrap();
+    fs::write(
+        project_dir.join(".runa/workspace/constraints/good.json"),
+        r#"{"title":"ok"}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("list")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("missing artifact type 'constraints'"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
 fn list_errors_on_uninitialized_project() {
     let dir = tempfile::tempdir().unwrap();
 
