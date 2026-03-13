@@ -40,6 +40,7 @@ cargo run --bin runa -- --version  # Run CLI
 - `commands/list.rs` — `runa list`: implicitly scan, then display skills in execution order with dependencies and blocked status
 - `commands/doctor.rs` — `runa doctor`: implicitly scan, then check artifact health, skill readiness, cycle detection; exit 1 on problems
 - `commands/scan.rs` — `runa scan`: reconcile the artifact workspace into the internal store and report findings
+- `commands/status.rs` — `runa status`: implicitly scan, then classify skills as READY / BLOCKED / WAITING; optional `--json` output with versioned machine-readable status
 
 **Key design:**
 - `TriggerCondition` uses tagged enum serialization (`#[serde(tag = "type")]`) with `all_of`/`any_of` composition

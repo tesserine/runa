@@ -100,6 +100,20 @@ Exits 0 if no problems found, 1 otherwise.
 
 Runs the workspace reconciliation pass. Reads artifact files from the resolved workspace directory, updates `.runa/store/`, reports new/modified/revalidated/removed artifacts, reports invalid, malformed, and unreadable entries separately, and lists unrecognized top-level workspace directories. A missing workspace is treated as an error unless the store is still empty. Per-file read failures are findings, not command failures. Exits 0 on successful reconciliation and non-zero only for load/store/I/O failures.
 
+### `runa status`
+
+Runs an implicit workspace scan, then evaluates every skill against current runtime state. Classification is ordered and mutually exclusive: `WAITING` when the trigger is not satisfied, `BLOCKED` when the trigger is satisfied but `enforce_preconditions` fails, and `READY` otherwise. Uses an empty `TriggerContext` for activation timestamps and active signals because no runtime state loop exists yet.
+
+Text output groups skills as `READY`, `BLOCKED`, then `WAITING`, preserving the graph-derived skill order within each group. `READY` entries list valid required and accepted artifact instances, `BLOCKED` entries list required artifact failures (`missing`, `invalid`, `stale`, `scan_incomplete`), and `WAITING` entries list unsatisfied trigger conditions. When scan reconciliation is partial, status prints scan warnings before the skill groups and treats any skill whose `requires` includes an affected artifact type as blocked because readiness cannot be verified; affected `accepts` types remain non-blocking and are omitted from the reported inputs.
+
+`--json` emits a versioned envelope:
+- `version` — integer envelope version, currently `1`
+- `methodology` — manifest name
+- `scan_warnings` — array of human-readable warnings for partial scan findings, empty when scan reconciliation is complete
+- `skills` — flat ordered array of skill objects with `name`, `status`, `trigger`, plus the status-specific field `inputs`, `precondition_failures`, or `unsatisfied_conditions`
+
+Exits 0 for successful status evaluation regardless of whether skills are ready, blocked, or waiting. Non-zero exit remains reserved for project-load, scan, or serialization failures.
+
 ## Key Design Patterns
 
 - **Custom error types with source chains.** Each module defines its own error enum implementing `std::fmt::Display` and `std::error::Error` with `source()` for chaining.
