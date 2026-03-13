@@ -97,7 +97,7 @@ impl DependencyGraph {
 
         // Build producer maps.
         // hard_producer: artifact -> skill index (from `produces`)
-        // soft_producer: artifact -> skill index (from `may_produce`)
+        // soft_producer: artifact -> skill indices (from `may_produce`)
         let mut hard_producer: HashMap<String, usize> = HashMap::new();
         let mut soft_producer: HashMap<String, Vec<usize>> = HashMap::new();
 
@@ -247,11 +247,9 @@ impl DependencyGraph {
 
     /// Return skills whose `requires` are not all present in `available_artifacts`.
     pub fn blocked_skills(&self, available_artifacts: &HashSet<String>) -> Vec<&str> {
-        self.requires_per_skill
-            .iter()
-            .enumerate()
-            .filter(|(_, reqs)| reqs.iter().any(|r| !available_artifacts.contains(r)))
-            .map(|(idx, _)| self.skill_names[idx].as_str())
+        self.blocked_skills_with_reasons(available_artifacts)
+            .into_iter()
+            .map(|(name, _)| name)
             .collect()
     }
 
