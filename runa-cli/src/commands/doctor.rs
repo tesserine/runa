@@ -32,11 +32,22 @@ impl std::error::Error for DoctorError {
 /// Run the doctor command. Returns `true` if healthy, `false` if problems found.
 pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, DoctorError> {
     let mut loaded = project::load(working_dir, config_override).map_err(DoctorError::Project)?;
-    libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(DoctorError::Scan)?;
+    let scan_result =
+        libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(DoctorError::Scan)?;
 
     let mut problems = 0;
 
     println!("Methodology: {}", loaded.manifest.name);
+
+    if !scan_result.unreadable.is_empty() {
+        println!();
+        println!("Scan:");
+        for entry in &scan_result.unreadable {
+            problems += 1;
+            println!("  unreadable: {}", entry.path.display());
+            println!("    {}", entry.error);
+        }
+    }
 
     // --- Artifact health ---
     println!();
