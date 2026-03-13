@@ -2,10 +2,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::project::State;
-
-const RUNA_DIR: &str = ".runa";
-const STATE_FILENAME: &str = "state.toml";
+use crate::project::{RUNA_DIR, STATE_FILENAME, State};
 
 #[derive(Debug)]
 pub struct InitSummary {

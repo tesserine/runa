@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 
@@ -54,10 +54,10 @@ pub fn run(working_dir: &Path) -> Result<(), ListError> {
         .collect();
 
     let blocked = loaded.graph.blocked_skills_with_reasons(&available);
-    let blocked_map: std::collections::HashMap<&str, Vec<&str>> = blocked.into_iter().collect();
+    let blocked_map: HashMap<&str, Vec<&str>> = blocked.into_iter().collect();
 
     // Build a lookup from skill name to declaration.
-    let skill_map: std::collections::HashMap<&str, &libagent::SkillDeclaration> = loaded
+    let skill_map: HashMap<&str, &libagent::SkillDeclaration> = loaded
         .manifest
         .skills
         .iter()

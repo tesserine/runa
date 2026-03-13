@@ -29,11 +29,6 @@ pub enum GraphError {
         first: String,
         second: String,
     },
-    /// A required artifact has no producer (neither `produces` nor `may_produce`).
-    UnmetDependency {
-        skill: String,
-        artifact_type: String,
-    },
 }
 
 impl fmt::Display for GraphError {
@@ -49,13 +44,6 @@ impl fmt::Display for GraphError {
             } => write!(
                 f,
                 "artifact type '{artifact_type}' is produced by both '{first}' and '{second}'"
-            ),
-            GraphError::UnmetDependency {
-                skill,
-                artifact_type,
-            } => write!(
-                f,
-                "skill '{skill}' requires artifact type '{artifact_type}' but no skill produces it"
             ),
         }
     }
@@ -89,9 +77,10 @@ pub struct DependencyGraph {
 impl DependencyGraph {
     /// Build a dependency graph from skill declarations.
     ///
-    /// Validates that skill names are unique, no two skills both `produces` the
-    /// same artifact type, and every `requires` artifact has a producer. Returns
-    /// `GraphError` if any of these checks fail.
+    /// Validates that skill names are unique and no two skills both `produces` the
+    /// same artifact type. Required artifacts with no producer are treated as
+    /// external dependencies (no graph edge). Returns `GraphError` on validation
+    /// failure.
     pub fn build(skills: &[SkillDeclaration]) -> Result<DependencyGraph, GraphError> {
         let n = skills.len();
 
@@ -110,7 +99,7 @@ impl DependencyGraph {
         // hard_producer: artifact -> skill index (from `produces`)
         // soft_producer: artifact -> skill index (from `may_produce`)
         let mut hard_producer: HashMap<String, usize> = HashMap::new();
-        let mut soft_producer: HashMap<String, usize> = HashMap::new();
+        let mut soft_producer: HashMap<String, Vec<usize>> = HashMap::new();
 
         for (idx, skill) in skills.iter().enumerate() {
             for artifact in &skill.produces {
@@ -124,8 +113,8 @@ impl DependencyGraph {
                 hard_producer.insert(artifact.clone(), idx);
             }
             for artifact in &skill.may_produce {
-                // may_produce x may_produce is allowed; first one wins for edge resolution.
-                soft_producer.entry(artifact.clone()).or_insert(idx);
+                // may_produce x may_produce is allowed; all producers get edges.
+                soft_producer.entry(artifact.clone()).or_default().push(idx);
             }
         }
 
@@ -140,25 +129,23 @@ impl DependencyGraph {
             requires_per_skill.push(skill.requires.clone());
 
             // requires -> produces = hard edge
-            // requires -> may_produce = soft edge
-            // requires -> nothing = UnmetDependency
+            // requires -> may_produce = soft edge (to all producers)
+            // requires -> nothing = external dependency (no edge)
             for artifact in &skill.requires {
                 if let Some(&producer_idx) = hard_producer.get(artifact) {
                     if producer_idx != idx {
                         hard_deps[idx].push(producer_idx);
                         hard_dependents[producer_idx].push(idx);
                     }
-                } else if let Some(&producer_idx) = soft_producer.get(artifact) {
-                    if producer_idx != idx {
-                        soft_deps[idx].push(producer_idx);
-                        soft_dependents[producer_idx].push(idx);
+                } else if let Some(producer_indices) = soft_producer.get(artifact) {
+                    for &producer_idx in producer_indices {
+                        if producer_idx != idx {
+                            soft_deps[idx].push(producer_idx);
+                            soft_dependents[producer_idx].push(idx);
+                        }
                     }
-                } else {
-                    return Err(GraphError::UnmetDependency {
-                        skill: skill.name.clone(),
-                        artifact_type: artifact.clone(),
-                    });
                 }
+                // No producer: external dependency — no graph edge needed.
             }
 
             // accepts -> any producer = soft edge
@@ -169,10 +156,12 @@ impl DependencyGraph {
                         soft_deps[idx].push(producer_idx);
                         soft_dependents[producer_idx].push(idx);
                     }
-                } else if let Some(&producer_idx) = soft_producer.get(artifact) {
-                    if producer_idx != idx {
-                        soft_deps[idx].push(producer_idx);
-                        soft_dependents[producer_idx].push(idx);
+                } else if let Some(producer_indices) = soft_producer.get(artifact) {
+                    for &producer_idx in producer_indices {
+                        if producer_idx != idx {
+                            soft_deps[idx].push(producer_idx);
+                            soft_dependents[producer_idx].push(idx);
+                        }
                     }
                 }
             }
@@ -726,20 +715,49 @@ mod tests {
         assert!(DependencyGraph::build(&skills).is_ok());
     }
 
+    // --- External dependencies ---
+
     #[test]
-    fn unmet_dependency() {
+    fn external_dependency_builds_successfully() {
+        // A requires X but no skill produces X — external dependency.
         let skills = vec![skill("A", &["X"], &[])];
-        let err = DependencyGraph::build(&skills).unwrap_err();
-        assert_eq!(
-            err,
-            GraphError::UnmetDependency {
-                skill: "A".into(),
-                artifact_type: "X".into(),
-            }
-        );
+        let graph = DependencyGraph::build(&skills).unwrap();
+        let order = graph.topological_order().unwrap();
+        assert_eq!(order, vec!["A"]);
+        assert!(graph.dependencies_of("A").is_empty());
     }
 
-    // --- Display impls ---
+    #[test]
+    fn external_dependency_reported_as_blocked() {
+        // A requires X (external). blocked_skills should report it when X unavailable.
+        let skills = vec![skill("A", &["X"], &[])];
+        let graph = DependencyGraph::build(&skills).unwrap();
+        let blocked = graph.blocked_skills(&HashSet::new());
+        assert_eq!(blocked, vec!["A"]);
+        // When X is available, A is unblocked.
+        let available: HashSet<String> = ["X".into()].into();
+        let blocked = graph.blocked_skills(&available);
+        assert!(blocked.is_empty());
+    }
+
+    // --- Multiple may_produce producers ---
+
+    #[test]
+    fn multiple_may_produce_creates_soft_edges_to_all() {
+        // A and B both may_produce X. C requires X.
+        // C should have soft edges to both A and B.
+        let skills = vec![
+            skill_with_may("A", &[], &[], &["X"]),
+            skill_with_may("B", &[], &[], &["X"]),
+            skill("C", &["X"], &[]),
+        ];
+        let graph = DependencyGraph::build(&skills).unwrap();
+        let order = graph.topological_order().unwrap();
+        assert_eq!(order.len(), 3);
+        // Both A and B should come before C in topo order.
+        assert_before(&order, "A", "C");
+        assert_before(&order, "B", "C");
+    }
 
     // --- blocked_skills_with_reasons ---
 

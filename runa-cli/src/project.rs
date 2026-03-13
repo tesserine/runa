@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use libagent::{ArtifactStore, DependencyGraph, GraphError, Manifest, ManifestError, StoreError};
 
-const RUNA_DIR: &str = ".runa";
-const STATE_FILENAME: &str = "state.toml";
+pub const RUNA_DIR: &str = ".runa";
+pub const STATE_FILENAME: &str = "state.toml";
 const ARTIFACTS_DIR: &str = "artifacts";
 
 /// On-disk format for `.runa/state.toml`.
