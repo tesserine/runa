@@ -316,7 +316,7 @@ trigger = { type = "all_of", conditions = [
         skills[1]["unsatisfied_conditions"],
         serde_json::json!([
             "on_signal(approve): signal 'approve' is not active",
-            "on_artifact(implementation): artifact type 'implementation' has invalid or stale instances",
+            "on_artifact(implementation): artifact type 'implementation' has invalid, malformed, or stale instances",
             "on_signal(override): signal 'override' is not active"
         ])
     );
@@ -1197,7 +1197,7 @@ trigger = { type = "on_artifact", name = "report" }
     assert_eq!(
         skills[0]["unsatisfied_conditions"],
         serde_json::json!([
-            "on_artifact(report): artifact type 'report' has invalid or stale instances"
+            "on_artifact(report): artifact type 'report' has invalid, malformed, or stale instances"
         ])
     );
     assert!(skills[0].get("precondition_failures").is_none());

@@ -53,7 +53,7 @@ pub fn evaluate(
                     )
                 }) {
                     TriggerResult::NotSatisfied(format!(
-                        "artifact type '{name}' has invalid or stale instances"
+                        "artifact type '{name}' has invalid, malformed, or stale instances"
                     ))
                 } else {
                     TriggerResult::NotSatisfied(format!("artifact type '{name}' is not valid"))
@@ -181,6 +181,30 @@ mod tests {
             evaluate(&cond, &ctx, "skill"),
             TriggerResult::NotSatisfied(_)
         ));
+    }
+
+    #[test]
+    fn on_artifact_mentions_malformed_instances_in_failure_reason() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        store
+            .record_malformed(
+                "doc",
+                "bad",
+                Path::new("bad.json"),
+                br#"{"title":"A""#,
+                "eof",
+            )
+            .unwrap();
+
+        let ctx = empty_context(&store);
+        let cond = TriggerCondition::OnArtifact { name: "doc".into() };
+        assert_eq!(
+            evaluate(&cond, &ctx, "skill"),
+            TriggerResult::NotSatisfied(
+                "artifact type 'doc' has invalid, malformed, or stale instances".into()
+            )
+        );
     }
 
     #[test]
