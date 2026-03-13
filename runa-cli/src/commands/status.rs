@@ -107,6 +107,12 @@ struct ScanFindings {
     warnings: Vec<String>,
 }
 
+struct TriggerEvaluation {
+    satisfied: bool,
+    trusted: bool,
+    scan_types: Vec<String>,
+}
+
 pub fn run(
     working_dir: &Path,
     config_override: Option<&Path>,
@@ -154,13 +160,20 @@ pub fn run(
             continue;
         };
 
-        let trigger_state = match evaluate_trigger(&skill.trigger, &context, &skill.name) {
-            TriggerResult::Satisfied => TriggerState::Satisfied,
-            TriggerResult::NotSatisfied(_) => TriggerState::NotSatisfied,
+        let trigger_eval = evaluate_trigger_trust(
+            &skill.trigger,
+            &context,
+            &skill.name,
+            &scan_findings.affected_types,
+        );
+        let trigger_state = if trigger_eval.satisfied {
+            TriggerState::Satisfied
+        } else {
+            TriggerState::NotSatisfied
         };
 
         let scan_failures =
-            scan_incomplete_failures(skill, &context, &scan_findings, &skill.name, trigger_state);
+            scan_incomplete_failures(skill, &scan_findings, &trigger_eval.scan_types);
         let entry = if !scan_failures.is_empty() {
             SkillEntry {
                 name: skill.name.clone(),
@@ -328,18 +341,10 @@ fn failure_entry(failure: &libagent::ArtifactFailure) -> FailureEntry {
 
 fn scan_incomplete_failures(
     skill: &libagent::SkillDeclaration,
-    context: &TriggerContext<'_>,
     scan_findings: &ScanFindings,
-    skill_name: &str,
-    trigger_state: TriggerState,
+    trigger_scan_types: &[String],
 ) -> Vec<FailureEntry> {
-    let mut artifact_types = doubtful_trigger_artifact_types(
-        &skill.trigger,
-        context,
-        skill_name,
-        &scan_findings.affected_types,
-        trigger_state,
-    );
+    let mut artifact_types = trigger_scan_types.to_vec();
 
     for artifact_type in &skill.requires {
         if scan_findings
@@ -360,72 +365,176 @@ fn scan_incomplete_failures(
         .collect()
 }
 
-fn doubtful_trigger_artifact_types(
+fn evaluate_trigger_trust(
     condition: &libagent::TriggerCondition,
     context: &TriggerContext<'_>,
     skill_name: &str,
     affected_types: &HashSet<String>,
-    trigger_state: TriggerState,
-) -> Vec<String> {
-    if !matches!(trigger_state, TriggerState::Satisfied) {
-        return Vec::new();
-    }
-
+) -> TriggerEvaluation {
     match condition {
-        libagent::TriggerCondition::OnArtifact { name } => {
-            if affected_types.contains(name.as_str()) {
-                vec![name.clone()]
-            } else {
-                Vec::new()
-            }
+        libagent::TriggerCondition::OnArtifact { name } => primitive_trigger_eval(
+            condition,
+            context,
+            skill_name,
+            affected_types.contains(name.as_str()),
+            true,
+            true,
+            Some(name.clone()),
+        ),
+        libagent::TriggerCondition::OnInvalid { name } => primitive_trigger_eval(
+            condition,
+            context,
+            skill_name,
+            affected_types.contains(name.as_str()),
+            true,
+            false,
+            Some(name.clone()),
+        ),
+        libagent::TriggerCondition::OnChange { name } => primitive_trigger_eval(
+            condition,
+            context,
+            skill_name,
+            affected_types.contains(name.as_str()),
+            true,
+            false,
+            Some(name.clone()),
+        ),
+        libagent::TriggerCondition::OnSignal { .. } => {
+            primitive_trigger_eval(condition, context, skill_name, false, false, false, None)
         }
-        libagent::TriggerCondition::OnChange { .. }
-        | libagent::TriggerCondition::OnInvalid { .. }
-        | libagent::TriggerCondition::OnSignal { .. } => Vec::new(),
         libagent::TriggerCondition::AllOf { conditions } => {
-            let mut refs = Vec::new();
-            for child in conditions {
-                append_unique(
-                    &mut refs,
-                    doubtful_trigger_artifact_types(
-                        child,
-                        context,
-                        skill_name,
-                        affected_types,
-                        TriggerState::Satisfied,
-                    ),
-                );
-            }
-            refs
-        }
-        libagent::TriggerCondition::AnyOf { conditions } => {
-            let mut satisfied_children = Vec::new();
+            let children: Vec<_> = conditions
+                .iter()
+                .map(|child| evaluate_trigger_trust(child, context, skill_name, affected_types))
+                .collect();
 
-            for child in conditions {
-                if matches!(
-                    evaluate_trigger(child, context, skill_name),
-                    TriggerResult::Satisfied
-                ) {
-                    let child_refs = doubtful_trigger_artifact_types(
-                        child,
-                        context,
-                        skill_name,
-                        affected_types,
-                        TriggerState::Satisfied,
-                    );
-                    if child_refs.is_empty() {
-                        return Vec::new();
+            if children.iter().all(|child| child.satisfied) {
+                let mut scan_types = Vec::new();
+                let mut trusted = true;
+                for child in &children {
+                    if !child.trusted {
+                        trusted = false;
+                        append_unique(&mut scan_types, child.scan_types.clone());
                     }
-                    satisfied_children.push(child_refs);
+                }
+                TriggerEvaluation {
+                    satisfied: true,
+                    trusted,
+                    scan_types,
+                }
+            } else if children
+                .iter()
+                .any(|child| !child.satisfied && child.trusted)
+            {
+                TriggerEvaluation {
+                    satisfied: false,
+                    trusted: true,
+                    scan_types: Vec::new(),
+                }
+            } else {
+                let mut scan_types = Vec::new();
+                for child in &children {
+                    if !child.trusted {
+                        append_unique(&mut scan_types, child.scan_types.clone());
+                    }
+                }
+                TriggerEvaluation {
+                    satisfied: false,
+                    trusted: false,
+                    scan_types,
                 }
             }
-
-            let mut refs = Vec::new();
-            for child_refs in satisfied_children {
-                append_unique(&mut refs, child_refs);
-            }
-            refs
         }
+        libagent::TriggerCondition::AnyOf { conditions } => {
+            if conditions.is_empty() {
+                return TriggerEvaluation {
+                    satisfied: false,
+                    trusted: true,
+                    scan_types: Vec::new(),
+                };
+            }
+
+            let children: Vec<_> = conditions
+                .iter()
+                .map(|child| evaluate_trigger_trust(child, context, skill_name, affected_types))
+                .collect();
+
+            if children.iter().any(|child| child.satisfied && child.trusted) {
+                TriggerEvaluation {
+                    satisfied: true,
+                    trusted: true,
+                    scan_types: Vec::new(),
+                }
+            } else if children.iter().any(|child| child.satisfied) {
+                let mut scan_types = Vec::new();
+                for child in &children {
+                    if child.satisfied && !child.trusted {
+                        append_unique(&mut scan_types, child.scan_types.clone());
+                    }
+                }
+                TriggerEvaluation {
+                    satisfied: true,
+                    trusted: false,
+                    scan_types,
+                }
+            } else if children
+                .iter()
+                .all(|child| !child.satisfied && child.trusted)
+            {
+                TriggerEvaluation {
+                    satisfied: false,
+                    trusted: true,
+                    scan_types: Vec::new(),
+                }
+            } else {
+                let mut scan_types = Vec::new();
+                for child in &children {
+                    if !child.satisfied && !child.trusted {
+                        append_unique(&mut scan_types, child.scan_types.clone());
+                    }
+                }
+                TriggerEvaluation {
+                    satisfied: false,
+                    trusted: false,
+                    scan_types,
+                }
+            }
+        }
+    }
+}
+
+fn primitive_trigger_eval(
+    condition: &libagent::TriggerCondition,
+    context: &TriggerContext<'_>,
+    skill_name: &str,
+    affected: bool,
+    untrustworthy_when_not_satisfied: bool,
+    untrustworthy_when_satisfied: bool,
+    artifact_type: Option<String>,
+) -> TriggerEvaluation {
+    let satisfied = matches!(
+        evaluate_trigger(condition, context, skill_name),
+        TriggerResult::Satisfied
+    );
+
+    let untrusted = if affected {
+        if satisfied {
+            untrustworthy_when_satisfied
+        } else {
+            untrustworthy_when_not_satisfied
+        }
+    } else {
+        false
+    };
+
+    TriggerEvaluation {
+        satisfied,
+        trusted: !untrusted,
+        scan_types: if untrusted {
+            artifact_type.into_iter().collect()
+        } else {
+            Vec::new()
+        },
     }
 }
 

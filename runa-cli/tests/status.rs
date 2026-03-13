@@ -908,3 +908,164 @@ trigger = { type = "any_of", conditions = [
     assert_eq!(skills[0]["status"], "ready");
     assert_eq!(skills[0]["trigger"], "satisfied");
 }
+
+#[cfg(unix)]
+#[test]
+fn status_blocks_on_artifact_when_only_unreadable_instances_exist() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "report"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[skills]]
+name = "publish"
+trigger = { type = "on_artifact", name = "report" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("report")).unwrap();
+    let unreadable = workspace.join("report/hidden.json");
+    fs::write(&unreadable, r#"{"title":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let skills = value["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["name"], "publish");
+    assert_eq!(skills[0]["status"], "blocked");
+    assert_eq!(skills[0]["trigger"], "not_satisfied");
+    assert_eq!(
+        skills[0]["precondition_failures"],
+        serde_json::json!([
+            {
+                "artifact_type": "report",
+                "reason": "scan_incomplete"
+            }
+        ])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn status_blocks_untrustworthy_not_satisfied_on_invalid_and_on_change_triggers() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "report"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[artifact_types]]
+name = "doc"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[skills]]
+name = "repair"
+trigger = { type = "on_invalid", name = "report" }
+
+[[skills]]
+name = "review"
+trigger = { type = "on_change", name = "doc" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("report")).unwrap();
+    fs::create_dir_all(workspace.join("doc")).unwrap();
+    let unreadable_report = workspace.join("report/hidden.json");
+    fs::write(&unreadable_report, r#"{"bad":true}"#).unwrap();
+    fs::set_permissions(&unreadable_report, fs::Permissions::from_mode(0o0)).unwrap();
+    let unreadable_doc = workspace.join("doc/hidden.json");
+    fs::write(&unreadable_doc, r#"{"title":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable_doc, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable_report, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::set_permissions(&unreadable_doc, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let skills = value["skills"].as_array().unwrap();
+    let repair = skills
+        .iter()
+        .find(|skill| skill["name"] == "repair")
+        .unwrap();
+    let review = skills
+        .iter()
+        .find(|skill| skill["name"] == "review")
+        .unwrap();
+
+    assert_eq!(repair["status"], "blocked");
+    assert_eq!(repair["trigger"], "not_satisfied");
+    assert_eq!(
+        repair["precondition_failures"],
+        serde_json::json!([
+            {
+                "artifact_type": "report",
+                "reason": "scan_incomplete"
+            }
+        ])
+    );
+
+    assert_eq!(review["status"], "blocked");
+    assert_eq!(review["trigger"], "not_satisfied");
+    assert_eq!(
+        review["precondition_failures"],
+        serde_json::json!([
+            {
+                "artifact_type": "doc",
+                "reason": "scan_incomplete"
+            }
+        ])
+    );
+}
