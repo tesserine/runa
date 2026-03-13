@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::model::TriggerCondition;
-use crate::store::ArtifactStore;
+use crate::store::{ArtifactStore, ValidationStatus};
 
 /// Outcome of evaluating a trigger condition against current state.
 ///
@@ -39,9 +39,25 @@ pub fn evaluate(
             if context.store.is_valid(name) {
                 TriggerResult::Satisfied
             } else {
-                TriggerResult::NotSatisfied(format!(
-                    "artifact type '{name}' is not valid (missing or has invalid/stale instances)"
-                ))
+                let instances = context.store.instances_of(name);
+                if instances.is_empty() {
+                    TriggerResult::NotSatisfied(format!(
+                        "no valid instances of artifact type '{name}' exist"
+                    ))
+                } else if instances.iter().any(|(_, state)| {
+                    matches!(
+                        state.status,
+                        ValidationStatus::Invalid(_)
+                            | ValidationStatus::Malformed(_)
+                            | ValidationStatus::Stale
+                    )
+                }) {
+                    TriggerResult::NotSatisfied(format!(
+                        "artifact type '{name}' has invalid or stale instances"
+                    ))
+                } else {
+                    TriggerResult::NotSatisfied(format!("artifact type '{name}' is not valid"))
+                }
             }
         }
 

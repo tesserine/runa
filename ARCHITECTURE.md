@@ -6,7 +6,7 @@ Runa is a cognitive runtime for AI agents. This document describes the codebase 
 
 Two crates, Rust 2024 edition, resolver v3:
 
-- **`libagent`** — All domain logic: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, pre/post-execution enforcement.
+- **`libagent`** — All domain logic: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, context injection construction, pre/post-execution enforcement.
 - **`runa-cli`** — Thin CLI binary. Clap-based argument parsing, delegates to libagent. No domain logic.
 
 ## Data Flow
@@ -20,6 +20,8 @@ These are library capabilities exposed by libagent. No runtime loop exists yet.
 3. **Artifact workspace → validated state.** `scan::scan` walks the artifact workspace, parses `*.json` files under `<workspace>/<type_name>/`, validates them against the type schemas, and reconciles the results into `.runa/store/`. Valid, invalid, and malformed artifacts are all stored — invalid and malformed state are meaningful for trigger evaluation. Per-file read failures are collected as unreadable findings rather than aborting reconciliation.
 
 4. **Trigger evaluation.** `trigger::evaluate` recursively evaluates a `TriggerCondition` tree against a `TriggerContext` (artifact store, per-skill activation timestamps, active signals) and returns a `TriggerResult`. Pure function, no side effects.
+
+5. **Context injection construction.** `context::build_context` converts a ready `SkillDeclaration` plus the current artifact store into the stable agent-facing payload used by `runa step`: skill name, available required/accepted artifact refs, and expected outputs.
 
 ## Modules
 
@@ -39,6 +41,10 @@ JSON Schema validation for artifact instances using the `jsonschema` crate. `val
 
 Dependency graph built from skill declarations. Edges derive from artifact relationships: `requires` → `produces` creates hard edges, `requires` → `may_produce` and `accepts` → any producer create soft edges. `topological_order` runs Kahn's algorithm on combined (hard+soft) edges first; on cycle, retries hard-edges-only. Hard-edge cycles return `CycleError`. `blocked_skills` identifies skills whose `requires` artifacts are not in a provided available set.
 
+### `context.rs`
+
+Stable agent-facing context injection contract. `build_context` gathers all valid required artifacts and all valid available accepted artifacts for a skill into ordered `ArtifactRef` entries carrying `artifact_type`, `instance_id`, `path`, `content_hash`, and `relationship` (`requires` or `accepts`). `ExpectedOutputs` exposes `produces` and `may_produce` artifact type names without embedding trigger/operator details.
+
 ### `store.rs`
 
 Artifact state tracking keyed by `(type_name, instance_id)`. Each `ArtifactState` records the filesystem path, `ValidationStatus` (Valid, Invalid with violations, Malformed with a parse error, or Stale), millisecond-precision modification timestamp, a `sha256:<hex>` content hash, and a `schema_hash` for the artifact type schema used during validation. Parsed JSON uses canonical JSON hashing (recursively sorted keys); malformed files hash raw bytes. Persists as JSON files under `.runa/store/{type_name}/{instance_id}.json`. Uses atomic write (tmp + rename).
@@ -49,7 +55,7 @@ Filesystem reconciliation from the artifact workspace into the store. `scan` tre
 
 ### `trigger.rs`
 
-Recursive trigger condition evaluator. `evaluate` is a pure function that takes a `TriggerCondition`, a `TriggerContext` (read-only references to the artifact store, activation timestamps, and active signals), and a skill name. Six condition variants: `OnArtifact` checks `store.is_valid`, `OnChange` compares latest modification against the skill's activation timestamp, `OnInvalid` checks `store.has_any_invalid`, `OnSignal` checks set membership, `AllOf` short-circuits on first failure, `AnyOf` short-circuits on first success.
+Recursive trigger condition evaluator. `evaluate` is a pure function that takes a `TriggerCondition`, a `TriggerContext` (read-only references to the artifact store, activation timestamps, and active signals), and a skill name. Six condition variants: `OnArtifact` distinguishes between missing valid instances and visible invalid/stale instances, `OnChange` compares latest modification against the skill's activation timestamp, `OnInvalid` checks `store.has_any_invalid`, `OnSignal` checks set membership, `AllOf` short-circuits on first failure, `AnyOf` short-circuits on first success.
 
 ### `enforcement.rs`
 
@@ -104,7 +110,7 @@ Runs the workspace reconciliation pass. Reads artifact files from the resolved w
 
 Runs an implicit workspace scan, then evaluates every skill against current runtime state. Classification is ordered and mutually exclusive: `WAITING` when the trigger is not satisfied, `BLOCKED` when the trigger is satisfied but `enforce_preconditions` fails, and `READY` otherwise. Uses an empty `TriggerContext` for activation timestamps and active signals because no runtime state loop exists yet.
 
-Text output groups skills as `READY`, `BLOCKED`, then `WAITING`, preserving the graph-derived skill order within each group. `READY` entries list valid required and accepted artifact instances, `BLOCKED` entries list required artifact failures (`missing`, `invalid`, `stale`, `scan_incomplete`), and `WAITING` entries list unsatisfied trigger conditions. When scan reconciliation is partial, status prints scan warnings before the skill groups and treats any skill whose `requires` includes an affected artifact type as blocked because readiness cannot be verified; affected `accepts` types remain non-blocking and are omitted from the reported inputs.
+Text output groups skills as `READY`, `BLOCKED`, then `WAITING`, preserving the graph-derived skill order within each group. `READY` entries list valid required and accepted artifact instances, `BLOCKED` entries list required artifact failures (`missing`, `invalid`, `stale`, `scan_incomplete`), and `WAITING` entries list detailed unsatisfied trigger conditions including the trigger condition and the specific `TriggerResult::NotSatisfied` reason. When scan reconciliation is partial, status prints scan warnings before the skill groups and treats any skill whose `requires` includes an affected artifact type as blocked because readiness cannot be verified; affected `accepts` types remain non-blocking and are omitted from the reported inputs.
 
 `--json` emits a versioned envelope:
 - `version` — integer envelope version, currently `1`
@@ -113,6 +119,12 @@ Text output groups skills as `READY`, `BLOCKED`, then `WAITING`, preserving the 
 - `skills` — flat ordered array of skill objects with `name`, `status`, `trigger`, plus the status-specific field `inputs`, `precondition_failures`, or `unsatisfied_conditions`
 
 Exits 0 for successful status evaluation regardless of whether skills are ready, blocked, or waiting. Non-zero exit remains reserved for project-load, scan, or serialization failures.
+
+### `runa step --dry-run [--json]`
+
+Runs the same implicit scan and shared skill evaluation used by `runa status`, then builds an execution plan from the `READY` skills only. Plan entries preserve topological order and include the skill name, the trigger condition string, and the JSON-serialized `libagent::context::ContextInjection` payload. Text output prints the execution plan followed by the grouped READY/BLOCKED/WAITING view; if the plan is empty, it explicitly says no skills are ready and still prints the blocked/waiting reasons. JSON output adds an `execution_plan` array while reusing the same `skills` status entries and `scan_warnings` envelope fields as `runa status`.
+
+`runa step` without `--dry-run` is a deliberate stub: it prints `Agent execution is not yet implemented. Use --dry-run to see the execution plan.` and exits with code 1.
 
 ## Key Design Patterns
 
