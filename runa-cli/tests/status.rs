@@ -1069,3 +1069,134 @@ trigger = { type = "on_change", name = "doc" }
         ])
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn status_preserves_invalid_preconditions_alongside_scan_incomplete() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[skills]]
+name = "implement"
+requires = ["constraints"]
+trigger = { type = "on_signal", name = "begin" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(workspace.join("constraints/bad.json"), r#"{"bad":true}"#).unwrap();
+    let unreadable = workspace.join("constraints/hidden.json");
+    fs::write(&unreadable, r#"{"title":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let skills = value["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["name"], "implement");
+    assert_eq!(skills[0]["status"], "blocked");
+    assert_eq!(skills[0]["trigger"], "not_satisfied");
+    assert_eq!(
+        skills[0]["precondition_failures"],
+        serde_json::json!([
+            {
+                "artifact_type": "constraints",
+                "reason": "scan_incomplete"
+            },
+            {
+                "artifact_type": "constraints",
+                "reason": "invalid"
+            }
+        ])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn status_keeps_on_artifact_waiting_when_visible_invalid_instance_makes_it_definitely_false() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "report"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[skills]]
+name = "publish"
+trigger = { type = "on_artifact", name = "report" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("report")).unwrap();
+    fs::write(workspace.join("report/bad.json"), r#"{"bad":true}"#).unwrap();
+    let unreadable = workspace.join("report/hidden.json");
+    fs::write(&unreadable, r#"{"title":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let skills = value["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["name"], "publish");
+    assert_eq!(skills[0]["status"], "waiting");
+    assert_eq!(skills[0]["trigger"], "not_satisfied");
+    assert_eq!(
+        skills[0]["unsatisfied_conditions"],
+        serde_json::json!(["on_artifact(report)"])
+    );
+    assert!(skills[0].get("precondition_failures").is_none());
+}
