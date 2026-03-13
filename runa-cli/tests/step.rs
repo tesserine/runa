@@ -268,3 +268,87 @@ trigger = { type = "on_artifact", name = "constraints" }
         "stdout: {stdout}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn step_dry_run_omits_partially_scanned_accepted_inputs_from_context() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("prior-art")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("prior-art/visible.json"),
+        r#"{"source":"notes"}"#,
+    )
+    .unwrap();
+    let unreadable = workspace.join("prior-art/hidden.json");
+    fs::write(&unreadable, r#"{"source":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["scan_warnings"],
+        serde_json::json!([
+            "artifact type 'prior-art' was only partially scanned: 1 unreadable entry"
+        ])
+    );
+
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 1, "{value:#}");
+    assert_eq!(
+        execution_plan[0]["context"]["inputs"],
+        serde_json::json!([
+            {
+                "artifact_type": "constraints",
+                "instance_id": "spec-1",
+                "path": workspace.join("constraints/spec-1.json"),
+                "content_hash": "sha256:dd4077b358533c789242e86ac7f5e7dffa0a587d5b4acfd343c612ae9ddfd315",
+                "relationship": "requires"
+            }
+        ])
+    );
+
+    let skills = value["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["status"], "ready");
+    assert_eq!(
+        skills[0]["inputs"],
+        serde_json::json!([
+            {
+                "artifact_type": "constraints",
+                "instance_id": "spec-1",
+                "path": ".runa/workspace/constraints/spec-1.json",
+                "relationship": "requires"
+            }
+        ])
+    );
+}

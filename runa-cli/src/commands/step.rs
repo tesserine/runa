@@ -1,7 +1,7 @@
 use std::fmt;
 use std::path::Path;
 
-use libagent::context::ContextInjection;
+use libagent::context::{ArtifactRelationship, ContextInjection};
 use serde::Serialize;
 
 use crate::commands::skill_eval;
@@ -86,10 +86,17 @@ pub fn run(
             let skill = skill_map
                 .get(entry.name.as_str())
                 .expect("ready skill must exist in manifest");
+            let mut context = libagent::context::build_context(skill, &loaded.store);
+            context.inputs.retain(|input| {
+                input.relationship == ArtifactRelationship::Requires
+                    || !scan_findings
+                        .affected_types
+                        .contains(input.artifact_type.as_str())
+            });
             PlanEntry {
                 skill: entry.name.clone(),
                 trigger: skill.trigger.to_string(),
-                context: libagent::context::build_context(skill, &loaded.store),
+                context,
             }
         })
         .collect();
