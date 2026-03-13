@@ -11,10 +11,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for workspace structure, data flow, modul
 ## Usage
 
 ```bash
-runa init --methodology path/to/manifest.toml [--artifacts-dir path/to/artifacts]
+runa init --methodology path/to/manifest.toml [--artifacts-dir path/to/workspace]
 ```
 
-Parses the methodology manifest, validates its structure, and creates a `.runa/` directory with `config.toml` (operator configuration: methodology path, optional artifacts directory) and `state.toml` (runtime state: initialization timestamp, runa version). Reports the artifact type and skill counts on success.
+Parses the methodology manifest, validates its structure, and creates a `.runa/` directory with `config.toml` (operator configuration: methodology path, optional artifact workspace directory), `state.toml` (runtime state: initialization timestamp, runa version), `.runa/workspace/` (default artifact workspace), and `.runa/store/` (internal artifact state store). Reports the artifact type and skill counts on success.
 
 All commands support `--config <PATH>` to override the config file location. The `RUNA_CONFIG` env var serves the same purpose. For `init`, `--config` controls where the config file is written; for other commands, it controls where the config file is read from.
 
@@ -22,13 +22,19 @@ All commands support `--config <PATH>` to override the config file location. The
 runa list
 ```
 
-Displays skills in execution order with their artifact relationships, trigger conditions, and blocked status.
+Displays skills in execution order with their artifact relationships, trigger conditions, and blocked status. Performs an implicit scan first so the output reflects the current workspace.
 
 ```bash
 runa doctor
 ```
 
-Checks project health: artifact validity, skill readiness, and dependency cycles. Exits 0 if healthy, 1 if problems found.
+Checks project health: artifact validity, skill readiness, and dependency cycles. Performs an implicit scan first so reported health matches the current workspace. Exits 0 if healthy, 1 if problems found.
+
+```bash
+runa scan
+```
+
+Scans the artifact workspace, reconciles it into `.runa/store/`, records valid, invalid, and malformed artifacts, and reports new/modified/revalidated/removed instances plus unreadable entries and unrecognized workspace directories. If the workspace is missing, scan succeeds only when the store is still empty; otherwise it fails to avoid wiping stored state. Per-file read failures are reported as findings and do not abort the scan. Exits 0 if reconciliation succeeds, even when findings are present.
 
 ## Build
 

@@ -286,10 +286,10 @@ impl DependencyGraph {
         let mut in_degree = vec![0usize; n];
 
         // Compute in-degrees.
-        for idx in 0..n {
-            in_degree[idx] += self.hard_deps[idx].len();
+        for (idx, degree) in in_degree.iter_mut().enumerate().take(n) {
+            *degree += self.hard_deps[idx].len();
             if include_soft {
-                in_degree[idx] += self.soft_deps[idx].len();
+                *degree += self.soft_deps[idx].len();
             }
         }
 
@@ -328,10 +328,10 @@ impl DependencyGraph {
         let mut path = Vec::new();
 
         for start in 0..n {
-            if state[start] == 0 {
-                if let Some(cycle) = self.dfs_cycle(start, &mut state, &mut path) {
-                    return cycle;
-                }
+            if state[start] == 0
+                && let Some(cycle) = self.dfs_cycle(start, &mut state, &mut path)
+            {
+                return cycle;
             }
         }
 
@@ -360,10 +360,10 @@ impl DependencyGraph {
                     .collect();
                 return Some(CycleError { path: cycle_path });
             }
-            if state[dep] == 0 {
-                if let Some(cycle) = self.dfs_cycle(dep, state, path) {
-                    return Some(cycle);
-                }
+            if state[dep] == 0
+                && let Some(cycle) = self.dfs_cycle(dep, state, path)
+            {
+                return Some(cycle);
             }
         }
 

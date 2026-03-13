@@ -1,19 +1,21 @@
 use std::fmt;
 use std::path::Path;
 
-use libagent::ValidationStatus;
+use libagent::{ScanError as StoreScanError, ValidationStatus};
 
 use crate::project::{self, ProjectError};
 
 #[derive(Debug)]
 pub enum DoctorError {
     Project(ProjectError),
+    Scan(StoreScanError),
 }
 
 impl fmt::Display for DoctorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DoctorError::Project(e) => write!(f, "{e}"),
+            DoctorError::Scan(e) => write!(f, "{e}"),
         }
     }
 }
@@ -22,17 +24,59 @@ impl std::error::Error for DoctorError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             DoctorError::Project(e) => Some(e),
+            DoctorError::Scan(e) => Some(e),
         }
     }
 }
 
 /// Run the doctor command. Returns `true` if healthy, `false` if problems found.
 pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, DoctorError> {
-    let loaded = project::load(working_dir, config_override).map_err(DoctorError::Project)?;
+    let mut loaded = project::load(working_dir, config_override).map_err(DoctorError::Project)?;
+    let scan_result =
+        libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(DoctorError::Scan)?;
 
     let mut problems = 0;
 
     println!("Methodology: {}", loaded.manifest.name);
+
+    if !scan_result.unreadable.is_empty() {
+        println!();
+        println!("Scan:");
+        for partial in &scan_result.partially_scanned_types {
+            problems += 1;
+            println!(
+                "  partial: type {} was only partially readable, {} entr{} could not be scanned, removal suppressed for this type.",
+                partial.artifact_type,
+                partial.unreadable_entries,
+                if partial.unreadable_entries == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
+            );
+        }
+        for entry in &scan_result.unreadable {
+            problems += 1;
+            println!("  unreadable: {}", entry.path.display());
+            println!("    {}", entry.error);
+        }
+    } else if !scan_result.partially_scanned_types.is_empty() {
+        println!();
+        println!("Scan:");
+        for partial in &scan_result.partially_scanned_types {
+            problems += 1;
+            println!(
+                "  partial: type {} was only partially readable, {} entr{} could not be scanned, removal suppressed for this type.",
+                partial.artifact_type,
+                partial.unreadable_entries,
+                if partial.unreadable_entries == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
+            );
+        }
+    }
 
     // --- Artifact health ---
     println!();
@@ -53,17 +97,19 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, D
         let total = instances.len();
         let mut valid_count = 0;
         let mut invalid_count = 0;
+        let mut malformed_count = 0;
         let mut stale_count = 0;
 
         for (_, state) in &instances {
             match &state.status {
                 ValidationStatus::Valid => valid_count += 1,
                 ValidationStatus::Invalid(_) => invalid_count += 1,
+                ValidationStatus::Malformed(_) => malformed_count += 1,
                 ValidationStatus::Stale => stale_count += 1,
             }
         }
 
-        if invalid_count == 0 && stale_count == 0 {
+        if invalid_count == 0 && malformed_count == 0 && stale_count == 0 {
             println!(
                 "  {type_name}: {total} instance{}, all valid",
                 if total == 1 { "" } else { "s" }
@@ -75,6 +121,9 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, D
             }
             if invalid_count > 0 {
                 parts.push(format!("{invalid_count} invalid"));
+            }
+            if malformed_count > 0 {
+                parts.push(format!("{malformed_count} malformed"));
             }
             if stale_count > 0 {
                 parts.push(format!("{stale_count} stale"));
@@ -94,6 +143,11 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, D
                         for v in violations {
                             println!("      - {}: {}", v.schema_path, v.description);
                         }
+                    }
+                    ValidationStatus::Malformed(error) => {
+                        problems += 1;
+                        println!("    {instance_id}: malformed");
+                        println!("      - {error}");
                     }
                     ValidationStatus::Stale => {
                         problems += 1;

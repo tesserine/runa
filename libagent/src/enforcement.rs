@@ -194,6 +194,12 @@ fn check_artifact(
     for (_, state) in &instances {
         match &state.status {
             ValidationStatus::Invalid(vs) => violations.extend(vs.iter().cloned()),
+            ValidationStatus::Malformed(error) => violations.push(Violation {
+                artifact_type: artifact_type.to_string(),
+                description: format!("malformed JSON: {error}"),
+                schema_path: "<parse>".to_string(),
+                instance_path: String::new(),
+            }),
             ValidationStatus::Stale => stale_count += 1,
             ValidationStatus::Valid => {}
         }

@@ -29,6 +29,9 @@ pub struct ArtifactState {
     pub last_modified_ms: u64,
     /// Content hash in the format `"sha256:<hex>"`.
     pub content_hash: String,
+    /// Schema hash in the format `"sha256:<hex>"`.
+    #[serde(default)]
+    pub schema_hash: String,
 }
 
 /// Validation status of an artifact instance.
@@ -39,6 +42,8 @@ pub enum ValidationStatus {
     Valid,
     /// The artifact violates its schema.
     Invalid(Vec<Violation>),
+    /// The artifact file could not be parsed as JSON.
+    Malformed(String),
     /// The artifact needs revalidation.
     Stale,
 }
@@ -115,10 +120,18 @@ fn canonical_json(value: &Value) -> String {
     }
 }
 
-fn content_hash(value: &Value) -> String {
+pub(crate) fn content_hash(value: &Value) -> String {
     let canonical = canonical_json(value);
+    raw_content_hash(canonical.as_bytes())
+}
+
+pub(crate) fn schema_hash(value: &Value) -> String {
+    content_hash(value)
+}
+
+pub(crate) fn raw_content_hash(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
+    hasher.update(bytes);
     let result = hasher.finalize();
     format!("sha256:{result:x}")
 }
@@ -184,11 +197,26 @@ impl ArtifactStore {
         path: &Path,
         data: &Value,
     ) -> Result<(), StoreError> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock before UNIX epoch")
-            .as_millis() as u64;
-        self.record_inner(artifact_type, instance_id, path, data, now)
+        self.record_with_timestamp(artifact_type, instance_id, path, data, current_time_ms())
+    }
+
+    /// Record a malformed artifact file using a raw-byte content hash.
+    pub fn record_malformed(
+        &mut self,
+        artifact_type: &str,
+        instance_id: &str,
+        path: &Path,
+        raw_bytes: &[u8],
+        error: impl Into<String>,
+    ) -> Result<(), StoreError> {
+        self.record_malformed_with_timestamp(
+            artifact_type,
+            instance_id,
+            path,
+            raw_bytes,
+            error,
+            current_time_ms(),
+        )
     }
 
     /// Returns current state of a specific instance.
@@ -224,10 +252,57 @@ impl ArtifactStore {
         Ok(())
     }
 
-    /// True if at least one instance of this type has `Invalid` status.
+    /// Remove a specific recorded instance from memory and persisted state.
+    pub fn remove(&mut self, artifact_type: &str, instance_id: &str) -> Result<(), StoreError> {
+        let key = (artifact_type.to_string(), instance_id.to_string());
+        if self.artifacts.remove(&key).is_none() {
+            return Ok(());
+        }
+
+        let file_path = self
+            .store_dir
+            .join(artifact_type)
+            .join(format!("{instance_id}.json"));
+        match std::fs::remove_file(&file_path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(StoreError::Io(err)),
+        }
+
+        Ok(())
+    }
+
+    /// Refresh the stored filesystem path for an existing instance.
+    pub fn update_path(
+        &mut self,
+        artifact_type: &str,
+        instance_id: &str,
+        path: &Path,
+    ) -> Result<(), StoreError> {
+        let key = (artifact_type.to_string(), instance_id.to_string());
+        let Some(existing) = self.artifacts.get(&key).cloned() else {
+            return Ok(());
+        };
+
+        if existing.path == path {
+            return Ok(());
+        }
+
+        let mut updated = existing;
+        updated.path = path.to_path_buf();
+        self.persist(artifact_type, instance_id, &updated)?;
+        self.artifacts.insert(key, updated);
+        Ok(())
+    }
+
+    /// True if at least one instance of this type has `Invalid` or `Malformed` status.
     pub fn has_any_invalid(&self, artifact_type: &str) -> bool {
         self.artifacts.iter().any(|((t, _), state)| {
-            t == artifact_type && matches!(state.status, ValidationStatus::Invalid(_))
+            t == artifact_type
+                && matches!(
+                    state.status,
+                    ValidationStatus::Invalid(_) | ValidationStatus::Malformed(_)
+                )
         })
     }
 
@@ -252,6 +327,13 @@ impl ArtifactStore {
         pairs
     }
 
+    /// Returns sorted `(artifact_type, instance_id)` keys for all recorded instances.
+    pub fn all_instance_keys(&self) -> Vec<(String, String)> {
+        let mut keys: Vec<(String, String)> = self.artifacts.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
     /// Returns the most recent `last_modified_ms` across all instances of this
     /// type, or `None` if no instances are recorded.
     pub fn latest_modification_ms(&self, artifact_type: &str) -> Option<u64> {
@@ -262,9 +344,6 @@ impl ArtifactStore {
             .max()
     }
 
-    /// Record an artifact with an explicit timestamp. Test-only: allows
-    /// deterministic timestamp control for `on_change` trigger tests.
-    #[cfg(test)]
     pub(crate) fn record_with_timestamp(
         &mut self,
         artifact_type: &str,
@@ -273,17 +352,48 @@ impl ArtifactStore {
         data: &Value,
         timestamp_ms: u64,
     ) -> Result<(), StoreError> {
-        self.record_inner(artifact_type, instance_id, path, data, timestamp_ms)
+        self.record_inner(
+            artifact_type,
+            instance_id,
+            self.build_state_from_json(artifact_type, path, data, timestamp_ms)?,
+        )
     }
 
-    fn record_inner(
+    pub(crate) fn record_malformed_with_timestamp(
         &mut self,
         artifact_type: &str,
         instance_id: &str,
         path: &Path,
-        data: &Value,
+        raw_bytes: &[u8],
+        error: impl Into<String>,
         timestamp_ms: u64,
     ) -> Result<(), StoreError> {
+        let schema_hash = self.schema_hash_for(artifact_type)?;
+        let state = ArtifactState {
+            path: path.to_path_buf(),
+            status: ValidationStatus::Malformed(error.into()),
+            last_modified_ms: timestamp_ms,
+            content_hash: raw_content_hash(raw_bytes),
+            schema_hash,
+        };
+        self.record_inner(artifact_type, instance_id, state)
+    }
+
+    pub(crate) fn schema_hash_for(&self, artifact_type: &str) -> Result<String, StoreError> {
+        let at = self
+            .artifact_types
+            .get(artifact_type)
+            .ok_or_else(|| StoreError::UnknownArtifactType(artifact_type.to_string()))?;
+        Ok(schema_hash(&at.schema))
+    }
+
+    fn build_state_from_json(
+        &self,
+        artifact_type: &str,
+        path: &Path,
+        data: &Value,
+        timestamp_ms: u64,
+    ) -> Result<ArtifactState, StoreError> {
         let at = self
             .artifact_types
             .get(artifact_type)
@@ -307,13 +417,21 @@ impl ArtifactStore {
 
         let hash = content_hash(data);
 
-        let state = ArtifactState {
+        Ok(ArtifactState {
             path: path.to_path_buf(),
             status,
             last_modified_ms: timestamp_ms,
             content_hash: hash,
-        };
+            schema_hash: schema_hash(&at.schema),
+        })
+    }
 
+    fn record_inner(
+        &mut self,
+        artifact_type: &str,
+        instance_id: &str,
+        state: ArtifactState,
+    ) -> Result<(), StoreError> {
         self.persist(artifact_type, instance_id, &state)?;
         self.artifacts
             .insert((artifact_type.to_string(), instance_id.to_string()), state);
@@ -339,6 +457,13 @@ impl ArtifactStore {
     }
 }
 
+fn current_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before UNIX epoch")
+        .as_millis() as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +484,7 @@ mod tests {
         assert_eq!(state.status, ValidationStatus::Valid);
         assert_eq!(state.path, path);
         assert!(state.content_hash.starts_with("sha256:"));
+        assert_eq!(state.schema_hash, schema_hash(&simple_schema()));
         assert!(state.last_modified_ms > 0);
     }
 
@@ -382,6 +508,30 @@ mod tests {
     }
 
     #[test]
+    fn record_malformed_artifact() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
+
+        store
+            .record_malformed(
+                "report",
+                "bad",
+                Path::new("bad.json"),
+                br#"{ not json }"#,
+                "expected value",
+            )
+            .unwrap();
+
+        let state = store.get("report", "bad").unwrap();
+        assert_eq!(
+            state.status,
+            ValidationStatus::Malformed("expected value".to_string())
+        );
+        assert_eq!(state.content_hash, raw_content_hash(br#"{ not json }"#));
+        assert_eq!(state.schema_hash, schema_hash(&simple_schema()));
+    }
+
+    #[test]
     fn unknown_artifact_type_errors() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
@@ -394,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn is_valid_true_for_valid_false_for_invalid_stale_missing() {
+    fn is_valid_true_for_valid_false_for_invalid_malformed_stale_missing() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
@@ -426,6 +576,20 @@ mod tests {
             .record("report", "bad", Path::new("b.json"), &json!({"score": 1}))
             .unwrap();
         assert!(!store2.is_valid("report"));
+
+        // Malformed.
+        let tmp4 = TempDir::new().unwrap();
+        let mut store4 = make_store(&tmp4.path().join("artifacts"), vec!["report"]);
+        store4
+            .record_malformed(
+                "report",
+                "m",
+                Path::new("m.json"),
+                b"not json",
+                "expected value",
+            )
+            .unwrap();
+        assert!(!store4.is_valid("report"));
 
         // Stale.
         let tmp3 = TempDir::new().unwrap();
@@ -486,6 +650,7 @@ mod tests {
         assert_eq!(state.status, ValidationStatus::Valid);
         assert_eq!(state.path, path);
         assert_eq!(state.content_hash, content_hash(&data));
+        assert_eq!(state.schema_hash, schema_hash(&simple_schema()));
         assert!(state.last_modified_ms > 0);
     }
 
@@ -642,6 +807,17 @@ mod tests {
 
         store
             .record("report", "bad", Path::new("b.json"), &json!({"score": 1}))
+            .unwrap();
+        assert!(store.has_any_invalid("report"));
+    }
+
+    #[test]
+    fn has_any_invalid_true_with_malformed_instance() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
+
+        store
+            .record_malformed("report", "bad", Path::new("b.json"), b"not json", "oops")
             .unwrap();
         assert!(store.has_any_invalid("report"));
     }
@@ -812,5 +988,87 @@ mod tests {
 
         assert_eq!(instances[1].0, "good");
         assert_eq!(instances[1].1.status, ValidationStatus::Valid);
+    }
+
+    #[test]
+    fn remove_deletes_in_memory_and_persisted_state() {
+        let tmp = TempDir::new().unwrap();
+        let store_dir = tmp.path().join("artifacts");
+        let mut store = make_store(&store_dir, vec!["report"]);
+
+        store
+            .record(
+                "report",
+                "gone",
+                Path::new("gone.json"),
+                &json!({"title": "gone"}),
+            )
+            .unwrap();
+
+        let persisted = store_dir.join("report/gone.json");
+        assert!(persisted.is_file());
+
+        store.remove("report", "gone").unwrap();
+
+        assert!(store.get("report", "gone").is_none());
+        assert!(!persisted.exists());
+        assert!(!store.is_valid("report"));
+        assert!(!store.has_any_invalid("report"));
+        assert!(store.instances_of("report").is_empty());
+    }
+
+    #[test]
+    fn all_instance_keys_returns_sorted_keys() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["a", "b"]);
+
+        store
+            .record("b", "two", Path::new("b2.json"), &json!({"title": "B"}))
+            .unwrap();
+        store
+            .record("a", "one", Path::new("a1.json"), &json!({"title": "A"}))
+            .unwrap();
+
+        assert_eq!(
+            store.all_instance_keys(),
+            vec![
+                ("a".to_string(), "one".to_string()),
+                ("b".to_string(), "two".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn update_path_persists_new_path_without_other_changes() {
+        let tmp = TempDir::new().unwrap();
+        let store_dir = tmp.path().join("artifacts");
+        let mut store = make_store(&store_dir, vec!["report"]);
+
+        store
+            .record(
+                "report",
+                "item",
+                Path::new("old/item.json"),
+                &json!({"title": "ok"}),
+            )
+            .unwrap();
+
+        let before = store.get("report", "item").unwrap().clone();
+        store
+            .update_path("report", "item", Path::new("new/item.json"))
+            .unwrap();
+
+        let after = store.get("report", "item").unwrap();
+        assert_eq!(after.path, Path::new("new/item.json"));
+        assert_eq!(after.status, before.status);
+        assert_eq!(after.content_hash, before.content_hash);
+        assert_eq!(after.schema_hash, before.schema_hash);
+        assert_eq!(after.last_modified_ms, before.last_modified_ms);
+
+        let reloaded = make_store(&store_dir, vec!["report"]);
+        assert_eq!(
+            reloaded.get("report", "item").unwrap().path,
+            Path::new("new/item.json")
+        );
     }
 }

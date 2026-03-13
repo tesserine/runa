@@ -17,7 +17,7 @@ These are library capabilities exposed by libagent. No runtime loop exists yet.
 
 2. **Skill declarations → dependency graph.** `DependencyGraph::build` takes `&[SkillDeclaration]` and computes edges from requires/accepts → produces/may_produce relationships. Provides topological ordering (Kahn's algorithm), cycle detection (falls back to hard-edges-only on combined-graph cycle), and blocked-skill identification.
 
-3. **Artifact instances → validated state.** `ArtifactStore::record` accepts artifact data, validates it via `validation::validate_artifact` against the type's JSON Schema, computes a SHA-256 content hash, and persists the result to `.runa/artifacts/`. Both valid and invalid states are stored — invalid state is meaningful for trigger evaluation.
+3. **Artifact workspace → validated state.** `scan::scan` walks the artifact workspace, parses `*.json` files under `<workspace>/<type_name>/`, validates them against the type schemas, and reconciles the results into `.runa/store/`. Valid, invalid, and malformed artifacts are all stored — invalid and malformed state are meaningful for trigger evaluation. Per-file read failures are collected as unreadable findings rather than aborting reconciliation.
 
 4. **Trigger evaluation.** `trigger::evaluate` recursively evaluates a `TriggerCondition` tree against a `TriggerContext` (artifact store, per-skill activation timestamps, active signals) and returns a `TriggerResult`. Pure function, no side effects.
 
@@ -41,7 +41,11 @@ Dependency graph built from skill declarations. Edges derive from artifact relat
 
 ### `store.rs`
 
-Artifact state tracking keyed by `(type_name, instance_id)`. Each `ArtifactState` records the filesystem path, `ValidationStatus` (Valid, Invalid with violations, or Stale), millisecond-precision modification timestamp, and a `sha256:<hex>` content hash computed from canonical JSON (recursively sorted keys). Persists as JSON files under `.runa/artifacts/{type_name}/{instance_id}.json`. Uses atomic write (tmp + rename).
+Artifact state tracking keyed by `(type_name, instance_id)`. Each `ArtifactState` records the filesystem path, `ValidationStatus` (Valid, Invalid with violations, Malformed with a parse error, or Stale), millisecond-precision modification timestamp, a `sha256:<hex>` content hash, and a `schema_hash` for the artifact type schema used during validation. Parsed JSON uses canonical JSON hashing (recursively sorted keys); malformed files hash raw bytes. Persists as JSON files under `.runa/store/{type_name}/{instance_id}.json`. Uses atomic write (tmp + rename).
+
+### `scan.rs`
+
+Filesystem reconciliation from the artifact workspace into the store. `scan` treats `<workspace>/<type_name>/<instance_id>.json` as the artifact convention, ignores non-JSON files, reports unrecognized top-level directories, classifies new/modified/revalidated/removed instances, records invalid or malformed artifacts in store state, and collects unreadable file entries with their path and error message. Modified means the content hash changed and `last_modified_ms` was updated to the scan timestamp. Revalidated means the artifact content was unchanged but the schema hash changed, so validation was rerun without updating `last_modified_ms`. If the workspace directory is missing, scan returns an error unless the store is still empty.
 
 ### `trigger.rs`
 
@@ -61,9 +65,12 @@ Returns `EnforcementError` on failure, containing the skill name, enforcement ph
 .runa/
   config.toml                   # Created by `runa init`: methodology_path, optional artifacts_dir
   state.toml                    # Created by `runa init`: initialized_at, runa_version
-  artifacts/                    # Default artifact storage (configurable via artifacts_dir)
+  workspace/                    # Default artifact workspace (configurable via artifacts_dir)
     {type_name}/
-      {instance_id}.json        # ArtifactState: path, status, last_modified_ms, content_hash
+      {instance_id}.json        # Agent-produced artifact file
+  store/                        # Internal artifact state store (not configurable)
+    {type_name}/
+      {instance_id}.json        # ArtifactState: path, status, last_modified_ms, content_hash, schema_hash
 ```
 
 ## CLI Commands
@@ -74,20 +81,24 @@ Config resolution is whole-file (first found wins, no per-field merging): `--con
 
 ### `runa init --methodology <PATH> [--artifacts-dir <DIR>] [--config <PATH>]`
 
-Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes the path, creates `.runa/config.toml` (or writes to the `--config` path) containing the canonical methodology path and optional artifacts directory. Creates `.runa/state.toml` recording initialization timestamp and runa version. Reports the artifact type and skill counts on success.
+Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes the path, creates `.runa/config.toml` (or writes to the `--config` path) containing the canonical methodology path and optional artifact workspace directory. Creates `.runa/state.toml`, `.runa/store/`, and the resolved artifact workspace directory. Reports the artifact type and skill counts on success.
 
 ### `runa list`
 
-Displays skills in topological (execution) order with their artifact relationships and trigger conditions. For each skill, shows non-empty relationship fields (requires, accepts, produces, may_produce), the trigger condition, and a `BLOCKED` indicator if required artifact types have no valid instances. On cycle detection, falls back to manifest order with a warning.
+Runs an implicit workspace scan, then displays skills in topological (execution) order with their artifact relationships and trigger conditions. For each skill, shows non-empty relationship fields (requires, accepts, produces, may_produce), the trigger condition, and a `BLOCKED` indicator if required artifact types have no valid instances. On cycle detection, falls back to manifest order with a warning.
 
 ### `runa doctor`
 
-Reports on project health without re-validating from disk. Three checks:
-1. **Artifact health** — enumerates instances per artifact type via `store.instances_of()`, reports invalid/stale instances with violation details.
+Runs an implicit workspace scan, then reports on project health. Three checks:
+1. **Artifact health** — enumerates instances per artifact type via `store.instances_of()`, reports invalid, malformed, or stale instances with details.
 2. **Skill readiness** — for each skill, checks whether all `requires` artifact types have valid instances. Reports missing or invalid artifact types.
 3. **Cycle detection** — runs `graph.topological_order()`, reports any cycle.
 
 Exits 0 if no problems found, 1 otherwise.
+
+### `runa scan`
+
+Runs the workspace reconciliation pass. Reads artifact files from the resolved workspace directory, updates `.runa/store/`, reports new/modified/revalidated/removed artifacts, reports invalid, malformed, and unreadable entries separately, and lists unrecognized top-level workspace directories. A missing workspace is treated as an error unless the store is still empty. Per-file read failures are findings, not command failures. Exits 0 on successful reconciliation and non-zero only for load/store/I/O failures.
 
 ## Key Design Patterns
 

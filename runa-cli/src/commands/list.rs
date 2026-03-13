@@ -2,17 +2,21 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 
+use libagent::ScanError as StoreScanError;
+
 use crate::project::{self, ProjectError};
 
 #[derive(Debug)]
 pub enum ListError {
     Project(ProjectError),
+    Scan(StoreScanError),
 }
 
 impl fmt::Display for ListError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ListError::Project(e) => write!(f, "{e}"),
+            ListError::Scan(e) => write!(f, "{e}"),
         }
     }
 }
@@ -21,12 +25,14 @@ impl std::error::Error for ListError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ListError::Project(e) => Some(e),
+            ListError::Scan(e) => Some(e),
         }
     }
 }
 
 pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), ListError> {
-    let loaded = project::load(working_dir, config_override).map_err(ListError::Project)?;
+    let mut loaded = project::load(working_dir, config_override).map_err(ListError::Project)?;
+    libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(ListError::Scan)?;
 
     println!("Methodology: {}", loaded.manifest.name);
 
