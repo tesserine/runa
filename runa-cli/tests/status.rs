@@ -165,6 +165,7 @@ fn status_json_reports_ordered_skills_and_status_specific_fields() {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["version"], 1);
     assert_eq!(value["methodology"], "groundwork");
+    assert_eq!(value["scan_warnings"], serde_json::json!([]));
 
     let skills = value["skills"].as_array().unwrap();
     assert_eq!(skills.len(), 3, "{value:#}");
@@ -295,6 +296,7 @@ trigger = { type = "all_of", conditions = [
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let skills = value["skills"].as_array().unwrap();
     assert_eq!(skills.len(), 2, "{value:#}");
+    assert_eq!(value["scan_warnings"], serde_json::json!([]));
 
     assert_eq!(skills[0]["name"], "verify");
     assert_eq!(skills[0]["status"], "blocked");
@@ -333,4 +335,161 @@ fn status_errors_on_uninitialized_project() {
     assert!(!output.status.success(), "status should fail without init");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("no config found"), "stderr: {stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn status_keeps_skills_ready_when_only_accepted_types_are_partially_scanned() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("prior-art")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship status"}"#,
+    )
+    .unwrap();
+    let unreadable = workspace.join("prior-art/survey-1.json");
+    fs::write(&unreadable, r#"{"source":"notes"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["scan_warnings"],
+        serde_json::json!([
+            "artifact type 'prior-art' was only partially scanned: 1 unreadable entry"
+        ])
+    );
+
+    let skills = value["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["name"], "implement");
+    assert_eq!(skills[0]["status"], "ready");
+    assert_eq!(
+        skills[0]["inputs"],
+        serde_json::json!([
+            {
+                "artifact_type": "constraints",
+                "instance_id": "spec-1",
+                "path": ".runa/workspace/constraints/spec-1.json",
+                "relationship": "requires"
+            }
+        ])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn status_blocks_skills_with_partial_required_types_and_reports_scan_warnings() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("prior-art")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship status"}"#,
+    )
+    .unwrap();
+    let unreadable = workspace.join("constraints/spec-2.json");
+    fs::write(&unreadable, r#"{"title":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
+    fs::write(
+        workspace.join("prior-art/survey-1.json"),
+        r#"{"source":"notes"}"#,
+    )
+    .unwrap();
+
+    let json_output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    let text_output = runa_bin()
+        .arg("status")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        json_output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&json_output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&json_output.stdout).unwrap();
+    assert_eq!(
+        value["scan_warnings"],
+        serde_json::json!([
+            "artifact type 'constraints' was only partially scanned: 1 unreadable entry"
+        ])
+    );
+
+    let skills = value["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["name"], "implement");
+    assert_eq!(skills[0]["status"], "blocked");
+    assert_eq!(skills[0]["trigger"], "satisfied");
+    assert_eq!(
+        skills[0]["precondition_failures"],
+        serde_json::json!([
+            {
+                "artifact_type": "constraints",
+                "reason": "scan_incomplete"
+            }
+        ])
+    );
+    assert!(skills[0].get("inputs").is_none());
+
+    assert!(
+        text_output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&text_output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&text_output.stdout);
+    assert!(stdout.contains("Scan warnings:"), "stdout: {stdout}");
+    assert!(
+        stdout
+            .contains("artifact type 'constraints' was only partially scanned: 1 unreadable entry"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("constraints (scan_incomplete)"),
+        "stdout: {stdout}"
+    );
 }

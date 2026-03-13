@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use libagent::{TriggerContext, TriggerResult, enforce_preconditions, evaluate_trigger};
 use serde::Serialize;
@@ -59,6 +59,7 @@ struct SkillEntry {
 struct StatusJson<'a> {
     version: u32,
     methodology: &'a str,
+    scan_warnings: Vec<String>,
     skills: Vec<SkillJson>,
 }
 
@@ -101,13 +102,20 @@ struct FailureEntry {
     reason: &'static str,
 }
 
+struct ScanFindings {
+    affected_types: HashSet<String>,
+    warnings: Vec<String>,
+}
+
 pub fn run(
     working_dir: &Path,
     config_override: Option<&Path>,
     json_output: bool,
 ) -> Result<(), StatusError> {
     let mut loaded = project::load(working_dir, config_override).map_err(StatusError::Project)?;
-    libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(StatusError::Scan)?;
+    let scan_result =
+        libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(StatusError::Scan)?;
+    let scan_findings = collect_scan_findings(&scan_result, &loaded.workspace_dir);
 
     let skill_order = match loaded.graph.topological_order() {
         Ok(order) => order,
@@ -146,37 +154,65 @@ pub fn run(
             continue;
         };
 
-        let entry = match evaluate_trigger(&skill.trigger, &context, &skill.name) {
-            TriggerResult::Satisfied => match enforce_preconditions(skill, &loaded.store) {
-                Ok(()) => SkillEntry {
-                    name: skill.name.clone(),
-                    status: SkillStatus::Ready,
-                    trigger: TriggerState::Satisfied,
-                    inputs: collect_inputs(skill, &loaded.store, working_dir),
-                    precondition_failures: Vec::new(),
-                    unsatisfied_conditions: Vec::new(),
-                },
-                Err(err) => SkillEntry {
-                    name: skill.name.clone(),
-                    status: SkillStatus::Blocked,
-                    trigger: TriggerState::Satisfied,
-                    inputs: Vec::new(),
-                    precondition_failures: err.failures.iter().map(failure_entry).collect(),
-                    unsatisfied_conditions: Vec::new(),
-                },
-            },
-            TriggerResult::NotSatisfied(_) => SkillEntry {
+        let trigger_state = match evaluate_trigger(&skill.trigger, &context, &skill.name) {
+            TriggerResult::Satisfied => TriggerState::Satisfied,
+            TriggerResult::NotSatisfied(_) => TriggerState::NotSatisfied,
+        };
+
+        let entry = if let Some(artifact_type) = skill.requires.iter().find(|artifact_type| {
+            scan_findings
+                .affected_types
+                .contains(artifact_type.as_str())
+        }) {
+            SkillEntry {
                 name: skill.name.clone(),
-                status: SkillStatus::Waiting,
-                trigger: TriggerState::NotSatisfied,
+                status: SkillStatus::Blocked,
+                trigger: trigger_state,
                 inputs: Vec::new(),
-                precondition_failures: Vec::new(),
-                unsatisfied_conditions: collect_unsatisfied_conditions(
-                    &skill.trigger,
-                    &context,
-                    &skill.name,
-                ),
-            },
+                precondition_failures: vec![FailureEntry {
+                    artifact_type: artifact_type.clone(),
+                    reason: "scan_incomplete",
+                }],
+                unsatisfied_conditions: Vec::new(),
+            }
+        } else {
+            match trigger_state {
+                TriggerState::Satisfied => match enforce_preconditions(skill, &loaded.store) {
+                    Ok(()) => SkillEntry {
+                        name: skill.name.clone(),
+                        status: SkillStatus::Ready,
+                        trigger: TriggerState::Satisfied,
+                        inputs: collect_inputs(
+                            skill,
+                            &loaded.store,
+                            working_dir,
+                            &scan_findings.affected_types,
+                        ),
+                        precondition_failures: Vec::new(),
+                        unsatisfied_conditions: Vec::new(),
+                    },
+                    Err(err) => SkillEntry {
+                        name: skill.name.clone(),
+                        status: SkillStatus::Blocked,
+                        trigger: TriggerState::Satisfied,
+                        inputs: Vec::new(),
+                        precondition_failures: err.failures.iter().map(failure_entry).collect(),
+                        unsatisfied_conditions: Vec::new(),
+                    },
+                },
+                TriggerState::NotSatisfied => SkillEntry {
+                    name: skill.name.clone(),
+                    status: SkillStatus::Waiting,
+                    trigger: TriggerState::NotSatisfied,
+                    inputs: Vec::new(),
+                    precondition_failures: Vec::new(),
+                    unsatisfied_conditions: collect_unsatisfied_conditions(
+                        &skill.trigger,
+                        &context,
+                        &skill.name,
+                    ),
+                },
+            }
         };
 
         match entry.status {
@@ -190,6 +226,7 @@ pub fn run(
         let payload = StatusJson {
             version: 1,
             methodology: &loaded.manifest.name,
+            scan_warnings: scan_findings.warnings.clone(),
             skills: ready
                 .into_iter()
                 .chain(blocked)
@@ -200,6 +237,13 @@ pub fn run(
         println!("{}", serde_json::to_string_pretty(&payload).unwrap());
     } else {
         println!("Methodology: {}", loaded.manifest.name);
+        if !scan_findings.warnings.is_empty() {
+            println!();
+            println!("Scan warnings:");
+            for warning in &scan_findings.warnings {
+                println!("  - {warning}");
+            }
+        }
         println!();
         print_group("READY", &ready);
         println!();
@@ -215,10 +259,14 @@ fn collect_inputs(
     skill: &libagent::SkillDeclaration,
     store: &libagent::ArtifactStore,
     working_dir: &Path,
+    affected_types: &HashSet<String>,
 ) -> Vec<InputEntry> {
     let mut inputs = Vec::new();
 
     for artifact_type in &skill.requires {
+        if affected_types.contains(artifact_type) {
+            continue;
+        }
         for (instance_id, state) in store.instances_of(artifact_type) {
             if matches!(state.status, libagent::ValidationStatus::Valid) {
                 inputs.push(InputEntry {
@@ -232,6 +280,9 @@ fn collect_inputs(
     }
 
     for artifact_type in &skill.accepts {
+        if affected_types.contains(artifact_type) {
+            continue;
+        }
         for (instance_id, state) in store.instances_of(artifact_type) {
             if matches!(state.status, libagent::ValidationStatus::Valid) {
                 inputs.push(InputEntry {
@@ -269,6 +320,46 @@ fn failure_entry(failure: &libagent::ArtifactFailure) -> FailureEntry {
             reason: "stale",
         },
     }
+}
+
+fn collect_scan_findings(scan_result: &libagent::ScanResult, workspace_dir: &Path) -> ScanFindings {
+    let mut affected_types: HashSet<String> = scan_result
+        .partially_scanned_types
+        .iter()
+        .map(|partial| partial.artifact_type.clone())
+        .collect();
+    let mut warnings = Vec::new();
+
+    for partial in &scan_result.partially_scanned_types {
+        warnings.push(format!(
+            "artifact type '{}' was only partially scanned: {} unreadable entr{}",
+            partial.artifact_type,
+            partial.unreadable_entries,
+            if partial.unreadable_entries == 1 {
+                "y"
+            } else {
+                "ies"
+            }
+        ));
+    }
+
+    for unreadable in &scan_result.unreadable {
+        if let Some(artifact_type) = artifact_type_from_path(&unreadable.path, workspace_dir) {
+            affected_types.insert(artifact_type);
+        }
+    }
+
+    ScanFindings {
+        affected_types,
+        warnings,
+    }
+}
+
+fn artifact_type_from_path(path: &Path, workspace_dir: &Path) -> Option<String> {
+    let relative = path.strip_prefix(workspace_dir).ok()?;
+    let mut components = relative.components();
+    let first = components.next()?;
+    Some(PathBuf::from(first.as_os_str()).display().to_string())
 }
 
 fn print_group(label: &str, entries: &[SkillEntry]) {

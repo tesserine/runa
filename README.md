@@ -40,7 +40,7 @@ Scans the artifact workspace, reconciles it into `.runa/store/`, records valid, 
 runa status [--json]
 ```
 
-Evaluates every skill after an implicit scan and classifies it as `READY`, `BLOCKED`, or `WAITING`. Text output groups skills in that order and shows the current inputs, precondition failures, or unsatisfied trigger conditions that explain each status. `--json` emits `{ "version": 1, "methodology": "...", "skills": [...] }`, with a flat ordered `skills` array containing `name`, `status`, `trigger`, and the status-specific fields `inputs`, `precondition_failures`, or `unsatisfied_conditions`. Exits 0 when status evaluation succeeds, even if some skills are blocked or waiting.
+Evaluates every skill after an implicit scan and classifies it as `READY`, `BLOCKED`, or `WAITING`. Text output groups skills in that order and shows the current inputs, precondition failures, or unsatisfied trigger conditions that explain each status. If the scan was only partial, status surfaces `Scan warnings` and blocks skills whose required artifact types could not be fully reconciled with reason `scan_incomplete`; partially scanned accepted artifact types are omitted from reported inputs. `--json` emits `{ "version": 1, "methodology": "...", "scan_warnings": [...], "skills": [...] }`, with a flat ordered `skills` array containing `name`, `status`, `trigger`, and the status-specific fields `inputs`, `precondition_failures`, or `unsatisfied_conditions`. Exits 0 when status evaluation succeeds, even if some skills are blocked or waiting.
 
 ## Build
 
