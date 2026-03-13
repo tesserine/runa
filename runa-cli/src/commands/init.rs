@@ -2,7 +2,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use crate::project::State;
 
 const RUNA_DIR: &str = ".runa";
 const STATE_FILENAME: &str = "state.toml";
@@ -43,12 +43,6 @@ impl std::error::Error for InitError {
     }
 }
 
-#[derive(Serialize)]
-struct State {
-    methodology_path: String,
-    methodology_name: String,
-}
-
 pub fn run(working_dir: &Path, methodology: &Path) -> Result<InitSummary, InitError> {
     if !methodology.exists() {
         return Err(InitError::MethodologyNotFound {
@@ -56,8 +50,7 @@ pub fn run(working_dir: &Path, methodology: &Path) -> Result<InitSummary, InitEr
         });
     }
 
-    let manifest =
-        libagent::manifest::parse(methodology).map_err(InitError::ManifestInvalid)?;
+    let manifest = libagent::manifest::parse(methodology).map_err(InitError::ManifestInvalid)?;
 
     let canonical_path = fs::canonicalize(methodology).map_err(InitError::Io)?;
 
@@ -187,8 +180,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
 
         run(&working, &manifest_path).unwrap();
 
-        let state_content =
-            fs::read_to_string(working.join(".runa").join("state.toml")).unwrap();
+        let state_content = fs::read_to_string(working.join(".runa").join("state.toml")).unwrap();
         assert!(
             state_content.contains("groundwork"),
             "state file should contain methodology name"

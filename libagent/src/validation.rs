@@ -72,13 +72,12 @@ pub fn validate_artifact(
     artifact_data: &Value,
     artifact_type: &ArtifactType,
 ) -> Result<(), ValidationError> {
-    let validator =
-        jsonschema::validator_for(&artifact_type.schema).map_err(|e| {
-            ValidationError::InvalidSchema {
-                artifact_type: artifact_type.name.clone(),
-                detail: e.to_string(),
-            }
-        })?;
+    let validator = jsonschema::validator_for(&artifact_type.schema).map_err(|e| {
+        ValidationError::InvalidSchema {
+            artifact_type: artifact_type.name.clone(),
+            detail: e.to_string(),
+        }
+    })?;
 
     let violations: Vec<Violation> = validator
         .iter_errors(artifact_data)
@@ -262,9 +261,11 @@ mod tests {
                 violations,
             } => {
                 assert_eq!(artifact_type, "my-special-type");
-                assert!(violations
-                    .iter()
-                    .all(|v| v.artifact_type == "my-special-type"));
+                assert!(
+                    violations
+                        .iter()
+                        .all(|v| v.artifact_type == "my-special-type")
+                );
             }
             other => panic!("expected InvalidArtifact, got: {other}"),
         }
@@ -376,8 +377,10 @@ mod tests {
                     schema_paths[0], schema_paths[1],
                     "violations should have distinct schema paths"
                 );
-                let instance_paths: Vec<&str> =
-                    violations.iter().map(|v| v.instance_path.as_str()).collect();
+                let instance_paths: Vec<&str> = violations
+                    .iter()
+                    .map(|v| v.instance_path.as_str())
+                    .collect();
                 assert_ne!(
                     instance_paths[0], instance_paths[1],
                     "violations should have distinct instance paths"

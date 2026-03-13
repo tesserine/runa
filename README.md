@@ -16,6 +16,18 @@ runa init --methodology path/to/manifest.toml
 
 Parses the methodology manifest, validates its structure, and creates a `.runa/` directory with `state.toml` recording the canonical methodology path and name. Reports the artifact type and skill counts on success.
 
+```bash
+runa list
+```
+
+Displays skills in execution order with their artifact relationships, trigger conditions, and blocked status.
+
+```bash
+runa doctor
+```
+
+Checks project health: artifact validity, skill readiness, and dependency cycles. Exits 0 if healthy, 1 if problems found.
+
 ## Build
 
 Rust 2024 edition.

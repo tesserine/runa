@@ -59,9 +59,24 @@ Recursive trigger condition evaluator. `evaluate` is a pure function that takes 
 
 ## CLI Commands
 
+All commands that operate on an initialized project share `project::load`, which reads `.runa/state.toml`, parses the referenced methodology manifest, builds the dependency graph, and opens the artifact store.
+
 ### `runa init --methodology <PATH>`
 
 Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes the path, creates `.runa/state.toml` containing the canonical methodology path and name. Reports the artifact type and skill counts on success.
+
+### `runa list`
+
+Displays skills in topological (execution) order with their artifact relationships and trigger conditions. For each skill, shows non-empty relationship fields (requires, accepts, produces, may_produce), the trigger condition, and a `BLOCKED` indicator if required artifact types have no valid instances. On cycle detection, falls back to manifest order with a warning.
+
+### `runa doctor`
+
+Reports on project health without re-validating from disk. Three checks:
+1. **Artifact health** — enumerates instances per artifact type via `store.instances_of()`, reports invalid/stale instances with violation details.
+2. **Skill readiness** — for each skill, checks whether all `requires` artifact types have valid instances. Reports missing or invalid artifact types.
+3. **Cycle detection** — runs `graph.topological_order()`, reports any cycle.
+
+Exits 0 if no problems found, 1 otherwise.
 
 ## Key Design Patterns
 

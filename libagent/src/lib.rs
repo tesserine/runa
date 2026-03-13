@@ -23,7 +23,7 @@ pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use manifest::ManifestError;
 pub use model::{ArtifactType, Manifest, SkillDeclaration, TriggerCondition};
 pub use store::{ArtifactState, ArtifactStore, StoreError, ValidationStatus};
-pub use trigger::{evaluate as evaluate_trigger, TriggerContext, TriggerResult};
+pub use trigger::{TriggerContext, TriggerResult, evaluate as evaluate_trigger};
 pub use validation::{ValidationError, Violation};
 
 pub fn version() -> &'static str {

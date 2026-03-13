@@ -210,16 +210,50 @@ impl DependencyGraph {
     pub fn topological_order(&self) -> Result<Vec<&str>, CycleError> {
         // Try combined (hard + soft) edges first.
         if let Some(order) = self.kahns_sort(true) {
-            return Ok(order.iter().map(|&i| self.skill_names[i].as_str()).collect());
+            return Ok(order
+                .iter()
+                .map(|&i| self.skill_names[i].as_str())
+                .collect());
         }
 
         // Combined graph has a cycle. Try hard edges only.
         if let Some(order) = self.kahns_sort(false) {
-            return Ok(order.iter().map(|&i| self.skill_names[i].as_str()).collect());
+            return Ok(order
+                .iter()
+                .map(|&i| self.skill_names[i].as_str())
+                .collect());
         }
 
         // Hard edges have a cycle. Extract the cycle path.
         Err(self.extract_cycle())
+    }
+
+    /// Return `(skill_name, missing_artifact_types)` for each skill that has
+    /// unmet `requires`. Missing artifact types are those in `requires` that
+    /// aren't in `available_artifacts`. Results are sorted by skill name.
+    pub fn blocked_skills_with_reasons(
+        &self,
+        available_artifacts: &HashSet<String>,
+    ) -> Vec<(&str, Vec<&str>)> {
+        let mut result: Vec<(&str, Vec<&str>)> = self
+            .requires_per_skill
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, reqs)| {
+                let missing: Vec<&str> = reqs
+                    .iter()
+                    .filter(|r| !available_artifacts.contains(r.as_str()))
+                    .map(|r| r.as_str())
+                    .collect();
+                if missing.is_empty() {
+                    None
+                } else {
+                    Some((self.skill_names[idx].as_str(), missing))
+                }
+            })
+            .collect();
+        result.sort_by_key(|(name, _)| *name);
+        result
     }
 
     /// Return skills whose `requires` are not all present in `available_artifacts`.
@@ -296,11 +330,7 @@ impl DependencyGraph {
             }
         }
 
-        if order.len() == n {
-            Some(order)
-        } else {
-            None
-        }
+        if order.len() == n { Some(order) } else { None }
     }
 
     /// Extract a cycle from hard edges using DFS. Called only when a hard cycle exists.
@@ -515,10 +545,7 @@ mod tests {
 
     #[test]
     fn cycle_detection() {
-        let skills = vec![
-            skill("A", &["Y"], &["X"]),
-            skill("B", &["X"], &["Y"]),
-        ];
+        let skills = vec![skill("A", &["Y"], &["X"]), skill("B", &["X"], &["Y"])];
         let graph = DependencyGraph::build(&skills).unwrap();
         let err = graph.topological_order().unwrap_err();
         assert!(err.path.contains(&"A".to_string()));
@@ -710,6 +737,63 @@ mod tests {
                 artifact_type: "X".into(),
             }
         );
+    }
+
+    // --- Display impls ---
+
+    // --- blocked_skills_with_reasons ---
+
+    #[test]
+    fn blocked_with_reasons_all_requires_met() {
+        let skills = vec![
+            skill("A", &[], &["X"]),
+            skill("B", &["X"], &["Y"]),
+            skill("C", &["X", "Y"], &[]),
+        ];
+        let graph = DependencyGraph::build(&skills).unwrap();
+        let available: HashSet<String> = ["X".into(), "Y".into()].into();
+        let result = graph.blocked_skills_with_reasons(&available);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn blocked_with_reasons_some_missing() {
+        let skills = vec![skill("A", &[], &["X", "Y"]), skill("B", &["X", "Y"], &[])];
+        let graph = DependencyGraph::build(&skills).unwrap();
+        // Only X available; B needs Y too.
+        let available: HashSet<String> = ["X".into()].into();
+        let result = graph.blocked_skills_with_reasons(&available);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "B");
+        assert_eq!(result[0].1, vec!["Y"]);
+    }
+
+    #[test]
+    fn blocked_with_reasons_multiple_skills_partial_overlap() {
+        let skills = vec![
+            skill("A", &[], &["X"]),
+            skill("B", &["X", "Y"], &["Y"]),
+            skill("C", &["Y", "Z"], &["Z"]),
+        ];
+        let graph = DependencyGraph::build(&skills).unwrap();
+        // Nothing available.
+        let available: HashSet<String> = HashSet::new();
+        let result = graph.blocked_skills_with_reasons(&available);
+        // A has no requires, so not blocked. B missing X,Y. C missing Y,Z.
+        assert_eq!(result.len(), 2);
+        // Sorted by skill name: B before C.
+        assert_eq!(result[0].0, "B");
+        assert_eq!(result[0].1, vec!["X", "Y"]);
+        assert_eq!(result[1].0, "C");
+        assert_eq!(result[1].1, vec!["Y", "Z"]);
+    }
+
+    #[test]
+    fn blocked_with_reasons_no_skills_have_requires() {
+        let skills = vec![skill("A", &[], &["X"]), skill("B", &[], &["Y"])];
+        let graph = DependencyGraph::build(&skills).unwrap();
+        let result = graph.blocked_skills_with_reasons(&HashSet::new());
+        assert!(result.is_empty());
     }
 
     // --- Display impls ---
