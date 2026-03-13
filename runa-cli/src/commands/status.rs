@@ -159,51 +159,63 @@ pub fn run(
             TriggerResult::NotSatisfied(_) => TriggerState::NotSatisfied,
         };
 
-        let entry = match trigger_state {
-            TriggerState::Satisfied => {
-                let mut precondition_failures = scan_incomplete_failures(skill, &scan_findings);
-
-                if let Err(err) = enforce_preconditions(skill, &loaded.store) {
-                    precondition_failures.extend(err.failures.iter().map(failure_entry));
-                }
-
-                if precondition_failures.is_empty() {
-                    SkillEntry {
-                        name: skill.name.clone(),
-                        status: SkillStatus::Ready,
-                        trigger: TriggerState::Satisfied,
-                        inputs: collect_inputs(
-                            skill,
-                            &loaded.store,
-                            working_dir,
-                            &scan_findings.affected_types,
-                        ),
-                        precondition_failures: Vec::new(),
-                        unsatisfied_conditions: Vec::new(),
-                    }
-                } else {
-                    SkillEntry {
-                        name: skill.name.clone(),
-                        status: SkillStatus::Blocked,
-                        trigger: TriggerState::Satisfied,
-                        inputs: Vec::new(),
-                        precondition_failures,
-                        unsatisfied_conditions: Vec::new(),
-                    }
-                }
-            }
-            TriggerState::NotSatisfied => SkillEntry {
+        let scan_failures = scan_incomplete_failures(skill, &scan_findings);
+        let entry = if !scan_failures.is_empty() {
+            SkillEntry {
                 name: skill.name.clone(),
-                status: SkillStatus::Waiting,
-                trigger: TriggerState::NotSatisfied,
+                status: SkillStatus::Blocked,
+                trigger: trigger_state,
                 inputs: Vec::new(),
-                precondition_failures: Vec::new(),
-                unsatisfied_conditions: collect_unsatisfied_conditions(
-                    &skill.trigger,
-                    &context,
-                    &skill.name,
-                ),
-            },
+                precondition_failures: scan_failures,
+                unsatisfied_conditions: Vec::new(),
+            }
+        } else {
+            match trigger_state {
+                TriggerState::Satisfied => {
+                    let mut precondition_failures = Vec::new();
+
+                    if let Err(err) = enforce_preconditions(skill, &loaded.store) {
+                        precondition_failures.extend(err.failures.iter().map(failure_entry));
+                    }
+
+                    if precondition_failures.is_empty() {
+                        SkillEntry {
+                            name: skill.name.clone(),
+                            status: SkillStatus::Ready,
+                            trigger: TriggerState::Satisfied,
+                            inputs: collect_inputs(
+                                skill,
+                                &loaded.store,
+                                working_dir,
+                                &scan_findings.affected_types,
+                            ),
+                            precondition_failures: Vec::new(),
+                            unsatisfied_conditions: Vec::new(),
+                        }
+                    } else {
+                        SkillEntry {
+                            name: skill.name.clone(),
+                            status: SkillStatus::Blocked,
+                            trigger: TriggerState::Satisfied,
+                            inputs: Vec::new(),
+                            precondition_failures,
+                            unsatisfied_conditions: Vec::new(),
+                        }
+                    }
+                }
+                TriggerState::NotSatisfied => SkillEntry {
+                    name: skill.name.clone(),
+                    status: SkillStatus::Waiting,
+                    trigger: TriggerState::NotSatisfied,
+                    inputs: Vec::new(),
+                    precondition_failures: Vec::new(),
+                    unsatisfied_conditions: collect_unsatisfied_conditions(
+                        &skill.trigger,
+                        &context,
+                        &skill.name,
+                    ),
+                },
+            }
         };
 
         match entry.status {
@@ -317,19 +329,40 @@ fn scan_incomplete_failures(
     skill: &libagent::SkillDeclaration,
     scan_findings: &ScanFindings,
 ) -> Vec<FailureEntry> {
-    skill
-        .requires
-        .iter()
+    let mut artifact_types = collect_trigger_artifact_types(&skill.trigger);
+
+    for artifact_type in &skill.requires {
+        if !artifact_types.contains(artifact_type) {
+            artifact_types.push(artifact_type.clone());
+        }
+    }
+
+    artifact_types
+        .into_iter()
         .filter(|artifact_type| {
             scan_findings
                 .affected_types
                 .contains(artifact_type.as_str())
         })
         .map(|artifact_type| FailureEntry {
-            artifact_type: artifact_type.clone(),
+            artifact_type,
             reason: "scan_incomplete",
         })
         .collect()
+}
+
+fn collect_trigger_artifact_types(condition: &libagent::TriggerCondition) -> Vec<String> {
+    match condition {
+        libagent::TriggerCondition::OnArtifact { name }
+        | libagent::TriggerCondition::OnChange { name }
+        | libagent::TriggerCondition::OnInvalid { name } => vec![name.clone()],
+        libagent::TriggerCondition::OnSignal { .. } => Vec::new(),
+        libagent::TriggerCondition::AllOf { conditions }
+        | libagent::TriggerCondition::AnyOf { conditions } => conditions
+            .iter()
+            .flat_map(collect_trigger_artifact_types)
+            .collect(),
+    }
 }
 
 fn collect_scan_findings(scan_result: &libagent::ScanResult, workspace_dir: &Path) -> ScanFindings {
@@ -421,10 +454,16 @@ fn collect_unsatisfied_conditions(
             .iter()
             .flat_map(|child| collect_unsatisfied_conditions(child, context, skill_name))
             .collect(),
-        libagent::TriggerCondition::AnyOf { conditions } => conditions
-            .iter()
-            .flat_map(|child| collect_unsatisfied_conditions(child, context, skill_name))
-            .collect(),
+        libagent::TriggerCondition::AnyOf { conditions } => {
+            if conditions.is_empty() {
+                vec!["any_of with no conditions (always unsatisfied)".to_string()]
+            } else {
+                conditions
+                    .iter()
+                    .flat_map(|child| collect_unsatisfied_conditions(child, context, skill_name))
+                    .collect()
+            }
+        }
         _ => vec![condition.to_string()],
     }
 }

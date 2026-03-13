@@ -496,7 +496,7 @@ fn status_blocks_skills_with_partial_required_types_and_reports_scan_warnings() 
 
 #[cfg(unix)]
 #[test]
-fn status_keeps_waiting_skills_waiting_when_partial_scan_only_affects_preconditions() {
+fn status_blocks_skills_when_partial_scan_affects_requires_even_if_trigger_is_unsatisfied() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -551,13 +551,18 @@ trigger = { type = "on_signal", name = "begin" }
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let skills = value["skills"].as_array().unwrap();
     assert_eq!(skills[0]["name"], "implement");
-    assert_eq!(skills[0]["status"], "waiting");
+    assert_eq!(skills[0]["status"], "blocked");
     assert_eq!(skills[0]["trigger"], "not_satisfied");
     assert_eq!(
-        skills[0]["unsatisfied_conditions"],
-        serde_json::json!(["on_signal(begin)"])
+        skills[0]["precondition_failures"],
+        serde_json::json!([
+            {
+                "artifact_type": "constraints",
+                "reason": "scan_incomplete"
+            }
+        ])
     );
-    assert!(skills[0].get("precondition_failures").is_none());
+    assert!(skills[0].get("unsatisfied_conditions").is_none());
 }
 
 #[cfg(unix)]
@@ -648,5 +653,132 @@ trigger = { type = "on_artifact", name = "constraints" }
                 "reason": "scan_incomplete"
             }
         ])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn status_blocks_skills_when_partial_scan_affects_trigger_only_artifact_types() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "report"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[skills]]
+name = "repair"
+trigger = { type = "on_invalid", name = "report" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("report")).unwrap();
+    let unreadable = workspace.join("report/bad.json");
+    fs::write(&unreadable, r#"{"title":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let skills = value["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["name"], "repair");
+    assert_eq!(skills[0]["status"], "blocked");
+    assert_eq!(skills[0]["trigger"], "not_satisfied");
+    assert_eq!(
+        skills[0]["precondition_failures"],
+        serde_json::json!([
+            {
+                "artifact_type": "report",
+                "reason": "scan_incomplete"
+            }
+        ])
+    );
+}
+
+#[test]
+fn status_preserves_reason_for_empty_any_of_triggers() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+artifact_types = []
+
+[[skills]]
+name = "impossible"
+trigger = { type = "any_of", conditions = [] }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let json_output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        json_output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&json_output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&json_output.stdout).unwrap();
+    let skills = value["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["name"], "impossible");
+    assert_eq!(skills[0]["status"], "waiting");
+    assert_eq!(
+        skills[0]["unsatisfied_conditions"],
+        serde_json::json!(["any_of with no conditions (always unsatisfied)"])
+    );
+
+    let text_output = runa_bin()
+        .arg("status")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        text_output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&text_output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&text_output.stdout);
+    assert!(
+        stdout.contains("any_of with no conditions (always unsatisfied)"),
+        "stdout: {stdout}"
     );
 }
