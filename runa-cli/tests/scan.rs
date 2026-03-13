@@ -162,3 +162,68 @@ fn scan_returns_non_zero_when_workspace_is_missing_and_store_has_state() {
         "stderr: {stderr}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn scan_reports_partially_scanned_types_and_suppresses_removals() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    let unreadable = workspace.join("constraints/bad.json");
+    fs::write(&unreadable, r#"{"title":"ok"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let store_dir = project_dir.join(".runa/store/constraints");
+    fs::create_dir_all(&store_dir).unwrap();
+    let kept_state = serde_json::json!({
+        "path": project_dir.join(".runa/workspace/constraints/kept.json"),
+        "status": "valid",
+        "last_modified_ms": 1000,
+        "content_hash": "sha256:abc123",
+        "schema_hash": "sha256:def456"
+    });
+    fs::write(
+        store_dir.join("kept.json"),
+        serde_json::to_string_pretty(&kept_state).unwrap(),
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Partially scanned types:"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("only partially readable"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("removal suppressed for this type"),
+        "stdout: {stdout}"
+    );
+    assert!(!stdout.contains("Removed:"), "stdout: {stdout}");
+    assert!(store_dir.join("kept.json").exists());
+}

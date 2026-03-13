@@ -241,7 +241,15 @@ fn doctor_reports_unreadable_workspace_entries_as_problems() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Scan:"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("only partially readable"),
+        "stdout: {stdout}"
+    );
     assert!(stdout.contains("unreadable:"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("removal suppressed for this type"),
+        "stdout: {stdout}"
+    );
 }
 
 #[test]

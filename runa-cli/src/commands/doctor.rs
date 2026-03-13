@@ -42,10 +42,39 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, D
     if !scan_result.unreadable.is_empty() {
         println!();
         println!("Scan:");
+        for partial in &scan_result.partially_scanned_types {
+            problems += 1;
+            println!(
+                "  partial: type {} was only partially readable, {} entr{} could not be scanned, removal suppressed for this type.",
+                partial.artifact_type,
+                partial.unreadable_entries,
+                if partial.unreadable_entries == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
+            );
+        }
         for entry in &scan_result.unreadable {
             problems += 1;
             println!("  unreadable: {}", entry.path.display());
             println!("    {}", entry.error);
+        }
+    } else if !scan_result.partially_scanned_types.is_empty() {
+        println!();
+        println!("Scan:");
+        for partial in &scan_result.partially_scanned_types {
+            problems += 1;
+            println!(
+                "  partial: type {} was only partially readable, {} entr{} could not be scanned, removal suppressed for this type.",
+                partial.artifact_type,
+                partial.unreadable_entries,
+                if partial.unreadable_entries == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
+            );
         }
     }
 

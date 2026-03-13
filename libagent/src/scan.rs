@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -55,6 +55,12 @@ pub struct UnreadableArtifact {
     pub error: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartiallyScannedType {
+    pub artifact_type: String,
+    pub unreadable_entries: usize,
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ScanResult {
     pub new: Vec<ArtifactRef>,
@@ -63,6 +69,7 @@ pub struct ScanResult {
     pub invalid: Vec<InvalidArtifact>,
     pub malformed: Vec<MalformedArtifact>,
     pub unreadable: Vec<UnreadableArtifact>,
+    pub partially_scanned_types: Vec<PartiallyScannedType>,
     pub removed: Vec<ArtifactRef>,
     pub unrecognized_dirs: Vec<String>,
 }
@@ -103,6 +110,12 @@ enum ScanDisposition {
     Unchanged,
 }
 
+#[derive(Default)]
+struct TypeScanState {
+    skipped_types: HashSet<String>,
+    partially_scanned_types: HashMap<String, usize>,
+}
+
 pub fn scan(workspace_dir: &Path, store: &mut ArtifactStore) -> Result<ScanResult, ScanError> {
     let scan_timestamp_ms = current_time_ms();
     let known_types: HashSet<String> = store
@@ -112,7 +125,7 @@ pub fn scan(workspace_dir: &Path, store: &mut ArtifactStore) -> Result<ScanResul
         .collect();
     let existing_keys = store.all_instance_keys();
     let mut seen_keys = HashSet::new();
-    let mut skipped_types = HashSet::new();
+    let mut type_scan_state = TypeScanState::default();
     let mut result = ScanResult::default();
 
     if !workspace_dir.exists() {
@@ -141,7 +154,7 @@ pub fn scan(workspace_dir: &Path, store: &mut ArtifactStore) -> Result<ScanResul
             store,
             scan_timestamp_ms,
             &mut seen_keys,
-            &mut skipped_types,
+            &mut type_scan_state,
             &mut result,
         )?;
     }
@@ -150,9 +163,19 @@ pub fn scan(workspace_dir: &Path, store: &mut ArtifactStore) -> Result<ScanResul
     result
         .unreadable
         .sort_by(|left, right| left.path.cmp(&right.path));
+    let mut partially_scanned_types: Vec<_> = type_scan_state
+        .partially_scanned_types
+        .into_iter()
+        .map(|(artifact_type, unreadable_entries)| PartiallyScannedType {
+            artifact_type,
+            unreadable_entries,
+        })
+        .collect();
+    partially_scanned_types.sort_by(|left, right| left.artifact_type.cmp(&right.artifact_type));
+    result.partially_scanned_types = partially_scanned_types;
 
     for (artifact_type, instance_id) in existing_keys {
-        if skipped_types.contains(&artifact_type) {
+        if type_scan_state.skipped_types.contains(&artifact_type) {
             continue;
         }
         if seen_keys.contains(&(artifact_type.clone(), instance_id.clone())) {
@@ -185,13 +208,13 @@ fn scan_type_dir(
     store: &mut ArtifactStore,
     scan_timestamp_ms: u64,
     seen_keys: &mut HashSet<(String, String)>,
-    skipped_types: &mut HashSet<String>,
+    type_scan_state: &mut TypeScanState,
     result: &mut ScanResult,
 ) -> Result<(), ScanError> {
     let entries = match std::fs::read_dir(type_dir) {
         Ok(entries) => entries,
         Err(err) => {
-            skipped_types.insert(artifact_type.to_string());
+            mark_type_partially_scanned(artifact_type, type_scan_state);
             result.unreadable.push(UnreadableArtifact {
                 path: type_dir.to_path_buf(),
                 error: err.to_string(),
@@ -204,6 +227,7 @@ fn scan_type_dir(
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
+                mark_type_partially_scanned(artifact_type, type_scan_state);
                 result.unreadable.push(UnreadableArtifact {
                     path: type_dir.to_path_buf(),
                     error: err.to_string(),
@@ -215,6 +239,7 @@ fn scan_type_dir(
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(err) => {
+                mark_type_partially_scanned(artifact_type, type_scan_state);
                 result.unreadable.push(UnreadableArtifact {
                     path,
                     error: err.to_string(),
@@ -241,6 +266,7 @@ fn scan_type_dir(
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(err) => {
+                mark_type_partially_scanned(artifact_type, type_scan_state);
                 result.unreadable.push(UnreadableArtifact {
                     path: path.clone(),
                     error: err.to_string(),
@@ -276,6 +302,16 @@ fn scan_type_dir(
     }
 
     Ok(())
+}
+
+fn mark_type_partially_scanned(artifact_type: &str, type_scan_state: &mut TypeScanState) {
+    type_scan_state
+        .skipped_types
+        .insert(artifact_type.to_string());
+    *type_scan_state
+        .partially_scanned_types
+        .entry(artifact_type.to_string())
+        .or_insert(0) += 1;
 }
 
 fn handle_json_artifact(
@@ -770,8 +806,54 @@ mod tests {
 
         assert_eq!(result.unreadable.len(), 1);
         assert_eq!(result.unreadable[0].path, unreadable_path);
+        assert_eq!(
+            result.partially_scanned_types,
+            vec![PartiallyScannedType {
+                artifact_type: "report".to_string(),
+                unreadable_entries: 1,
+            }]
+        );
         assert_eq!(state.path, Path::new("old/report/item.json"));
         assert_eq!(state.last_modified_ms, 1234);
+
+        std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn partially_scanned_type_suppresses_removals() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let unreadable_path = workspace.join("report/item.json");
+        write_file(&unreadable_path, r#"{"title":"ok"}"#);
+        std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o0)).unwrap();
+
+        let store_dir = tmp.path().join("store");
+        let mut store = make_store(&store_dir, vec!["report"]);
+        store
+            .record_with_timestamp(
+                "report",
+                "gone",
+                &workspace.join("report/gone.json"),
+                &json!({"title": "keep"}),
+                1234,
+            )
+            .unwrap();
+
+        let result = scan(&workspace, &mut store).unwrap();
+
+        assert!(result.removed.is_empty());
+        assert_eq!(
+            result.partially_scanned_types,
+            vec![PartiallyScannedType {
+                artifact_type: "report".to_string(),
+                unreadable_entries: 1,
+            }]
+        );
+        assert!(store.get("report", "gone").is_some());
+        assert!(store_dir.join("report/gone.json").exists());
 
         std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }

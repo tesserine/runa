@@ -1,7 +1,10 @@
 use std::fmt;
 use std::path::Path;
 
-use libagent::{InvalidArtifact, MalformedArtifact, ScanError as LibScanError, UnreadableArtifact};
+use libagent::{
+    InvalidArtifact, MalformedArtifact, PartiallyScannedType, ScanError as LibScanError,
+    UnreadableArtifact,
+};
 
 use crate::project::{self, ProjectError};
 
@@ -38,13 +41,19 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), Sca
     println!("Workspace: {}", loaded.workspace_dir.display());
     println!();
     println!(
-        "Summary: {} new, {} modified, {} revalidated, {} invalid, {} malformed, {} unreadable, {} removed, {} unrecognized dir{}",
+        "Summary: {} new, {} modified, {} revalidated, {} invalid, {} malformed, {} unreadable, {} partially scanned type{}, {} removed, {} unrecognized dir{}",
         result.new.len(),
         result.modified.len(),
         result.revalidated.len(),
         result.invalid.len(),
         result.malformed.len(),
         result.unreadable.len(),
+        result.partially_scanned_types.len(),
+        if result.partially_scanned_types.len() == 1 {
+            ""
+        } else {
+            "s"
+        },
         result.removed.len(),
         result.unrecognized_dirs.len(),
         if result.unrecognized_dirs.len() == 1 {
@@ -60,6 +69,7 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), Sca
     print_invalid("Invalid", &result.invalid);
     print_malformed("Malformed", &result.malformed);
     print_unreadable("Unreadable", &result.unreadable);
+    print_partially_scanned_types("Partially scanned types", &result.partially_scanned_types);
     print_refs("Removed", &result.removed);
 
     if !result.unrecognized_dirs.is_empty() {
@@ -137,5 +147,26 @@ fn print_unreadable(label: &str, artifacts: &[UnreadableArtifact]) {
     println!("{label}:");
     for artifact in artifacts {
         println!("  {}: {}", artifact.path.display(), artifact.error);
+    }
+}
+
+fn print_partially_scanned_types(label: &str, types: &[PartiallyScannedType]) {
+    if types.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("{label}:");
+    for partial in types {
+        println!(
+            "  type {} was only partially readable, {} entr{} could not be scanned, removal suppressed for this type.",
+            partial.artifact_type,
+            partial.unreadable_entries,
+            if partial.unreadable_entries == 1 {
+                "y"
+            } else {
+                "ies"
+            }
+        );
     }
 }
