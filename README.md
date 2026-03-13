@@ -36,6 +36,12 @@ runa scan
 
 Scans the artifact workspace, reconciles it into `.runa/store/`, records valid, invalid, and malformed artifacts, and reports new/modified/revalidated/removed instances plus unreadable entries and unrecognized workspace directories. If the workspace is missing, scan succeeds only when the store is still empty; otherwise it fails to avoid wiping stored state. Per-file read failures are reported as findings and do not abort the scan. Exits 0 if reconciliation succeeds, even when findings are present.
 
+```bash
+runa status [--json]
+```
+
+Evaluates every skill after an implicit scan and classifies it as `READY`, `BLOCKED`, or `WAITING`. Text output groups skills in that order and shows the current inputs, precondition failures, or unsatisfied trigger conditions that explain each status. `--json` emits `{ "version": 1, "methodology": "...", "skills": [...] }`, with a flat ordered `skills` array containing `name`, `status`, `trigger`, and the status-specific fields `inputs`, `precondition_failures`, or `unsatisfied_conditions`. Exits 0 when status evaluation succeeds, even if some skills are blocked or waiting.
+
 ## Build
 
 Rust 2024 edition.

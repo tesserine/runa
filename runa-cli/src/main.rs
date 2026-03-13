@@ -35,6 +35,12 @@ enum Commands {
     Doctor,
     /// Scan the artifact workspace and reconcile it into the store
     Scan,
+    /// Evaluate skill readiness and report status
+    Status {
+        /// Emit machine-readable JSON instead of text output
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() {
@@ -128,6 +134,20 @@ fn main() {
             };
 
             if let Err(e) = commands::scan::run(&working_dir, config_override.as_deref()) {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+        }
+        Commands::Status { json } => {
+            let working_dir = match std::env::current_dir() {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    process::exit(1);
+                }
+            };
+
+            if let Err(e) = commands::status::run(&working_dir, config_override.as_deref(), json) {
                 eprintln!("error: {e}");
                 process::exit(1);
             }
