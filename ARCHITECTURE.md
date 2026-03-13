@@ -6,7 +6,7 @@ Runa is a cognitive runtime for AI agents. This document describes the codebase 
 
 Two crates, Rust 2024 edition, resolver v3:
 
-- **`libagent`** — All domain logic: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation.
+- **`libagent`** — All domain logic: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, pre/post-execution enforcement.
 - **`runa-cli`** — Thin CLI binary. Clap-based argument parsing, delegates to libagent. No domain logic.
 
 ## Data Flow
@@ -46,6 +46,14 @@ Artifact state tracking keyed by `(type_name, instance_id)`. Each `ArtifactState
 ### `trigger.rs`
 
 Recursive trigger condition evaluator. `evaluate` is a pure function that takes a `TriggerCondition`, a `TriggerContext` (read-only references to the artifact store, activation timestamps, and active signals), and a skill name. Six condition variants: `OnArtifact` checks `store.is_valid`, `OnChange` compares latest modification against the skill's activation timestamp, `OnInvalid` checks `store.has_any_invalid`, `OnSignal` checks set membership, `AllOf` short-circuits on first failure, `AnyOf` short-circuits on first success.
+
+### `enforcement.rs`
+
+Pre/post-execution enforcement of skill contracts. Two pure functions that check a `SkillDeclaration` against an `ArtifactStore`:
+- `enforce_preconditions` — verifies all `requires` artifacts exist with all instances valid. `accepts` is explicitly not checked.
+- `enforce_postconditions` — verifies all `produces` artifacts exist with all instances valid; validates `may_produce` artifacts if present (absent is ok). `accepts` is not checked.
+
+Returns `EnforcementError` on failure, containing the skill name, enforcement phase, and a list of `ArtifactFailure` entries. Three failure variants distinguish corrective actions: `Missing` (no instances), `Invalid` (schema violations), `Stale` (needs revalidation).
 
 ## `.runa/` Directory Layout
 

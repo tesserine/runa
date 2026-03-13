@@ -10,15 +10,23 @@
 //! - [`graph`] — Dependency graph: topological ordering, cycle detection, blocked-skill identification
 //! - [`store`] — Artifact state tracking: validation status, content hashing, JSON persistence
 //! - [`trigger`] — Trigger condition evaluation against runtime state
+//! - [`enforcement`] — Pre/post-execution enforcement of skill contracts
 //!
 //! See `ARCHITECTURE.md` in the repository root for data flow and design details.
 
+pub mod enforcement;
 pub mod graph;
 pub mod manifest;
 pub mod model;
 pub mod store;
+#[cfg(test)]
+pub(crate) mod test_helpers;
 pub mod trigger;
 pub mod validation;
+pub use enforcement::{
+    ArtifactFailure, EnforcementError, Phase, Relationship, enforce_postconditions,
+    enforce_preconditions,
+};
 pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use manifest::ManifestError;
 pub use model::{ArtifactType, Manifest, SkillDeclaration, TriggerCondition};
