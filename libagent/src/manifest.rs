@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 
-use crate::model::Manifest;
+use crate::model::{Manifest, TriggerCondition, is_valid_signal_name};
 
 /// Errors that can occur when parsing a manifest file.
 #[derive(Debug)]
@@ -15,6 +15,8 @@ pub enum ManifestError {
     DuplicateArtifactType(String),
     /// Two skills share the same name.
     DuplicateSkillName(String),
+    /// An on_signal trigger uses an invalid signal name.
+    InvalidSignalName(String),
 }
 
 impl fmt::Display for ManifestError {
@@ -27,6 +29,12 @@ impl fmt::Display for ManifestError {
             }
             ManifestError::DuplicateSkillName(name) => {
                 write!(f, "duplicate skill name: {name}")
+            }
+            ManifestError::InvalidSignalName(name) => {
+                write!(
+                    f,
+                    "invalid signal name '{name}': expected pattern [a-z0-9][a-z0-9_-]*"
+                )
             }
         }
     }
@@ -86,9 +94,31 @@ fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
         if !seen.insert(&skill.name) {
             return Err(ManifestError::DuplicateSkillName(skill.name.clone()));
         }
+        validate_trigger(&skill.trigger)?;
     }
 
     Ok(())
+}
+
+fn validate_trigger(trigger: &TriggerCondition) -> Result<(), ManifestError> {
+    match trigger {
+        TriggerCondition::OnSignal { name } => {
+            if is_valid_signal_name(name) {
+                Ok(())
+            } else {
+                Err(ManifestError::InvalidSignalName(name.clone()))
+            }
+        }
+        TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
+            for condition in conditions {
+                validate_trigger(condition)?;
+            }
+            Ok(())
+        }
+        TriggerCondition::OnArtifact { .. }
+        | TriggerCondition::OnChange { .. }
+        | TriggerCondition::OnInvalid { .. } => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +257,26 @@ trigger = { type = "bogus", name = "whatever" }
         assert!(
             matches!(err, ManifestError::Parse(_)),
             "expected Parse error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_invalid_signal_name_rejects_manifest() {
+        let toml = r#"
+name = "bad"
+
+[[artifact_types]]
+name = "x"
+schema = { type = "object" }
+
+[[skills]]
+name = "y"
+trigger = { type = "on_signal", name = "release/v1" }
+"#;
+        let err = from_str(toml).unwrap_err();
+        assert!(
+            matches!(err, ManifestError::InvalidSignalName(ref name) if name == "release/v1"),
+            "expected InvalidSignalName, got: {err}"
         );
     }
 

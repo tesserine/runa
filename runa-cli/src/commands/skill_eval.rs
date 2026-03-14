@@ -143,6 +143,7 @@ pub(crate) fn evaluate_skills(
     loaded: &project::LoadedProject,
     working_dir: &Path,
     scan_findings: &ScanFindings,
+    active_signals: &HashSet<String>,
 ) -> EvaluatedSkills {
     let (skill_order, cycle) = match loaded.graph.topological_order() {
         Ok(order) => (order, None),
@@ -150,7 +151,9 @@ pub(crate) fn evaluate_skills(
             eprintln!("warning: {cycle}");
             let cycle_participants: HashSet<&str> =
                 cycle.path.iter().map(|name| name.as_str()).collect();
-            let mut order = loaded.graph.topological_order_excluding(&cycle_participants);
+            let mut order = loaded
+                .graph
+                .topological_order_excluding(&cycle_participants);
             order.extend(
                 loaded
                     .manifest
@@ -159,10 +162,7 @@ pub(crate) fn evaluate_skills(
                     .map(|skill| skill.name.as_str())
                     .filter(|name| cycle_participants.contains(name)),
             );
-            (
-                order,
-                Some(cycle),
-            )
+            (order, Some(cycle))
         }
     };
 
@@ -174,11 +174,10 @@ pub(crate) fn evaluate_skills(
         .collect();
 
     let timestamps = HashMap::new();
-    let signals = HashSet::new();
     let context = TriggerContext {
         store: &loaded.store,
         activation_timestamps: &timestamps,
-        active_signals: &signals,
+        active_signals,
     };
 
     let mut ready = Vec::new();

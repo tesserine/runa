@@ -145,6 +145,48 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
 }
 
 #[test]
+fn step_succeeds_with_warning_when_signals_file_is_malformed() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    fs::write(project_dir.join(".runa/signals.json"), "{not json").unwrap();
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["scan_warnings"],
+        serde_json::json!([
+            "could not parse .runa/signals.json: key must be a string at line 1 column 2; treating as no active signals"
+        ])
+    );
+    assert_eq!(value["execution_plan"], serde_json::json!([]));
+    let ground = value["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == "ground")
+        .unwrap();
+    assert_eq!(ground["status"], "waiting");
+}
+
+#[test]
 fn step_dry_run_text_reports_why_when_no_skills_are_ready() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = dir.path().join("manifest.toml");
@@ -607,7 +649,11 @@ trigger = { type = "on_artifact", name = "a" }
 
     let workspace = project_dir.join(".runa/workspace");
     fs::create_dir_all(workspace.join("a")).unwrap();
-    fs::write(workspace.join("a/input.json"), r#"{"title":"already here"}"#).unwrap();
+    fs::write(
+        workspace.join("a/input.json"),
+        r#"{"title":"already here"}"#,
+    )
+    .unwrap();
 
     let output = runa_bin()
         .arg("step")
@@ -624,7 +670,11 @@ trigger = { type = "on_artifact", name = "a" }
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["cycle"], serde_json::json!(["first", "second"]), "{value:#}");
+    assert_eq!(
+        value["cycle"],
+        serde_json::json!(["first", "second"]),
+        "{value:#}"
+    );
 
     let execution_plan = value["execution_plan"].as_array().unwrap();
     assert_eq!(execution_plan.len(), 1, "{value:#}");

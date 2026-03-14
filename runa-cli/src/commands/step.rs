@@ -69,10 +69,15 @@ pub fn run(
     }
 
     let mut loaded = project::load(working_dir, config_override).map_err(StepError::Project)?;
+    let (active_signals, signal_warnings) =
+        project::load_signals(&working_dir.join(project::RUNA_DIR));
     let scan_result =
         libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(StepError::Scan)?;
     let scan_findings = skill_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
-    let evaluated = skill_eval::evaluate_skills(&loaded, working_dir, &scan_findings);
+    let evaluated =
+        skill_eval::evaluate_skills(&loaded, working_dir, &scan_findings, &active_signals);
+    let mut warnings = scan_findings.warnings.clone();
+    warnings.extend(signal_warnings);
 
     let skill_map: std::collections::HashMap<&str, &libagent::SkillDeclaration> = loaded
         .manifest
@@ -113,7 +118,7 @@ pub fn run(
         let payload = StepJson {
             version: 1,
             methodology: &loaded.manifest.name,
-            scan_warnings: scan_findings.warnings.clone(),
+            scan_warnings: warnings.clone(),
             cycle: evaluated.cycle.as_ref().map(|cycle| cycle.path.clone()),
             execution_plan,
             skills: evaluated.json_skills(),
@@ -124,10 +129,10 @@ pub fn run(
         );
     } else {
         println!("Methodology: {}", loaded.manifest.name);
-        if !scan_findings.warnings.is_empty() {
+        if !warnings.is_empty() {
             println!();
             println!("Scan warnings:");
-            for warning in &scan_findings.warnings {
+            for warning in &warnings {
                 println!("  - {warning}");
             }
         }
