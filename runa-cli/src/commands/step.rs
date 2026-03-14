@@ -45,6 +45,8 @@ struct StepJson<'a> {
     version: u32,
     methodology: &'a str,
     scan_warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cycle_detected: Option<bool>,
     execution_plan: Vec<PlanEntry>,
     skills: Vec<skill_eval::SkillJson>,
 }
@@ -79,33 +81,38 @@ pub fn run(
         .map(|skill| (skill.name.as_str(), skill))
         .collect();
 
-    let execution_plan: Vec<PlanEntry> = evaluated
-        .ready
-        .iter()
-        .map(|entry| {
-            let skill = skill_map
-                .get(entry.name.as_str())
-                .expect("ready skill must exist in manifest");
-            let mut context = libagent::context::build_context(skill, &loaded.store);
-            context.inputs.retain(|input| {
-                input.relationship == ArtifactRelationship::Requires
-                    || !scan_findings
-                        .affected_types
-                        .contains(input.artifact_type.as_str())
-            });
-            PlanEntry {
-                skill: entry.name.clone(),
-                trigger: skill.trigger.to_string(),
-                context,
-            }
-        })
-        .collect();
+    let execution_plan: Vec<PlanEntry> = if evaluated.has_cycle {
+        Vec::new()
+    } else {
+        evaluated
+            .ready
+            .iter()
+            .map(|entry| {
+                let skill = skill_map
+                    .get(entry.name.as_str())
+                    .expect("ready skill must exist in manifest");
+                let mut context = libagent::context::build_context(skill, &loaded.store);
+                context.inputs.retain(|input| {
+                    input.relationship == ArtifactRelationship::Requires
+                        || !scan_findings
+                            .affected_types
+                            .contains(input.artifact_type.as_str())
+                });
+                PlanEntry {
+                    skill: entry.name.clone(),
+                    trigger: skill.trigger.to_string(),
+                    context,
+                }
+            })
+            .collect()
+    };
 
     if json_output {
         let payload = StepJson {
             version: 1,
             methodology: &loaded.manifest.name,
             scan_warnings: scan_findings.warnings.clone(),
+            cycle_detected: evaluated.has_cycle.then_some(true),
             execution_plan,
             skills: evaluated.json_skills(),
         };
@@ -124,7 +131,13 @@ pub fn run(
         }
         println!();
 
-        if execution_plan.is_empty() {
+        if evaluated.has_cycle {
+            if let Err(cycle) = loaded.graph.topological_order() {
+                println!("warning: {cycle}");
+            }
+            println!("Execution plan: none");
+            println!("Cannot produce execution plan: dependency cycle detected.");
+        } else if execution_plan.is_empty() {
             println!("Execution plan: none");
             println!("No READY skills.");
         } else {

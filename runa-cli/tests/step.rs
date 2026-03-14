@@ -352,3 +352,124 @@ fn step_dry_run_omits_partially_scanned_accepted_inputs_from_context() {
         ])
     );
 }
+
+#[test]
+fn step_dry_run_json_reports_cycle_and_omits_execution_plan() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "a"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[artifact_types]]
+name = "b"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[skills]]
+name = "first"
+requires = ["b"]
+produces = ["a"]
+trigger = { type = "on_signal", name = "go" }
+
+[[skills]]
+name = "second"
+requires = ["a"]
+produces = ["b"]
+trigger = { type = "on_signal", name = "go" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["cycle_detected"], true, "{value:#}");
+    assert_eq!(value["execution_plan"], serde_json::json!([]));
+    let skills = value["skills"].as_array().unwrap();
+    assert_eq!(skills.len(), 2, "{value:#}");
+    assert_eq!(skills[0]["name"], "first");
+    assert_eq!(skills[1]["name"], "second");
+}
+
+#[test]
+fn step_dry_run_text_reports_cycle_and_no_execution_plan() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "a"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[artifact_types]]
+name = "b"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[skills]]
+name = "first"
+requires = ["b"]
+produces = ["a"]
+trigger = { type = "on_signal", name = "go" }
+
+[[skills]]
+name = "second"
+requires = ["a"]
+produces = ["b"]
+trigger = { type = "on_signal", name = "go" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("warning: dependency cycle detected: first -> second"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Cannot produce execution plan: dependency cycle detected."),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("Execution plan: none"), "stdout: {stdout}");
+    assert!(stdout.contains("BLOCKED:"), "stdout: {stdout}");
+}
