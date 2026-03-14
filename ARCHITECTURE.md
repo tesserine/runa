@@ -43,7 +43,7 @@ Dependency graph built from skill declarations. Edges derive from artifact relat
 
 ### `context.rs`
 
-Stable agent-facing context injection contract. `build_context` gathers all valid required artifacts and all valid available accepted artifacts for a skill into ordered `ArtifactRef` entries carrying `artifact_type`, `instance_id`, `path`, `content_hash`, and `relationship` (`requires` or `accepts`). `ExpectedOutputs` exposes `produces` and `may_produce` artifact type names without embedding trigger/operator details.
+Stable agent-facing context injection contract. `build_context` gathers all valid required artifacts and all valid available accepted artifacts for a skill into ordered `ArtifactRef` entries carrying `artifact_type`, `instance_id`, lossy text `path`, `content_hash`, and `relationship` (`requires` or `accepts`). `ExpectedOutputs` exposes `produces` and `may_produce` artifact type names without embedding trigger/operator details.
 
 ### `store.rs`
 
@@ -122,7 +122,7 @@ Exits 0 for successful status evaluation regardless of whether skills are ready,
 
 ### `runa step --dry-run [--json]`
 
-Runs the same implicit scan and shared skill evaluation used by `runa status`, then builds an execution plan from the `READY` skills only. Plan entries preserve topological order and include the skill name, the trigger condition string, and the JSON-serialized `libagent::context::ContextInjection` payload. Text output prints the execution plan followed by the grouped READY/BLOCKED/WAITING view; if the plan is empty, it explicitly says no skills are ready and still prints the blocked/waiting reasons. JSON output adds an `execution_plan` array while reusing the same `skills` status entries and `scan_warnings` envelope fields as `runa status`.
+Runs the same implicit scan and shared skill evaluation used by `runa status`, then builds an execution plan from the `READY` skills that can be placed in a valid execution order. Plan entries preserve graph order for the non-cyclic frontier and include the skill name, the trigger condition string, and the JSON-serialized `libagent::context::ContextInjection` payload. If a hard dependency cycle exists, `step` reports it as a warning, excludes the cycle participants from the plan, and still includes any unrelated orderable READY skills. Text output prints the execution plan followed by the grouped READY/BLOCKED/WAITING view. JSON output adds an `execution_plan` array plus an optional `cycle` path while reusing the same `skills` status entries and `scan_warnings` envelope fields as `runa status`.
 
 `runa step` without `--dry-run` is a deliberate stub: it prints `Agent execution is not yet implemented. Use --dry-run to see the execution plan.` and exits with code 1.
 

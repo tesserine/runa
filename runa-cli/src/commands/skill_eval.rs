@@ -84,7 +84,7 @@ struct TriggerEvaluation {
 }
 
 pub(crate) struct EvaluatedSkills {
-    pub(crate) has_cycle: bool,
+    pub(crate) cycle: Option<libagent::CycleError>,
     pub(crate) ready: Vec<SkillEntry>,
     pub(crate) blocked: Vec<SkillEntry>,
     pub(crate) waiting: Vec<SkillEntry>,
@@ -144,8 +144,8 @@ pub(crate) fn evaluate_skills(
     working_dir: &Path,
     scan_findings: &ScanFindings,
 ) -> EvaluatedSkills {
-    let (skill_order, has_cycle) = match loaded.graph.topological_order() {
-        Ok(order) => (order, false),
+    let (skill_order, cycle) = match loaded.graph.topological_order() {
+        Ok(order) => (order, None),
         Err(cycle) => {
             eprintln!("warning: {cycle}");
             (
@@ -155,7 +155,7 @@ pub(crate) fn evaluate_skills(
                     .iter()
                     .map(|skill| skill.name.as_str())
                     .collect(),
-                true,
+                Some(cycle),
             )
         }
     };
@@ -270,7 +270,7 @@ pub(crate) fn evaluate_skills(
     }
 
     EvaluatedSkills {
-        has_cycle,
+        cycle,
         ready,
         blocked,
         waiting,

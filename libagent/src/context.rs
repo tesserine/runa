@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
 
 use crate::{ArtifactStore, SkillDeclaration, ValidationStatus};
@@ -15,7 +13,7 @@ pub enum ArtifactRelationship {
 pub struct ArtifactRef {
     pub artifact_type: String,
     pub instance_id: String,
-    pub path: PathBuf,
+    pub path: String,
     pub content_hash: String,
     pub relationship: ArtifactRelationship,
 }
@@ -71,13 +69,17 @@ fn collect_inputs(
                 target.push(ArtifactRef {
                     artifact_type: artifact_type.clone(),
                     instance_id: instance_id.to_string(),
-                    path: state.path.clone(),
+                    path: display_path(&state.path),
                     content_hash: state.content_hash.clone(),
                     relationship,
                 });
             }
         }
     }
+}
+
+fn display_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
@@ -132,7 +134,7 @@ mod tests {
             ArtifactRef {
                 artifact_type: "constraints".into(),
                 instance_id: "spec".into(),
-                path: constraints_path,
+                path: constraints_path.display().to_string(),
                 content_hash:
                     "sha256:dd4077b358533c789242e86ac7f5e7dffa0a587d5b4acfd343c612ae9ddfd315".into(),
                 relationship: ArtifactRelationship::Requires,
@@ -143,7 +145,7 @@ mod tests {
             ArtifactRef {
                 artifact_type: "notes".into(),
                 instance_id: "notes".into(),
-                path: notes_path,
+                path: notes_path.display().to_string(),
                 content_hash:
                     "sha256:c623bcb14b09ea83fe711bfb893ea3d56f13a23b95bad47e04c4dec264267abd".into(),
                 relationship: ArtifactRelationship::Accepts,
@@ -190,5 +192,25 @@ mod tests {
             context.inputs[0].relationship,
             ArtifactRelationship::Requires
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn display_path_converts_non_utf8_paths_lossily() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = std::path::Path::new(OsStr::from_bytes(b"workspace/constraints/spec-\xFF.json"));
+
+        let display = display_path(path);
+        assert_eq!(display, "workspace/constraints/spec-\u{FFFD}.json");
+        let artifact = ArtifactRef {
+            artifact_type: "constraints".into(),
+            instance_id: "spec".into(),
+            path: display,
+            content_hash: "sha256:test".into(),
+            relationship: ArtifactRelationship::Requires,
+        };
+        assert!(serde_json::to_string(&artifact).is_ok());
     }
 }

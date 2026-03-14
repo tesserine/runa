@@ -46,9 +46,9 @@ Evaluates every skill after an implicit scan and classifies it as `READY`, `BLOC
 runa step --dry-run [--json]
 ```
 
-Builds an operator-facing execution plan after an implicit scan. The execution plan contains only `READY` skills, in topological order, and each plan entry includes the skill name, the human-readable trigger that activated it, and a serialized agent-facing context injection payload. The context payload contains the skill name, all valid required and available accepted inputs with their paths, content hashes, and relationships, plus expected outputs split into `produces` and `may_produce`.
+Builds an operator-facing execution plan after an implicit scan. The execution plan contains `READY` skills that can be placed in a valid execution order, and each plan entry includes the skill name, the human-readable trigger that activated it, and a serialized agent-facing context injection payload. The context payload contains the skill name, all valid required and available accepted inputs with text paths, content hashes, and relationships, plus expected outputs split into `produces` and `may_produce`.
 
-Text output prints the execution plan and the same grouped skill status view used by `runa status`, so operators can still see blocked and waiting reasons when nothing is runnable. `--json` emits `{ "version": 1, "methodology": "...", "scan_warnings": [...], "execution_plan": [...], "skills": [...] }`, where `skills` reuses the same status entries as `runa status --json`. `runa step` without `--dry-run` is not implemented yet; it prints a placeholder message and exits with code 1.
+If the graph contains a hard dependency cycle, `step` reports the cycle as a warning and excludes the cyclic skills from `execution_plan`; non-cyclic READY skills still appear when they are orderable. Text output prints the execution plan and the same grouped skill status view used by `runa status`, so operators can still see blocked and waiting reasons when nothing is runnable. `--json` emits `{ "version": 1, "methodology": "...", "scan_warnings": [...], "cycle": ["..."] | null, "execution_plan": [...], "skills": [...] }`, where `skills` reuses the same status entries as `runa status --json`. `runa step` without `--dry-run` is not implemented yet; it prints a placeholder message and exits with code 1.
 
 ## Build
 

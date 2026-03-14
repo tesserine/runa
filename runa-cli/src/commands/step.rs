@@ -46,7 +46,7 @@ struct StepJson<'a> {
     methodology: &'a str,
     scan_warnings: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    cycle_detected: Option<bool>,
+    cycle: Option<Vec<String>>,
     execution_plan: Vec<PlanEntry>,
     skills: Vec<skill_eval::SkillJson>,
 }
@@ -81,38 +81,40 @@ pub fn run(
         .map(|skill| (skill.name.as_str(), skill))
         .collect();
 
-    let execution_plan: Vec<PlanEntry> = if evaluated.has_cycle {
-        Vec::new()
-    } else {
-        evaluated
-            .ready
-            .iter()
-            .map(|entry| {
-                let skill = skill_map
-                    .get(entry.name.as_str())
-                    .expect("ready skill must exist in manifest");
-                let mut context = libagent::context::build_context(skill, &loaded.store);
-                context.inputs.retain(|input| {
-                    input.relationship == ArtifactRelationship::Requires
-                        || !scan_findings
-                            .affected_types
-                            .contains(input.artifact_type.as_str())
-                });
-                PlanEntry {
-                    skill: entry.name.clone(),
-                    trigger: skill.trigger.to_string(),
-                    context,
-                }
-            })
-            .collect()
-    };
+    let ready_names: std::collections::HashSet<&str> = evaluated
+        .ready
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    let (plan_order, _) = loaded.graph.topological_prefix();
+    let execution_plan: Vec<PlanEntry> = plan_order
+        .into_iter()
+        .filter(|name| ready_names.contains(name))
+        .map(|name| {
+            let skill = skill_map
+                .get(name)
+                .expect("planned skill must exist in manifest");
+            let mut context = libagent::context::build_context(skill, &loaded.store);
+            context.inputs.retain(|input| {
+                input.relationship == ArtifactRelationship::Requires
+                    || !scan_findings
+                        .affected_types
+                        .contains(input.artifact_type.as_str())
+            });
+            PlanEntry {
+                skill: name.to_string(),
+                trigger: skill.trigger.to_string(),
+                context,
+            }
+        })
+        .collect();
 
     if json_output {
         let payload = StepJson {
             version: 1,
             methodology: &loaded.manifest.name,
             scan_warnings: scan_findings.warnings.clone(),
-            cycle_detected: evaluated.has_cycle.then_some(true),
+            cycle: evaluated.cycle.as_ref().map(|cycle| cycle.path.clone()),
             execution_plan,
             skills: evaluated.json_skills(),
         };
@@ -131,15 +133,15 @@ pub fn run(
         }
         println!();
 
-        if evaluated.has_cycle {
-            if let Err(cycle) = loaded.graph.topological_order() {
-                println!("warning: {cycle}");
+        if let Some(cycle) = &evaluated.cycle {
+            println!("warning: {cycle}");
+        }
+
+        if execution_plan.is_empty() {
+            println!("Execution plan: none");
+            if evaluated.cycle.is_none() {
+                println!("No READY skills.");
             }
-            println!("Execution plan: none");
-            println!("Cannot produce execution plan: dependency cycle detected.");
-        } else if execution_plan.is_empty() {
-            println!("Execution plan: none");
-            println!("No READY skills.");
         } else {
             println!("Execution plan:");
             for (index, entry) in execution_plan.iter().enumerate() {
