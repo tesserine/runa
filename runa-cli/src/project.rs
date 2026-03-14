@@ -8,6 +8,7 @@ use libagent::{ArtifactStore, DependencyGraph, GraphError, Manifest, ManifestErr
 pub const RUNA_DIR: &str = ".runa";
 pub const CONFIG_FILENAME: &str = "config.toml";
 pub const STATE_FILENAME: &str = "state.toml";
+pub const SIGNALS_FILENAME: &str = "signals.json";
 pub(crate) const DEFAULT_WORKSPACE_DIR: &str = "workspace";
 pub(crate) const STORE_DIRNAME: &str = "store";
 
@@ -19,19 +20,20 @@ pub struct Config {
     pub artifacts_dir: Option<String>,
 }
 
-/// On-disk format for `.runa/state.toml` — runtime state managed by runa itself.
+/// On-disk format for `.runa/state.toml` — initialization metadata managed by runa.
 #[derive(Serialize, Deserialize)]
 pub struct State {
     pub initialized_at: String,
     pub runa_version: String,
 }
 
-/// A fully loaded runa project: manifest, dependency graph, and artifact store.
+/// A fully loaded runa project: manifest, dependency graph, artifact store, and active signals.
 pub struct LoadedProject {
     pub manifest: Manifest,
     pub graph: DependencyGraph,
     pub store: ArtifactStore,
     pub workspace_dir: PathBuf,
+    pub active_signals: std::collections::HashSet<String>,
 }
 
 /// Errors that can occur when loading a runa project.
@@ -49,6 +51,8 @@ pub enum ProjectError {
     Io(std::io::Error),
     /// `state.toml` exists but cannot be parsed.
     StateParseFailed(String),
+    /// `signals.json` exists but cannot be parsed.
+    SignalsParseFailed(String),
     /// The methodology manifest is invalid.
     ManifestInvalid(ManifestError),
     /// The dependency graph could not be built.
@@ -75,6 +79,9 @@ impl fmt::Display for ProjectError {
             ProjectError::Io(e) => write!(f, "{e}"),
             ProjectError::StateParseFailed(detail) => {
                 write!(f, "failed to parse .runa/state.toml: {detail}")
+            }
+            ProjectError::SignalsParseFailed(detail) => {
+                write!(f, "failed to parse .runa/signals.json: {detail}")
             }
             ProjectError::ManifestInvalid(e) => write!(f, "{e}"),
             ProjectError::GraphInvalid(e) => write!(f, "{e}"),
@@ -146,7 +153,8 @@ pub(crate) fn resolve_config(
 /// Load a runa project from `working_dir`.
 ///
 /// Resolves config via the resolution chain, reads state, parses the methodology
-/// manifest, builds the dependency graph, and opens the artifact store.
+/// manifest, builds the dependency graph, opens the artifact store, and loads
+/// active signals from `.runa/signals.json` if present.
 pub fn load(
     working_dir: &Path,
     config_override: Option<&Path>,
@@ -174,6 +182,7 @@ pub fn load(
         .map_err(ProjectError::ManifestInvalid)?;
 
     let graph = DependencyGraph::build(&manifest.skills).map_err(ProjectError::GraphInvalid)?;
+    let active_signals = load_signals(&runa_dir)?;
 
     // Resolve artifact workspace dir: explicit config value or default,
     // relative to the project `.runa/` directory.
@@ -190,7 +199,30 @@ pub fn load(
         graph,
         store,
         workspace_dir,
+        active_signals,
     })
+}
+
+#[derive(Deserialize)]
+struct SignalsFile {
+    active: Vec<String>,
+}
+
+pub(crate) fn load_signals(
+    runa_dir: &Path,
+) -> Result<std::collections::HashSet<String>, ProjectError> {
+    let path = runa_dir.join(SIGNALS_FILENAME);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(std::collections::HashSet::new());
+        }
+        Err(err) => return Err(ProjectError::Io(err)),
+    };
+
+    let parsed: SignalsFile = serde_json::from_str(&content)
+        .map_err(|err| ProjectError::SignalsParseFailed(err.to_string()))?;
+    Ok(parsed.active.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -260,6 +292,60 @@ trigger = { type = "on_signal", name = "init" }
         let loaded = load(&working, None).unwrap();
         assert_eq!(loaded.manifest.name, "test-methodology");
         assert_eq!(loaded.workspace_dir, working.join(".runa/workspace"));
+        assert!(loaded.active_signals.is_empty());
+    }
+
+    #[test]
+    fn load_reads_active_signals_from_signals_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("manifest.toml");
+        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        write_project_files(&working, &manifest_path);
+        fs::write(
+            working.join(".runa").join("signals.json"),
+            r#"{ "active": ["deploy", "begin"] }"#,
+        )
+        .unwrap();
+
+        let loaded = load(&working, None).unwrap();
+        assert_eq!(loaded.active_signals.len(), 2);
+        assert!(loaded.active_signals.contains("deploy"));
+        assert!(loaded.active_signals.contains("begin"));
+    }
+
+    #[test]
+    fn load_treats_missing_signals_file_as_empty_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("manifest.toml");
+        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        write_project_files(&working, &manifest_path);
+
+        let signals = load_signals(&working.join(".runa")).unwrap();
+        assert!(signals.is_empty());
+    }
+
+    #[test]
+    fn load_fails_when_signals_file_is_malformed() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("manifest.toml");
+        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        write_project_files(&working, &manifest_path);
+        fs::write(working.join(".runa").join("signals.json"), "{not json").unwrap();
+
+        let err = load(&working, None).unwrap_err();
+        assert!(
+            matches!(err, ProjectError::SignalsParseFailed(_)),
+            "expected SignalsParseFailed, got: {err}"
+        );
     }
 
     #[test]

@@ -607,7 +607,11 @@ trigger = { type = "on_artifact", name = "a" }
 
     let workspace = project_dir.join(".runa/workspace");
     fs::create_dir_all(workspace.join("a")).unwrap();
-    fs::write(workspace.join("a/input.json"), r#"{"title":"already here"}"#).unwrap();
+    fs::write(
+        workspace.join("a/input.json"),
+        r#"{"title":"already here"}"#,
+    )
+    .unwrap();
 
     let output = runa_bin()
         .arg("step")
@@ -624,7 +628,11 @@ trigger = { type = "on_artifact", name = "a" }
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["cycle"], serde_json::json!(["first", "second"]), "{value:#}");
+    assert_eq!(
+        value["cycle"],
+        serde_json::json!(["first", "second"]),
+        "{value:#}"
+    );
 
     let execution_plan = value["execution_plan"].as_array().unwrap();
     assert_eq!(execution_plan.len(), 1, "{value:#}");

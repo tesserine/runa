@@ -56,7 +56,11 @@ trigger = { type = "on_artifact", name = "implementation" }
 }
 
 fn run_command(project_dir: &Path, args: &[&str]) -> Output {
-    runa_bin().args(args).current_dir(project_dir).output().unwrap()
+    runa_bin()
+        .args(args)
+        .current_dir(project_dir)
+        .output()
+        .unwrap()
 }
 
 fn run_json(project_dir: &Path, args: &[&str]) -> serde_json::Value {
@@ -90,10 +94,7 @@ fn write_artifact(project_dir: &Path, artifact_type: &str, file_name: &str, json
     path
 }
 
-fn assert_context_inputs(
-    inputs: &serde_json::Value,
-    expected: &[(&str, &str, PathBuf, &str)],
-) {
+fn assert_context_inputs(inputs: &serde_json::Value, expected: &[(&str, &str, PathBuf, &str)]) {
     let actual = inputs.as_array().unwrap();
     assert_eq!(actual.len(), expected.len(), "{inputs:#}");
 
@@ -108,7 +109,11 @@ fn assert_context_inputs(
             content_hash.starts_with("sha256:"),
             "expected sha256 content hash, got {content_hash}"
         );
-        assert_eq!(content_hash.len(), 71, "unexpected hash length: {content_hash}");
+        assert_eq!(
+            content_hash.len(),
+            71,
+            "unexpected hash length: {content_hash}"
+        );
     }
 }
 
@@ -129,7 +134,10 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
     );
     let init_stdout = String::from_utf8_lossy(&init_output.stdout);
     assert!(init_stdout.contains("groundwork"), "stdout: {init_stdout}");
-    assert!(init_stdout.contains("5 artifact types"), "stdout: {init_stdout}");
+    assert!(
+        init_stdout.contains("5 artifact types"),
+        "stdout: {init_stdout}"
+    );
     assert!(init_stdout.contains("3 skills"), "stdout: {init_stdout}");
     assert!(project_dir.join(".runa/config.toml").is_file());
     assert!(project_dir.join(".runa/state.toml").is_file());
@@ -137,7 +145,10 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
     assert!(project_dir.join(".runa/workspace").is_dir());
 
     let empty_doctor = run_command(&project_dir, &["doctor"]);
-    assert!(!empty_doctor.status.success(), "doctor should fail on empty project");
+    assert!(
+        !empty_doctor.status.success(),
+        "doctor should fail on empty project"
+    );
     let empty_doctor_stdout = String::from_utf8_lossy(&empty_doctor.stdout);
     assert!(
         empty_doctor_stdout.contains("research: cannot execute (missing: constraints)"),
@@ -172,7 +183,10 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
         String::from_utf8_lossy(&first_scan.stderr)
     );
     let first_scan_stdout = String::from_utf8_lossy(&first_scan.stdout);
-    assert!(first_scan_stdout.contains("Summary: 2 new"), "stdout: {first_scan_stdout}");
+    assert!(
+        first_scan_stdout.contains("Summary: 2 new"),
+        "stdout: {first_scan_stdout}"
+    );
     assert!(
         first_scan_stdout.contains("constraints/spec-1"),
         "stdout: {first_scan_stdout}"
@@ -188,7 +202,10 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
         "doctor should still fail with downstream missing artifacts"
     );
     let first_doctor_stdout = String::from_utf8_lossy(&first_doctor.stdout);
-    assert!(first_doctor_stdout.contains("research: ok"), "stdout: {first_doctor_stdout}");
+    assert!(
+        first_doctor_stdout.contains("research: ok"),
+        "stdout: {first_doctor_stdout}"
+    );
     assert!(
         first_doctor_stdout.contains("implement: cannot execute (missing: design-doc)"),
         "stdout: {first_doctor_stdout}"
@@ -288,8 +305,14 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
         String::from_utf8_lossy(&second_scan.stderr)
     );
     let second_scan_stdout = String::from_utf8_lossy(&second_scan.stdout);
-    assert!(second_scan_stdout.contains("Summary: 3 new"), "stdout: {second_scan_stdout}");
-    assert!(second_scan_stdout.contains("1 invalid"), "stdout: {second_scan_stdout}");
+    assert!(
+        second_scan_stdout.contains("Summary: 3 new"),
+        "stdout: {second_scan_stdout}"
+    );
+    assert!(
+        second_scan_stdout.contains("1 invalid"),
+        "stdout: {second_scan_stdout}"
+    );
     assert!(
         second_scan_stdout.contains("design-doc/plan-1"),
         "stdout: {second_scan_stdout}"
@@ -298,7 +321,10 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
         second_scan_stdout.contains("notes/context-1"),
         "stdout: {second_scan_stdout}"
     );
-    assert!(second_scan_stdout.contains("notes/bad"), "stdout: {second_scan_stdout}");
+    assert!(
+        second_scan_stdout.contains("notes/bad"),
+        "stdout: {second_scan_stdout}"
+    );
 
     let second_status = run_json(&project_dir, &["status", "--json"]);
     let second_skills = second_status["skills"].as_array().unwrap();
@@ -362,7 +388,13 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
     );
     let list_stdout = String::from_utf8_lossy(&list_output.stdout);
     assert!(list_stdout.contains("1. research"), "stdout: {list_stdout}");
-    assert!(list_stdout.contains("2. implement"), "stdout: {list_stdout}");
+    assert!(
+        list_stdout.contains("2. implement"),
+        "stdout: {list_stdout}"
+    );
     assert!(list_stdout.contains("3. verify"), "stdout: {list_stdout}");
-    assert!(list_stdout.contains("may_produce: notes"), "stdout: {list_stdout}");
+    assert!(
+        list_stdout.contains("may_produce: notes"),
+        "stdout: {list_stdout}"
+    );
 }
