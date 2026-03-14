@@ -178,6 +178,11 @@ fn main() {
                 }
             };
 
+            if let Err(e) = project::resolve_config(&working_dir, config_override.as_deref()) {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+
             let result = match command {
                 SignalCommand::Begin { name } => commands::signal::begin(&working_dir, &name),
                 SignalCommand::Clear { name } => commands::signal::clear(&working_dir, &name),

@@ -273,3 +273,78 @@ fn signal_commands_fail_when_project_is_not_initialized() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("run 'runa init' first"), "stderr: {stderr}");
 }
+
+#[test]
+fn signal_begin_fails_when_config_override_does_not_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let missing_config = dir.path().join("missing-config.toml");
+    let output = run_command(
+        &project_dir,
+        &[
+            "--config",
+            missing_config.to_str().unwrap(),
+            "signal",
+            "begin",
+            "foo",
+        ],
+    );
+
+    assert!(!output.status.success(), "command should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("config not found"), "stderr: {stderr}");
+    assert!(
+        !project_dir.join(".runa/signals.json").exists(),
+        "signal state should not be written on config failure"
+    );
+}
+
+#[test]
+fn signal_begin_accepts_valid_external_config_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let external_config = dir.path().join("external-config.toml");
+    let canonical_manifest = fs::canonicalize(&manifest_path).unwrap();
+    fs::write(
+        &external_config,
+        format!(
+            "methodology_path = {:?}\n",
+            canonical_manifest.display().to_string()
+        ),
+    )
+    .unwrap();
+
+    let output = run_command(
+        &project_dir,
+        &[
+            "--config",
+            external_config.to_str().unwrap(),
+            "signal",
+            "begin",
+            "foo",
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stored: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(project_dir.join(".runa/signals.json")).unwrap())
+            .unwrap();
+    assert_eq!(stored, serde_json::json!({ "active": ["foo"] }));
+}
