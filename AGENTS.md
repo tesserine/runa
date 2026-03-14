@@ -36,7 +36,7 @@ cargo run --bin runa -- --version  # Run CLI
 - `enforcement.rs` — Pre/post-execution enforcement: `enforce_preconditions` checks `requires`, `enforce_postconditions` checks `produces`/`may_produce`, three failure variants (Missing, Invalid, Stale)
 
 **runa-cli modules:**
-- `project.rs` — `Config` and `State` structs, config resolution chain (`--config` / `RUNA_CONFIG` / `.runa/config.toml` / XDG), standalone `load_signals()` for optional `.runa/signals.json`, `load()` function: resolves workspace and store paths, reads state, parses manifest, builds graph, opens store
+- `project.rs` — `Config` and `State` structs, config resolution chain (`--config` / `RUNA_CONFIG` / `.runa/config.toml` / XDG), standalone `load_signals()` for optional `.runa/signals.json` with warning-based fallback, `load()` function: resolves workspace and store paths, reads state, parses manifest, builds graph, opens store
 - `commands/init.rs` — `runa init`: parse manifest, create `.runa/config.toml`, `.runa/state.toml`, `.runa/store/`, and the artifact workspace
 - `commands/signal.rs` — `runa signal begin|clear|list`: validate signal names, persist operator signals in `.runa/signals.json`, and report the active set
 - `commands/list.rs` — `runa list`: implicitly scan, then display skills in execution order with dependencies and blocked status

@@ -82,7 +82,7 @@ Returns `EnforcementError` on failure, containing the skill name, enforcement ph
 
 ## CLI Commands
 
-Commands that operate on a loaded methodology share `project::load`, which resolves the config file, reads the methodology path from it, parses the manifest, builds the dependency graph, and opens the artifact store. Commands that evaluate `on_signal` triggers load `.runa/signals.json` separately so malformed signal state cannot break unrelated commands.
+Commands that operate on a loaded methodology share `project::load`, which resolves the config file, reads the methodology path from it, parses the manifest, builds the dependency graph, and opens the artifact store. Commands that evaluate `on_signal` triggers load `.runa/signals.json` separately so malformed signal state cannot break unrelated commands; unreadable or malformed signal state downgrades to a warning plus an empty active-signal set.
 
 Config resolution is whole-file (first found wins, no per-field merging): `--config` CLI flag → `RUNA_CONFIG` env var → `.runa/config.toml` → `$XDG_CONFIG_HOME/runa/config.toml` → error.
 
@@ -113,21 +113,21 @@ Runs the workspace reconciliation pass. Reads artifact files from the resolved w
 
 ### `runa status`
 
-Runs an implicit workspace scan, then evaluates every skill against current runtime state. Classification is ordered and mutually exclusive: `WAITING` when the trigger is not satisfied, `BLOCKED` when the trigger is satisfied but `enforce_preconditions` fails, and `READY` otherwise. Uses persisted active signals from `.runa/signals.json` and still uses an empty activation timestamp map because no runtime state loop exists yet.
+Runs an implicit workspace scan, then evaluates every skill against current runtime state. Classification is ordered and mutually exclusive: `WAITING` when the trigger is not satisfied, `BLOCKED` when the trigger is satisfied but `enforce_preconditions` fails, and `READY` otherwise. Uses persisted active signals from `.runa/signals.json` and still uses an empty activation timestamp map because no runtime state loop exists yet. If `signals.json` is unreadable or malformed, status appends a warning and evaluates with an empty active-signal set.
 
 Text output groups skills as `READY`, `BLOCKED`, then `WAITING`, preserving the graph-derived skill order within each group. `READY` entries list valid required and accepted artifact instances, `BLOCKED` entries list required artifact failures (`missing`, `invalid`, `stale`, `scan_incomplete`), and `WAITING` entries list detailed unsatisfied trigger conditions including the trigger condition and the specific `TriggerResult::NotSatisfied` reason. When scan reconciliation is partial, status prints scan warnings before the skill groups and treats any skill whose `requires` includes an affected artifact type as blocked because readiness cannot be verified; affected `accepts` types remain non-blocking and are omitted from the reported inputs.
 
 `--json` emits a versioned envelope:
 - `version` — integer envelope version, currently `1`
 - `methodology` — manifest name
-- `scan_warnings` — array of human-readable warnings for partial scan findings, empty when scan reconciliation is complete
+- `scan_warnings` — array of human-readable warnings for partial scan findings and degraded signal loading, empty when neither condition applies
 - `skills` — flat ordered array of skill objects with `name`, `status`, `trigger`, plus the status-specific field `inputs`, `precondition_failures`, or `unsatisfied_conditions`
 
 Exits 0 for successful status evaluation regardless of whether skills are ready, blocked, or waiting. Non-zero exit remains reserved for project-load, scan, or serialization failures.
 
 ### `runa step --dry-run [--json]`
 
-Runs the same implicit scan and shared skill evaluation used by `runa status`, then builds an execution plan from the `READY` skills that can be placed in a valid execution order. Plan entries preserve graph order for the non-cyclic frontier and include the skill name, the trigger condition string, and the JSON-serialized `libagent::context::ContextInjection` payload. If a hard dependency cycle exists, `step` reports it as a warning, excludes the cycle participants from the plan, and still includes any unrelated orderable READY skills. Text output prints the execution plan followed by the grouped READY/BLOCKED/WAITING view. JSON output adds an `execution_plan` array plus an optional `cycle` path while reusing the same `skills` status entries and `scan_warnings` envelope fields as `runa status`. `on_signal` readiness uses the same persisted signal set loaded during project initialization.
+Runs the same implicit scan and shared skill evaluation used by `runa status`, then builds an execution plan from the `READY` skills that can be placed in a valid execution order. Plan entries preserve graph order for the non-cyclic frontier and include the skill name, the trigger condition string, and the JSON-serialized `libagent::context::ContextInjection` payload. If a hard dependency cycle exists, `step` reports the cycle as a warning, excludes the cycle participants from the plan, and still includes any unrelated orderable READY skills. Text output prints the execution plan followed by the grouped READY/BLOCKED/WAITING view. JSON output adds an `execution_plan` array plus an optional `cycle` path while reusing the same `skills` status entries and `scan_warnings` envelope fields as `runa status`. `on_signal` readiness uses the same persisted signal set and warning-and-empty-set fallback as `runa status`.
 
 `runa step` without `--dry-run` is a deliberate stub: it prints `Agent execution is not yet implemented. Use --dry-run to see the execution plan.` and exits with code 1.
 

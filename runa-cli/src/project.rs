@@ -50,8 +50,6 @@ pub enum ProjectError {
     Io(std::io::Error),
     /// `state.toml` exists but cannot be parsed.
     StateParseFailed(String),
-    /// `signals.json` exists but cannot be parsed.
-    SignalsParseFailed(String),
     /// The methodology manifest is invalid.
     ManifestInvalid(ManifestError),
     /// The dependency graph could not be built.
@@ -78,9 +76,6 @@ impl fmt::Display for ProjectError {
             ProjectError::Io(e) => write!(f, "{e}"),
             ProjectError::StateParseFailed(detail) => {
                 write!(f, "failed to parse .runa/state.toml: {detail}")
-            }
-            ProjectError::SignalsParseFailed(detail) => {
-                write!(f, "failed to parse .runa/signals.json: {detail}")
             }
             ProjectError::ManifestInvalid(e) => write!(f, "{e}"),
             ProjectError::GraphInvalid(e) => write!(f, "{e}"),
@@ -204,19 +199,34 @@ struct SignalsFile {
     active: Vec<String>,
 }
 
-pub fn load_signals(runa_dir: &Path) -> Result<std::collections::HashSet<String>, ProjectError> {
+pub fn load_signals(runa_dir: &Path) -> (std::collections::HashSet<String>, Vec<String>) {
     let path = runa_dir.join(SIGNALS_FILENAME);
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(std::collections::HashSet::new());
+            return (std::collections::HashSet::new(), Vec::new());
         }
-        Err(err) => return Err(ProjectError::Io(err)),
+        Err(err) => {
+            return (
+                std::collections::HashSet::new(),
+                vec![format!(
+                    "could not parse .runa/signals.json: {}; treating as no active signals",
+                    err
+                )],
+            );
+        }
     };
 
-    let parsed: SignalsFile = serde_json::from_str(&content)
-        .map_err(|err| ProjectError::SignalsParseFailed(err.to_string()))?;
-    Ok(parsed.active.into_iter().collect())
+    match serde_json::from_str::<SignalsFile>(&content) {
+        Ok(parsed) => (parsed.active.into_iter().collect(), Vec::new()),
+        Err(err) => (
+            std::collections::HashSet::new(),
+            vec![format!(
+                "could not parse .runa/signals.json: {}; treating as no active signals",
+                err
+            )],
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -303,10 +313,11 @@ trigger = { type = "on_signal", name = "init" }
         )
         .unwrap();
 
-        let signals = load_signals(&working.join(".runa")).unwrap();
+        let (signals, warnings) = load_signals(&working.join(".runa"));
         assert_eq!(signals.len(), 2);
         assert!(signals.contains("deploy"));
         assert!(signals.contains("begin"));
+        assert!(warnings.is_empty());
     }
 
     #[test]
@@ -319,12 +330,13 @@ trigger = { type = "on_signal", name = "init" }
         fs::create_dir(&working).unwrap();
         write_project_files(&working, &manifest_path);
 
-        let signals = load_signals(&working.join(".runa")).unwrap();
+        let (signals, warnings) = load_signals(&working.join(".runa"));
         assert!(signals.is_empty());
+        assert!(warnings.is_empty());
     }
 
     #[test]
-    fn load_fails_when_signals_file_is_malformed() {
+    fn load_warns_when_signals_file_is_malformed() {
         let dir = tempfile::tempdir().unwrap();
         let manifest_path = dir.path().join("manifest.toml");
         fs::write(&manifest_path, valid_manifest_toml()).unwrap();
@@ -334,11 +346,10 @@ trigger = { type = "on_signal", name = "init" }
         write_project_files(&working, &manifest_path);
         fs::write(working.join(".runa").join("signals.json"), "{not json").unwrap();
 
-        let err = load_signals(&working.join(".runa")).unwrap_err();
-        assert!(
-            matches!(err, ProjectError::SignalsParseFailed(_)),
-            "expected SignalsParseFailed, got: {err}"
-        );
+        let (signals, warnings) = load_signals(&working.join(".runa"));
+        assert!(signals.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("could not parse .runa/signals.json"));
     }
 
     #[test]
