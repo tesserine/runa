@@ -217,41 +217,6 @@ impl DependencyGraph {
         Err(self.extract_cycle())
     }
 
-    /// Return all orderable skills plus any detected hard dependency cycle.
-    ///
-    /// Uses the same combined-then-hard fallback as `topological_order()`.
-    /// If hard edges still contain a cycle, returns the Kahn prefix for the
-    /// hard-edge graph alongside the extracted cycle path.
-    pub fn topological_prefix(&self) -> (Vec<&str>, Option<CycleError>) {
-        if let Some(order) = self.kahns_sort(true) {
-            return (
-                order
-                    .iter()
-                    .map(|&i| self.skill_names[i].as_str())
-                    .collect(),
-                None,
-            );
-        }
-
-        if let Some(order) = self.kahns_sort(false) {
-            return (
-                order
-                    .iter()
-                    .map(|&i| self.skill_names[i].as_str())
-                    .collect(),
-                None,
-            );
-        }
-
-        let cycle = self.extract_cycle();
-        let prefix = self
-            .kahns_prefix(false)
-            .iter()
-            .map(|&i| self.skill_names[i].as_str())
-            .collect();
-        (prefix, Some(cycle))
-    }
-
     /// Return `(skill_name, missing_artifact_types)` for each skill that has
     /// unmet `requires`. Missing artifact types are those in `requires` that
     /// aren't in `available_artifacts`. Results are sorted by skill name.
@@ -325,8 +290,7 @@ impl DependencyGraph {
         }
     }
 
-    /// Run Kahn's algorithm and return every node that can be emitted before
-    /// the remaining graph becomes cyclic.
+    /// Run Kahn's algorithm and return the resulting order.
     fn kahns_prefix(&self, include_soft: bool) -> Vec<usize> {
         let n = self.skill_names.len();
         let mut in_degree = vec![0usize; n];
@@ -583,22 +547,6 @@ mod tests {
         let err = graph.topological_order().unwrap_err();
         assert!(err.path.contains(&"A".to_string()));
         assert!(err.path.contains(&"B".to_string()));
-    }
-
-    #[test]
-    fn topological_prefix_returns_orderable_nodes_before_cycle() {
-        let skills = vec![
-            skill("independent", &[], &["seed"]),
-            skill("first", &["Y"], &["X"]),
-            skill("second", &["X"], &["Y"]),
-            skill("blocked_by_cycle", &["X"], &["done"]),
-        ];
-        let graph = DependencyGraph::build(&skills).unwrap();
-        let (prefix, cycle) = graph.topological_prefix();
-        assert_eq!(prefix, vec!["independent"]);
-        let cycle = cycle.unwrap();
-        assert!(cycle.path.contains(&"first".to_string()));
-        assert!(cycle.path.contains(&"second".to_string()));
     }
 
     // --- Soft edges ---

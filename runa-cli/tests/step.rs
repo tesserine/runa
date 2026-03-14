@@ -558,3 +558,79 @@ trigger = { type = "on_signal", name = "go" }
     assert_eq!(skills.len(), 3, "{value:#}");
     assert_eq!(skills[0]["name"], "independent");
 }
+
+#[test]
+fn step_dry_run_keeps_ready_skills_downstream_of_cycle_when_inputs_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "a"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[artifact_types]]
+name = "b"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[artifact_types]]
+name = "result"
+schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
+
+[[skills]]
+name = "first"
+requires = ["b"]
+produces = ["a"]
+trigger = { type = "on_signal", name = "go" }
+
+[[skills]]
+name = "second"
+requires = ["a"]
+produces = ["b"]
+trigger = { type = "on_signal", name = "go" }
+
+[[skills]]
+name = "publish"
+requires = ["a"]
+produces = ["result"]
+trigger = { type = "on_artifact", name = "a" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("a")).unwrap();
+    fs::write(workspace.join("a/input.json"), r#"{"title":"already here"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["cycle"], serde_json::json!(["first", "second"]), "{value:#}");
+
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 1, "{value:#}");
+    assert_eq!(execution_plan[0]["skill"], "publish");
+
+    let skills = value["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["name"], "publish");
+    assert_eq!(skills[0]["status"], "ready");
+}

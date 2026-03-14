@@ -81,18 +81,18 @@ pub fn run(
         .map(|skill| (skill.name.as_str(), skill))
         .collect();
 
-    let ready_names: std::collections::HashSet<&str> = evaluated
+    let cycle_participants: std::collections::HashSet<&str> = evaluated
+        .cycle
+        .as_ref()
+        .map(|cycle| cycle.path.iter().map(|name| name.as_str()).collect())
+        .unwrap_or_default();
+    let execution_plan: Vec<PlanEntry> = evaluated
         .ready
         .iter()
-        .map(|entry| entry.name.as_str())
-        .collect();
-    let (plan_order, _) = loaded.graph.topological_prefix();
-    let execution_plan: Vec<PlanEntry> = plan_order
-        .into_iter()
-        .filter(|name| ready_names.contains(name))
-        .map(|name| {
+        .filter(|entry| !cycle_participants.contains(entry.name.as_str()))
+        .map(|entry| {
             let skill = skill_map
-                .get(name)
+                .get(entry.name.as_str())
                 .expect("planned skill must exist in manifest");
             let mut context = libagent::context::build_context(skill, &loaded.store);
             context.inputs.retain(|input| {
@@ -102,7 +102,7 @@ pub fn run(
                         .contains(input.artifact_type.as_str())
             });
             PlanEntry {
-                skill: name.to_string(),
+                skill: entry.name.clone(),
                 trigger: skill.trigger.to_string(),
                 context,
             }
