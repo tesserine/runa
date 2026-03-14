@@ -45,6 +45,15 @@ fn init_project(project_dir: &Path, manifest_path: &Path) {
     );
 }
 
+fn init_project_with_args(project_dir: &Path, args: &[&str]) {
+    let output = run_command(project_dir, args);
+    assert!(
+        output.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn signal_begin_persists_state_across_invocations() {
     let dir = tempfile::tempdir().unwrap();
@@ -275,7 +284,7 @@ fn signal_commands_fail_when_project_is_not_initialized() {
 }
 
 #[test]
-fn signal_begin_fails_when_config_override_does_not_exist() {
+fn signal_begin_ignores_unused_config_override() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = dir.path().join("manifest.toml");
     fs::write(&manifest_path, manifest_toml()).unwrap();
@@ -296,13 +305,16 @@ fn signal_begin_fails_when_config_override_does_not_exist() {
         ],
     );
 
-    assert!(!output.status.success(), "command should fail");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("config not found"), "stderr: {stderr}");
     assert!(
-        !project_dir.join(".runa/signals.json").exists(),
-        "signal state should not be written on config failure"
+        output.status.success(),
+        "signal commands should ignore unused config overrides: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
+
+    let stored: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(project_dir.join(".runa/signals.json")).unwrap())
+            .unwrap();
+    assert_eq!(stored, serde_json::json!({ "active": ["foo"] }));
 }
 
 #[test]
@@ -347,4 +359,61 @@ fn signal_begin_accepts_valid_external_config_override() {
         serde_json::from_str(&fs::read_to_string(project_dir.join(".runa/signals.json")).unwrap())
             .unwrap();
     assert_eq!(stored, serde_json::json!({ "active": ["foo"] }));
+}
+
+#[test]
+fn signal_begin_works_without_config_override_after_external_config_init() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+
+    let external_config = dir.path().join("external-config.toml");
+    init_project_with_args(
+        &project_dir,
+        &[
+            "init",
+            "--methodology",
+            manifest_path.to_str().unwrap(),
+            "--config",
+            external_config.to_str().unwrap(),
+        ],
+    );
+
+    assert!(
+        !project_dir.join(".runa/config.toml").exists(),
+        "project-local config should not exist when init wrote to an external path"
+    );
+
+    let output = run_command(&project_dir, &["signal", "begin", "foo"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stored: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(project_dir.join(".runa/signals.json")).unwrap())
+            .unwrap();
+    assert_eq!(stored, serde_json::json!({ "active": ["foo"] }));
+}
+
+#[test]
+fn signal_help_reports_actual_signal_name_pattern() {
+    for args in [["signal", "begin", "--help"], ["signal", "clear", "--help"]] {
+        let output = runa_bin().args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "help should succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("[a-z0-9][a-z0-9_-]*"),
+            "stdout should describe the validator pattern: {stdout}"
+        );
+    }
 }

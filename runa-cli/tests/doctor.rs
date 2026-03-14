@@ -50,6 +50,19 @@ fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) 
     );
 }
 
+fn scan_project(project_dir: &std::path::Path) {
+    let output = runa_bin()
+        .arg("scan")
+        .current_dir(project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "scan failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn doctor_healthy_exit_zero() {
     let dir = tempfile::tempdir().unwrap();
@@ -290,4 +303,44 @@ fn doctor_ignores_malformed_signals_file() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("problem"), "stdout: {stdout}");
+}
+
+#[test]
+fn doctor_reports_stale_required_artifacts_as_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    fs::create_dir_all(project_dir.join(".runa/workspace/constraints")).unwrap();
+    fs::write(
+        project_dir.join(".runa/workspace/constraints/good.json"),
+        r#"{"title":"ok"}"#,
+    )
+    .unwrap();
+
+    scan_project(&project_dir);
+
+    let store_path = project_dir.join(".runa/store/constraints/good.json");
+    let mut state: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+    state["status"] = serde_json::json!("stale");
+    fs::write(&store_path, serde_json::to_string_pretty(&state).unwrap()).unwrap();
+
+    let output = runa_bin()
+        .arg("doctor")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "stale required artifacts should block doctor"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("stale: constraints"), "stdout: {stdout}");
+    assert!(!stdout.contains("missing: constraints"), "stdout: {stdout}");
 }

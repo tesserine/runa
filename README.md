@@ -23,12 +23,14 @@ runa list
 ```
 
 Displays skills in execution order with their artifact relationships, trigger conditions, and blocked status. Performs an implicit scan first so the output reflects the current workspace.
+Blocked skills report required-artifact failures using the same `missing`, `invalid`, and `stale` taxonomy used elsewhere in the CLI.
 
 ```bash
 runa doctor
 ```
 
 Checks project health: artifact validity, skill readiness, and dependency cycles. Performs an implicit scan first so reported health matches the current workspace. Exits 0 if healthy, 1 if problems found.
+Skill readiness reports required-artifact failures as `missing`, `invalid`, or `stale`.
 
 ```bash
 runa scan
@@ -48,7 +50,7 @@ Manages persisted operator signals in `.runa/signals.json`, an optional runtime-
 runa status [--json]
 ```
 
-Evaluates every skill after an implicit scan and classifies it as `READY`, `BLOCKED`, or `WAITING`. Text output groups skills in that order and shows the current inputs, precondition failures, or unsatisfied trigger conditions that explain each status. `on_signal` triggers read the persisted active signal set from `.runa/signals.json`; if the file is absent or malformed, status warns and treats the signal set as empty. If the scan was only partial, status surfaces `Scan warnings` and blocks skills whose required artifact types could not be fully reconciled with reason `scan_incomplete`; partially scanned accepted artifact types are omitted from reported inputs. `--json` emits `{ "version": 1, "methodology": "...", "scan_warnings": [...], "skills": [...] }`, with a flat ordered `skills` array containing `name`, `status`, `trigger`, and the status-specific fields `inputs`, `precondition_failures`, or `unsatisfied_conditions`. Exits 0 when status evaluation succeeds, even if some skills are blocked or waiting. Commands that do not evaluate triggers do not read `signals.json`.
+Evaluates every skill after an implicit scan and classifies it as `READY`, `BLOCKED`, or `WAITING`. Text output groups skills in that order and shows the current inputs, precondition failures, or unsatisfied trigger conditions that explain each status. `on_signal` triggers read the persisted active signal set from `.runa/signals.json`; if the file is absent, unreadable, or malformed, status warns and treats the signal set as empty. If the scan was only partial, status surfaces `Scan warnings` and blocks skills whose required artifact types could not be fully reconciled with reason `scan_incomplete`; partially scanned accepted artifact types are omitted from reported inputs. `--json` emits `{ "version": 1, "methodology": "...", "scan_warnings": [...], "skills": [...] }`, with a flat ordered `skills` array containing `name`, `status`, `trigger`, and the status-specific fields `inputs`, `precondition_failures`, or `unsatisfied_conditions`. Exits 0 when status evaluation succeeds, even if some skills are blocked or waiting. Commands that do not evaluate triggers do not read `signals.json`.
 
 ```bash
 runa step --dry-run [--json]

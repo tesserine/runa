@@ -1,8 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 
 use libagent::ScanError as StoreScanError;
+use libagent::{ArtifactFailure, enforce_preconditions};
 
 use crate::project::{self, ProjectError};
 
@@ -50,18 +51,6 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), Lis
         }
     };
 
-    // Build available artifacts set from store.
-    let available: HashSet<String> = loaded
-        .manifest
-        .artifact_types
-        .iter()
-        .filter(|at| loaded.store.is_valid(&at.name))
-        .map(|at| at.name.clone())
-        .collect();
-
-    let blocked = loaded.graph.blocked_skills_with_reasons(&available);
-    let blocked_map: HashMap<&str, Vec<&str>> = blocked.into_iter().collect();
-
     // Build a lookup from skill name to declaration.
     let skill_map: HashMap<&str, &libagent::SkillDeclaration> = loaded
         .manifest
@@ -95,14 +84,58 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), Lis
 
         println!("     trigger:  {}", skill.trigger);
 
-        if let Some(missing) = blocked_map.get(name) {
-            let missing_list: Vec<String> = missing.iter().map(|m| format!("'{m}'")).collect();
-            println!(
-                "     BLOCKED:  missing artifact type {}",
-                missing_list.join(", ")
-            );
+        if let Err(err) = enforce_preconditions(skill, &loaded.store) {
+            println!("     BLOCKED:  {}", format_failures(&err.failures));
         }
     }
 
     Ok(())
+}
+
+fn format_failures(failures: &[ArtifactFailure]) -> String {
+    let missing = names_for(failures, |failure| {
+        matches!(failure, ArtifactFailure::Missing { .. })
+    });
+    let invalid = names_for(failures, |failure| {
+        matches!(failure, ArtifactFailure::Invalid { .. })
+    });
+    let stale = names_for(failures, |failure| {
+        matches!(failure, ArtifactFailure::Stale { .. })
+    });
+
+    let mut reasons = Vec::new();
+    if !missing.is_empty() {
+        reasons.push(format!("missing: {}", quoted(&missing)));
+    }
+    if !invalid.is_empty() {
+        reasons.push(format!("invalid: {}", quoted(&invalid)));
+    }
+    if !stale.is_empty() {
+        reasons.push(format!("stale: {}", quoted(&stale)));
+    }
+
+    reasons.join("; ")
+}
+
+fn names_for(
+    failures: &[ArtifactFailure],
+    predicate: impl Fn(&ArtifactFailure) -> bool,
+) -> Vec<String> {
+    failures
+        .iter()
+        .filter(|failure| predicate(failure))
+        .map(|failure| match failure {
+            ArtifactFailure::Missing { artifact_type, .. }
+            | ArtifactFailure::Invalid { artifact_type, .. }
+            | ArtifactFailure::Stale { artifact_type, .. } => artifact_type.clone(),
+        })
+        .collect()
+}
+
+fn quoted(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|name| format!("'{name}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

@@ -1,7 +1,9 @@
 use std::fmt;
 use std::path::Path;
 
-use libagent::{ScanError as StoreScanError, ValidationStatus};
+use libagent::{
+    ArtifactFailure, ScanError as StoreScanError, ValidationStatus, enforce_preconditions,
+};
 
 use crate::project::{self, ProjectError};
 
@@ -59,22 +61,6 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, D
             problems += 1;
             println!("  unreadable: {}", entry.path.display());
             println!("    {}", entry.error);
-        }
-    } else if !scan_result.partially_scanned_types.is_empty() {
-        println!();
-        println!("Scan:");
-        for partial in &scan_result.partially_scanned_types {
-            problems += 1;
-            println!(
-                "  partial: type {} was only partially readable, {} entr{} could not be scanned, removal suppressed for this type.",
-                partial.artifact_type,
-                partial.unreadable_entries,
-                if partial.unreadable_entries == 1 {
-                    "y"
-                } else {
-                    "ies"
-                }
-            );
         }
     }
 
@@ -173,35 +159,15 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, D
             continue;
         }
 
-        let mut missing: Vec<&str> = Vec::new();
-        let mut invalid: Vec<&str> = Vec::new();
-
-        for req in &skill.requires {
-            if !loaded.store.is_valid(req) {
-                let instances = loaded.store.instances_of(req);
-                if instances.is_empty() {
-                    missing.push(req);
-                } else if loaded.store.has_any_invalid(req) {
-                    invalid.push(req);
-                } else {
-                    // Has instances but none valid (e.g., all stale).
-                    missing.push(req);
-                }
-            }
-        }
-
-        if missing.is_empty() && invalid.is_empty() {
-            println!("  {}: ok", skill.name);
-        } else {
+        if let Err(err) = enforce_preconditions(skill, &loaded.store) {
             problems += 1;
-            let mut reasons = Vec::new();
-            if !missing.is_empty() {
-                reasons.push(format!("missing: {}", missing.join(", ")));
-            }
-            if !invalid.is_empty() {
-                reasons.push(format!("invalid: {}", invalid.join(", ")));
-            }
-            println!("  {}: cannot execute ({})", skill.name, reasons.join("; "));
+            println!(
+                "  {}: cannot execute ({})",
+                skill.name,
+                format_failures(&err.failures)
+            );
+        } else {
+            println!("  {}: ok", skill.name);
         }
     }
 
@@ -227,4 +193,44 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, D
     }
 
     Ok(problems == 0)
+}
+
+fn format_failures(failures: &[ArtifactFailure]) -> String {
+    let missing = names_for(failures, |failure| {
+        matches!(failure, ArtifactFailure::Missing { .. })
+    });
+    let invalid = names_for(failures, |failure| {
+        matches!(failure, ArtifactFailure::Invalid { .. })
+    });
+    let stale = names_for(failures, |failure| {
+        matches!(failure, ArtifactFailure::Stale { .. })
+    });
+
+    let mut reasons = Vec::new();
+    if !missing.is_empty() {
+        reasons.push(format!("missing: {}", missing.join(", ")));
+    }
+    if !invalid.is_empty() {
+        reasons.push(format!("invalid: {}", invalid.join(", ")));
+    }
+    if !stale.is_empty() {
+        reasons.push(format!("stale: {}", stale.join(", ")));
+    }
+
+    reasons.join("; ")
+}
+
+fn names_for(
+    failures: &[ArtifactFailure],
+    predicate: impl Fn(&ArtifactFailure) -> bool,
+) -> Vec<String> {
+    failures
+        .iter()
+        .filter(|failure| predicate(failure))
+        .map(|failure| match failure {
+            ArtifactFailure::Missing { artifact_type, .. }
+            | ArtifactFailure::Invalid { artifact_type, .. }
+            | ArtifactFailure::Stale { artifact_type, .. } => artifact_type.clone(),
+        })
+        .collect()
 }

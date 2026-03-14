@@ -96,13 +96,13 @@ Manages persisted operator signals without loading the manifest or artifact stor
 
 ### `runa list`
 
-Runs an implicit workspace scan, then displays skills in topological (execution) order with their artifact relationships and trigger conditions. For each skill, shows non-empty relationship fields (requires, accepts, produces, may_produce), the trigger condition, and a `BLOCKED` indicator if required artifact types have no valid instances. On cycle detection, falls back to manifest order with a warning.
+Runs an implicit workspace scan, then displays skills in topological (execution) order with their artifact relationships and trigger conditions. For each skill, shows non-empty relationship fields (requires, accepts, produces, may_produce), the trigger condition, and a `BLOCKED` indicator when `enforce_preconditions` reports required artifact failures. `BLOCKED` reasons are rendered with the shared `missing` / `invalid` / `stale` taxonomy. On cycle detection, falls back to manifest order with a warning.
 
 ### `runa doctor`
 
 Runs an implicit workspace scan, then reports on project health. Three checks:
 1. **Artifact health** — enumerates instances per artifact type via `store.instances_of()`, reports invalid, malformed, or stale instances with details.
-2. **Skill readiness** — for each skill, checks whether all `requires` artifact types have valid instances. Reports missing or invalid artifact types.
+2. **Skill readiness** — for each skill, uses `enforce_preconditions` to check `requires` artifact types and reports `missing`, `invalid`, or `stale` failures.
 3. **Cycle detection** — runs `graph.topological_order()`, reports any cycle.
 
 Exits 0 if no problems found, 1 otherwise.
