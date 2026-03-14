@@ -148,13 +148,19 @@ pub(crate) fn evaluate_skills(
         Ok(order) => (order, None),
         Err(cycle) => {
             eprintln!("warning: {cycle}");
-            (
+            let cycle_participants: HashSet<&str> =
+                cycle.path.iter().map(|name| name.as_str()).collect();
+            let mut order = loaded.graph.topological_order_excluding(&cycle_participants);
+            order.extend(
                 loaded
                     .manifest
                     .skills
                     .iter()
                     .map(|skill| skill.name.as_str())
-                    .collect(),
+                    .filter(|name| cycle_participants.contains(name)),
+            );
+            (
+                order,
                 Some(cycle),
             )
         }

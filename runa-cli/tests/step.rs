@@ -634,3 +634,90 @@ trigger = { type = "on_artifact", name = "a" }
     assert_eq!(skills[0]["name"], "publish");
     assert_eq!(skills[0]["status"], "ready");
 }
+
+#[test]
+fn step_dry_run_preserves_dependency_order_for_ready_skills_with_unrelated_cycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "root"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[artifact_types]]
+name = "seed"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[artifact_types]]
+name = "result"
+schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
+
+[[artifact_types]]
+name = "a"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[artifact_types]]
+name = "b"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[skills]]
+name = "independent"
+requires = ["root"]
+produces = ["seed"]
+trigger = { type = "on_artifact", name = "root" }
+
+[[skills]]
+name = "publish"
+requires = ["seed"]
+produces = ["result"]
+trigger = { type = "on_artifact", name = "seed" }
+
+[[skills]]
+name = "first"
+requires = ["b"]
+produces = ["a"]
+trigger = { type = "on_signal", name = "go" }
+
+[[skills]]
+name = "second"
+requires = ["a"]
+produces = ["b"]
+trigger = { type = "on_signal", name = "go" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("root")).unwrap();
+    fs::create_dir_all(workspace.join("seed")).unwrap();
+    fs::write(workspace.join("root/input.json"), r#"{"title":"root"}"#).unwrap();
+    fs::write(workspace.join("seed/input.json"), r#"{"title":"ship"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 2, "{value:#}");
+    assert_eq!(execution_plan[0]["skill"], "independent");
+    assert_eq!(execution_plan[1]["skill"], "publish");
+}
