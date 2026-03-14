@@ -62,12 +62,12 @@ enum Commands {
 enum SignalCommand {
     /// Ensure the named signal is active
     Begin {
-        /// Signal name, must match [a-z][a-z0-9-]*
+        /// Signal name, must match [a-z0-9][a-z0-9_-]*
         name: String,
     },
     /// Ensure the named signal is inactive
     Clear {
-        /// Signal name, must match [a-z][a-z0-9-]*
+        /// Signal name, must match [a-z0-9][a-z0-9_-]*
         name: String,
     },
     /// List active signals
@@ -177,11 +177,6 @@ fn main() {
                     process::exit(1);
                 }
             };
-
-            if let Err(e) = project::resolve_config(&working_dir, config_override.as_deref()) {
-                eprintln!("error: {e}");
-                process::exit(1);
-            }
 
             let result = match command {
                 SignalCommand::Begin { name } => commands::signal::begin(&working_dir, &name),

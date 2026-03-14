@@ -210,7 +210,7 @@ pub fn load_signals(runa_dir: &Path) -> (std::collections::HashSet<String>, Vec<
             return (
                 std::collections::HashSet::new(),
                 vec![format!(
-                    "could not parse .runa/signals.json: {}; treating as no active signals",
+                    "could not read .runa/signals.json: {}; treating as no active signals",
                     err
                 )],
             );
@@ -350,6 +350,23 @@ trigger = { type = "on_signal", name = "init" }
         assert!(signals.is_empty());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("could not parse .runa/signals.json"));
+    }
+
+    #[test]
+    fn load_warns_when_signals_file_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("manifest.toml");
+        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        write_project_files(&working, &manifest_path);
+        fs::create_dir(working.join(".runa").join("signals.json")).unwrap();
+
+        let (signals, warnings) = load_signals(&working.join(".runa"));
+        assert!(signals.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("could not read .runa/signals.json"));
     }
 
     #[test]
