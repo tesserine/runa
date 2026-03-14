@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::model::TriggerCondition;
-use crate::store::ArtifactStore;
+use crate::store::{ArtifactStore, ValidationStatus};
 
 /// Outcome of evaluating a trigger condition against current state.
 ///
@@ -39,9 +39,25 @@ pub fn evaluate(
             if context.store.is_valid(name) {
                 TriggerResult::Satisfied
             } else {
-                TriggerResult::NotSatisfied(format!(
-                    "artifact type '{name}' is not valid (missing or has invalid/stale instances)"
-                ))
+                let instances = context.store.instances_of(name);
+                if instances.is_empty() {
+                    TriggerResult::NotSatisfied(format!(
+                        "no valid instances of artifact type '{name}' exist"
+                    ))
+                } else if instances.iter().any(|(_, state)| {
+                    matches!(
+                        state.status,
+                        ValidationStatus::Invalid(_)
+                            | ValidationStatus::Malformed(_)
+                            | ValidationStatus::Stale
+                    )
+                }) {
+                    TriggerResult::NotSatisfied(format!(
+                        "artifact type '{name}' has invalid, malformed, or stale instances"
+                    ))
+                } else {
+                    TriggerResult::NotSatisfied(format!("artifact type '{name}' is not valid"))
+                }
             }
         }
 
@@ -165,6 +181,30 @@ mod tests {
             evaluate(&cond, &ctx, "skill"),
             TriggerResult::NotSatisfied(_)
         ));
+    }
+
+    #[test]
+    fn on_artifact_mentions_malformed_instances_in_failure_reason() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        store
+            .record_malformed(
+                "doc",
+                "bad",
+                Path::new("bad.json"),
+                br#"{"title":"A""#,
+                "eof",
+            )
+            .unwrap();
+
+        let ctx = empty_context(&store);
+        let cond = TriggerCondition::OnArtifact { name: "doc".into() };
+        assert_eq!(
+            evaluate(&cond, &ctx, "skill"),
+            TriggerResult::NotSatisfied(
+                "artifact type 'doc' has invalid, malformed, or stale instances".into()
+            )
+        );
     }
 
     #[test]

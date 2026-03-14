@@ -217,6 +217,37 @@ impl DependencyGraph {
         Err(self.extract_cycle())
     }
 
+    /// Return skills in execution order with the named skills removed.
+    ///
+    /// Uses the same combined-then-hard fallback as `topological_order()` but
+    /// ignores all excluded nodes and edges incident to them.
+    pub fn topological_order_excluding(&self, exclude: &HashSet<&str>) -> Vec<&str> {
+        if let Some(order) = self.kahns_sort_excluding(true, exclude) {
+            return order
+                .iter()
+                .map(|&i| self.skill_names[i].as_str())
+                .collect();
+        }
+
+        if let Some(order) = self.kahns_sort_excluding(false, exclude) {
+            return order
+                .iter()
+                .map(|&i| self.skill_names[i].as_str())
+                .collect();
+        }
+
+        debug_assert!(
+            false,
+            "topological_order_excluding encountered an unexpected remaining hard cycle"
+        );
+
+        self.skill_names
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !exclude.contains(name))
+            .collect()
+    }
+
     /// Return `(skill_name, missing_artifact_types)` for each skill that has
     /// unmet `requires`. Missing artifact types are those in `requires` that
     /// aren't in `available_artifacts`. Results are sorted by skill name.
@@ -282,19 +313,62 @@ impl DependencyGraph {
     /// Run Kahn's algorithm. Returns `None` if a cycle is detected.
     /// When `include_soft` is true, both hard and soft edges are considered.
     fn kahns_sort(&self, include_soft: bool) -> Option<Vec<usize>> {
+        let empty = HashSet::new();
+        let order = self.kahns_prefix(include_soft, &empty);
+        if order.len() == self.skill_names.len() {
+            Some(order)
+        } else {
+            None
+        }
+    }
+
+    /// Run Kahn's algorithm with exclusions. Returns `None` if a cycle is detected
+    /// in the retained subgraph.
+    fn kahns_sort_excluding(
+        &self,
+        include_soft: bool,
+        exclude: &HashSet<&str>,
+    ) -> Option<Vec<usize>> {
+        let expected = self
+            .skill_names
+            .iter()
+            .filter(|name| !exclude.contains(name.as_str()))
+            .count();
+        let order = self.kahns_prefix(include_soft, exclude);
+        if order.len() == expected {
+            Some(order)
+        } else {
+            None
+        }
+    }
+
+    /// Run Kahn's algorithm and return the resulting order.
+    fn kahns_prefix(&self, include_soft: bool, exclude: &HashSet<&str>) -> Vec<usize> {
         let n = self.skill_names.len();
         let mut in_degree = vec![0usize; n];
+        let is_excluded = |idx: usize| exclude.contains(self.skill_names[idx].as_str());
 
         // Compute in-degrees.
         for (idx, degree) in in_degree.iter_mut().enumerate().take(n) {
-            *degree += self.hard_deps[idx].len();
+            if is_excluded(idx) {
+                continue;
+            }
+            *degree += self.hard_deps[idx]
+                .iter()
+                .filter(|&&dep| !is_excluded(dep))
+                .count();
             if include_soft {
-                *degree += self.soft_deps[idx].len();
+                *degree += self.soft_deps[idx]
+                    .iter()
+                    .filter(|&&dep| !is_excluded(dep))
+                    .count();
             }
         }
 
         // Seed queue with zero in-degree nodes.
-        let mut queue: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
+        let mut queue: Vec<usize> = (0..n)
+            .filter(|&i| !is_excluded(i) && in_degree[i] == 0)
+            .collect();
         let mut order = Vec::with_capacity(n);
 
         while let Some(node) = queue.pop() {
@@ -302,6 +376,9 @@ impl DependencyGraph {
 
             // Decrease in-degree for dependents via reverse adjacency lists.
             for &dependent in &self.hard_dependents[node] {
+                if is_excluded(dependent) {
+                    continue;
+                }
                 in_degree[dependent] -= 1;
                 if in_degree[dependent] == 0 {
                     queue.push(dependent);
@@ -309,6 +386,9 @@ impl DependencyGraph {
             }
             if include_soft {
                 for &dependent in &self.soft_dependents[node] {
+                    if is_excluded(dependent) {
+                        continue;
+                    }
                     in_degree[dependent] -= 1;
                     if in_degree[dependent] == 0 {
                         queue.push(dependent);
@@ -317,7 +397,7 @@ impl DependencyGraph {
             }
         }
 
-        if order.len() == n { Some(order) } else { None }
+        order
     }
 
     /// Extract a cycle from hard edges using DFS. Called only when a hard cycle exists.
@@ -537,6 +617,20 @@ mod tests {
         let err = graph.topological_order().unwrap_err();
         assert!(err.path.contains(&"A".to_string()));
         assert!(err.path.contains(&"B".to_string()));
+    }
+
+    #[test]
+    fn topological_order_excluding_cycle_returns_valid_order_for_remaining_skills() {
+        let skills = vec![
+            skill("independent", &[], &["seed"]),
+            skill("publish", &["seed"], &["done"]),
+            skill("first", &["Y"], &["X"]),
+            skill("second", &["X"], &["Y"]),
+        ];
+        let graph = DependencyGraph::build(&skills).unwrap();
+        let exclude: HashSet<&str> = ["first", "second"].into_iter().collect();
+        let order = graph.topological_order_excluding(&exclude);
+        assert_eq!(order, vec!["independent", "publish"]);
     }
 
     // --- Soft edges ---

@@ -41,6 +41,16 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Build an execution plan for skills that are ready to run
+    Step {
+        /// Show the execution plan without attempting agent execution
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Emit machine-readable JSON instead of text output
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() {
@@ -148,6 +158,22 @@ fn main() {
             };
 
             if let Err(e) = commands::status::run(&working_dir, config_override.as_deref(), json) {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+        }
+        Commands::Step { dry_run, json } => {
+            let working_dir = match std::env::current_dir() {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    process::exit(1);
+                }
+            };
+
+            if let Err(e) =
+                commands::step::run(&working_dir, config_override.as_deref(), dry_run, json)
+            {
                 eprintln!("error: {e}");
                 process::exit(1);
             }

@@ -15,6 +15,7 @@
 //!
 //! See `ARCHITECTURE.md` in the repository root for data flow and design details.
 
+pub mod context;
 pub mod enforcement;
 pub mod graph;
 pub mod manifest;

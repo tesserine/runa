@@ -213,7 +213,7 @@ fn status_json_reports_ordered_skills_and_status_specific_fields() {
     assert_eq!(skills[2]["trigger"], "not_satisfied");
     assert_eq!(
         skills[2]["unsatisfied_conditions"],
-        serde_json::json!(["on_signal(begin)"])
+        serde_json::json!(["on_signal(begin): signal 'begin' is not active"])
     );
     assert!(skills[2].get("inputs").is_none());
     assert!(skills[2].get("precondition_failures").is_none());
@@ -315,9 +315,9 @@ trigger = { type = "all_of", conditions = [
     assert_eq!(
         skills[1]["unsatisfied_conditions"],
         serde_json::json!([
-            "on_signal(approve)",
-            "on_artifact(implementation)",
-            "on_signal(override)"
+            "on_signal(approve): signal 'approve' is not active",
+            "on_artifact(implementation): artifact type 'implementation' has invalid, malformed, or stale instances",
+            "on_signal(override): signal 'override' is not active"
         ])
     );
 }
@@ -766,7 +766,7 @@ trigger = { type = "any_of", conditions = [] }
     assert_eq!(skills[0]["status"], "waiting");
     assert_eq!(
         skills[0]["unsatisfied_conditions"],
-        serde_json::json!(["any_of with no conditions (always unsatisfied)"])
+        serde_json::json!(["any_of(): any_of with no conditions"])
     );
 
     let text_output = runa_bin()
@@ -783,7 +783,7 @@ trigger = { type = "any_of", conditions = [] }
 
     let stdout = String::from_utf8_lossy(&text_output.stdout);
     assert!(
-        stdout.contains("any_of with no conditions (always unsatisfied)"),
+        stdout.contains("any_of(): any_of with no conditions"),
         "stdout: {stdout}"
     );
 }
@@ -1196,7 +1196,9 @@ trigger = { type = "on_artifact", name = "report" }
     assert_eq!(skills[0]["trigger"], "not_satisfied");
     assert_eq!(
         skills[0]["unsatisfied_conditions"],
-        serde_json::json!(["on_artifact(report)"])
+        serde_json::json!([
+            "on_artifact(report): artifact type 'report' has invalid, malformed, or stale instances"
+        ])
     );
     assert!(skills[0].get("precondition_failures").is_none());
 }
