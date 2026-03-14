@@ -69,10 +69,13 @@ pub fn run(
     }
 
     let mut loaded = project::load(working_dir, config_override).map_err(StepError::Project)?;
+    let active_signals =
+        project::load_signals(&working_dir.join(project::RUNA_DIR)).map_err(StepError::Project)?;
     let scan_result =
         libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(StepError::Scan)?;
     let scan_findings = skill_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
-    let evaluated = skill_eval::evaluate_skills(&loaded, working_dir, &scan_findings);
+    let evaluated =
+        skill_eval::evaluate_skills(&loaded, working_dir, &scan_findings, &active_signals);
 
     let skill_map: std::collections::HashMap<&str, &libagent::SkillDeclaration> = loaded
         .manifest

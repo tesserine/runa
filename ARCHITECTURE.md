@@ -82,7 +82,7 @@ Returns `EnforcementError` on failure, containing the skill name, enforcement ph
 
 ## CLI Commands
 
-Commands that operate on a loaded methodology share `project::load`, which resolves the config file, reads the methodology path from it, parses the manifest, builds the dependency graph, opens the artifact store, and loads persisted active signals from `.runa/signals.json` when present.
+Commands that operate on a loaded methodology share `project::load`, which resolves the config file, reads the methodology path from it, parses the manifest, builds the dependency graph, and opens the artifact store. Commands that evaluate `on_signal` triggers load `.runa/signals.json` separately so malformed signal state cannot break unrelated commands.
 
 Config resolution is whole-file (first found wins, no per-field merging): `--config` CLI flag → `RUNA_CONFIG` env var → `.runa/config.toml` → `$XDG_CONFIG_HOME/runa/config.toml` → error.
 
@@ -92,7 +92,7 @@ Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes t
 
 ### `runa signal begin <NAME>` / `runa signal clear <NAME>` / `runa signal list`
 
-Manages persisted operator signals without loading the manifest or artifact store. The signal command verifies initialization by checking for `.runa/state.toml`, then reads and writes `.runa/signals.json` directly. Signal names must match `[a-z][a-z0-9-]*`. `begin` ensures the signal is present, `clear` ensures it is absent, and both are idempotent. `list` prints the current active signals in lexicographic order or an explicit empty-state message when none are active.
+Manages persisted operator signals without loading the manifest or artifact store. The signal command verifies initialization by checking for `.runa/state.toml`, then reads and writes `.runa/signals.json` directly. Signal names must match `[a-z0-9][a-z0-9_-]*`, the same rule enforced by manifest parsing for `on_signal` trigger names. `begin` ensures the signal is present, `clear` ensures it is absent, and both are idempotent. `list` prints the current active signals in lexicographic order or an explicit empty-state message when none are active.
 
 ### `runa list`
 

@@ -143,6 +143,7 @@ pub(crate) fn evaluate_skills(
     loaded: &project::LoadedProject,
     working_dir: &Path,
     scan_findings: &ScanFindings,
+    active_signals: &HashSet<String>,
 ) -> EvaluatedSkills {
     let (skill_order, cycle) = match loaded.graph.topological_order() {
         Ok(order) => (order, None),
@@ -176,7 +177,7 @@ pub(crate) fn evaluate_skills(
     let context = TriggerContext {
         store: &loaded.store,
         activation_timestamps: &timestamps,
-        active_signals: &loaded.active_signals,
+        active_signals,
     };
 
     let mut ready = Vec::new();

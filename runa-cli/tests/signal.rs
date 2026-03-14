@@ -228,15 +228,40 @@ fn signal_commands_reject_invalid_names() {
     fs::create_dir(&project_dir).unwrap();
     init_project(&project_dir, &manifest_path);
 
-    for args in [["signal", "begin", "BadName"], ["signal", "clear", "1bad"]] {
+    for args in [
+        ["signal", "begin", "BadName"],
+        ["signal", "clear", "release/v1"],
+    ] {
         let output = run_command(&project_dir, &args);
         assert!(!output.status.success(), "command should fail");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("[a-z][a-z0-9-]*"),
+            stderr.contains("[a-z0-9][a-z0-9_-]*"),
             "stderr should describe the expected pattern: {stderr}"
         );
     }
+}
+
+#[test]
+fn signal_commands_accept_names_with_underscores() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        manifest_toml().replace("name = \"begin\"", "name = \"qa_ready\""),
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let output = run_command(&project_dir, &["signal", "begin", "qa_ready"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

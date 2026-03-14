@@ -27,13 +27,12 @@ pub struct State {
     pub runa_version: String,
 }
 
-/// A fully loaded runa project: manifest, dependency graph, artifact store, and active signals.
+/// A fully loaded runa project: manifest, dependency graph, and artifact store.
 pub struct LoadedProject {
     pub manifest: Manifest,
     pub graph: DependencyGraph,
     pub store: ArtifactStore,
     pub workspace_dir: PathBuf,
-    pub active_signals: std::collections::HashSet<String>,
 }
 
 /// Errors that can occur when loading a runa project.
@@ -153,8 +152,7 @@ pub(crate) fn resolve_config(
 /// Load a runa project from `working_dir`.
 ///
 /// Resolves config via the resolution chain, reads state, parses the methodology
-/// manifest, builds the dependency graph, opens the artifact store, and loads
-/// active signals from `.runa/signals.json` if present.
+/// manifest, builds the dependency graph, and opens the artifact store.
 pub fn load(
     working_dir: &Path,
     config_override: Option<&Path>,
@@ -182,7 +180,6 @@ pub fn load(
         .map_err(ProjectError::ManifestInvalid)?;
 
     let graph = DependencyGraph::build(&manifest.skills).map_err(ProjectError::GraphInvalid)?;
-    let active_signals = load_signals(&runa_dir)?;
 
     // Resolve artifact workspace dir: explicit config value or default,
     // relative to the project `.runa/` directory.
@@ -199,7 +196,6 @@ pub fn load(
         graph,
         store,
         workspace_dir,
-        active_signals,
     })
 }
 
@@ -208,9 +204,7 @@ struct SignalsFile {
     active: Vec<String>,
 }
 
-pub(crate) fn load_signals(
-    runa_dir: &Path,
-) -> Result<std::collections::HashSet<String>, ProjectError> {
+pub fn load_signals(runa_dir: &Path) -> Result<std::collections::HashSet<String>, ProjectError> {
     let path = runa_dir.join(SIGNALS_FILENAME);
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
@@ -292,7 +286,6 @@ trigger = { type = "on_signal", name = "init" }
         let loaded = load(&working, None).unwrap();
         assert_eq!(loaded.manifest.name, "test-methodology");
         assert_eq!(loaded.workspace_dir, working.join(".runa/workspace"));
-        assert!(loaded.active_signals.is_empty());
     }
 
     #[test]
@@ -310,10 +303,10 @@ trigger = { type = "on_signal", name = "init" }
         )
         .unwrap();
 
-        let loaded = load(&working, None).unwrap();
-        assert_eq!(loaded.active_signals.len(), 2);
-        assert!(loaded.active_signals.contains("deploy"));
-        assert!(loaded.active_signals.contains("begin"));
+        let signals = load_signals(&working.join(".runa")).unwrap();
+        assert_eq!(signals.len(), 2);
+        assert!(signals.contains("deploy"));
+        assert!(signals.contains("begin"));
     }
 
     #[test]
@@ -341,7 +334,7 @@ trigger = { type = "on_signal", name = "init" }
         write_project_files(&working, &manifest_path);
         fs::write(working.join(".runa").join("signals.json"), "{not json").unwrap();
 
-        let err = load(&working, None).unwrap_err();
+        let err = load_signals(&working.join(".runa")).unwrap_err();
         assert!(
             matches!(err, ProjectError::SignalsParseFailed(_)),
             "expected SignalsParseFailed, got: {err}"

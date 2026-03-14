@@ -77,6 +77,19 @@ pub enum TriggerCondition {
     AnyOf { conditions: Vec<TriggerCondition> },
 }
 
+pub fn is_valid_signal_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return false;
+    }
+
+    chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
+}
+
 impl fmt::Display for TriggerCondition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -288,5 +301,22 @@ mod tests {
             tc.to_string(),
             "all_of(on_artifact(X), any_of(on_signal(go), on_artifact(Y)))"
         );
+    }
+
+    #[test]
+    fn signal_name_validation_rejects_invalid_edge_cases() {
+        assert!(!is_valid_signal_name(""));
+        assert!(!is_valid_signal_name("-start"));
+        assert!(!is_valid_signal_name("_start"));
+        assert!(!is_valid_signal_name("Bad"));
+        assert!(!is_valid_signal_name("release/v1"));
+    }
+
+    #[test]
+    fn signal_name_validation_accepts_underscores_and_hyphens() {
+        assert!(is_valid_signal_name("begin"));
+        assert!(is_valid_signal_name("qa_ready"));
+        assert!(is_valid_signal_name("release-v1"));
+        assert!(is_valid_signal_name("1phase_ready"));
     }
 }

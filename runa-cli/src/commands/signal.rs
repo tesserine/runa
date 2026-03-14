@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::project::{RUNA_DIR, SIGNALS_FILENAME, STATE_FILENAME};
 
-const SIGNAL_NAME_PATTERN: &str = "[a-z][a-z0-9-]*";
+const SIGNAL_NAME_PATTERN: &str = "[a-z0-9][a-z0-9_-]*";
 
 #[derive(Debug)]
 pub enum SignalError {
@@ -132,14 +132,7 @@ fn sorted_signals(active: &HashSet<String>) -> Vec<String> {
 }
 
 fn validate_signal_name(signal_name: &str) -> Result<(), SignalError> {
-    let mut chars = signal_name.chars();
-    let Some(first) = chars.next() else {
-        return Err(SignalError::InvalidSignalName(signal_name.to_string()));
-    };
-
-    if !first.is_ascii_lowercase()
-        || !chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
-    {
+    if !libagent::is_valid_signal_name(signal_name) {
         return Err(SignalError::InvalidSignalName(signal_name.to_string()));
     }
 
