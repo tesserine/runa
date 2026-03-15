@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::model::{Manifest, TriggerCondition, is_valid_signal_name};
 
@@ -17,6 +17,17 @@ pub enum ManifestError {
     DuplicateSkillName(String),
     /// An on_signal trigger uses an invalid signal name.
     InvalidSignalName(String),
+    /// A schema file path reference does not exist on disk.
+    SchemaFileNotFound {
+        artifact_type: String,
+        path: PathBuf,
+    },
+    /// A schema file exists but contains invalid JSON.
+    SchemaFileInvalidJson {
+        artifact_type: String,
+        path: PathBuf,
+        detail: String,
+    },
 }
 
 impl fmt::Display for ManifestError {
@@ -34,6 +45,27 @@ impl fmt::Display for ManifestError {
                 write!(
                     f,
                     "invalid signal name '{name}': expected pattern [a-z0-9][a-z0-9_-]*"
+                )
+            }
+            ManifestError::SchemaFileNotFound {
+                artifact_type,
+                path,
+            } => {
+                write!(
+                    f,
+                    "schema file not found for artifact type '{artifact_type}': {}",
+                    path.display()
+                )
+            }
+            ManifestError::SchemaFileInvalidJson {
+                artifact_type,
+                path,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "invalid JSON in schema file for artifact type '{artifact_type}': {}: {detail}",
+                    path.display()
                 )
             }
         }
@@ -64,11 +96,43 @@ impl From<toml::de::Error> for ManifestError {
 
 /// Parse a manifest from a file path.
 ///
-/// Reads the file, parses TOML into a `Manifest`, and validates that
-/// artifact type names and skill names are unique.
+/// Reads the file, parses TOML into a `Manifest`, validates that
+/// artifact type names and skill names are unique, and resolves any
+/// string-valued schema fields as file paths relative to the manifest
+/// directory.
 pub fn parse(path: &Path) -> Result<Manifest, ManifestError> {
     let content = std::fs::read_to_string(path)?;
-    from_str(&content)
+    let mut manifest = from_str(&content)?;
+    let manifest_dir = path.parent().unwrap_or(Path::new("."));
+    resolve_schema_paths(&mut manifest, manifest_dir)?;
+    Ok(manifest)
+}
+
+fn resolve_schema_paths(manifest: &mut Manifest, manifest_dir: &Path) -> Result<(), ManifestError> {
+    for artifact_type in &mut manifest.artifact_types {
+        if let serde_json::Value::String(ref schema_path) = artifact_type.schema {
+            let full_path = manifest_dir.join(schema_path);
+            let content = std::fs::read_to_string(&full_path).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    ManifestError::SchemaFileNotFound {
+                        artifact_type: artifact_type.name.clone(),
+                        path: full_path.clone(),
+                    }
+                } else {
+                    ManifestError::Io(e)
+                }
+            })?;
+            let schema: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+                ManifestError::SchemaFileInvalidJson {
+                    artifact_type: artifact_type.name.clone(),
+                    path: full_path,
+                    detail: e.to_string(),
+                }
+            })?;
+            artifact_type.schema = schema;
+        }
+    }
+    Ok(())
 }
 
 /// Parse a manifest from a TOML string.
@@ -414,6 +478,133 @@ conditions = [
         let toml_string = toml::to_string(&manifest).unwrap();
         let parsed = from_str(&toml_string).unwrap();
         assert_eq!(manifest, parsed);
+    }
+
+    #[test]
+    fn parse_resolves_file_path_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let schemas_dir = dir.path().join("schemas");
+        std::fs::create_dir(&schemas_dir).unwrap();
+        std::fs::write(
+            schemas_dir.join("thing.schema.json"),
+            r#"{"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}}"#,
+        )
+        .unwrap();
+
+        let toml = r#"
+name = "file-schema-test"
+
+[[artifact_types]]
+name = "thing"
+schema = "schemas/thing.schema.json"
+
+[[skills]]
+name = "make-thing"
+produces = ["thing"]
+trigger = { type = "on_signal", name = "go" }
+"#;
+        let manifest_path = dir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, toml).unwrap();
+
+        let manifest = parse(&manifest_path).unwrap();
+        let schema = &manifest.artifact_types[0].schema;
+        assert!(schema.is_object(), "expected object, got: {schema}");
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["required"][0], "name");
+    }
+
+    #[test]
+    fn parse_missing_schema_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml = r#"
+name = "missing-schema"
+
+[[artifact_types]]
+name = "thing"
+schema = "schemas/nonexistent.schema.json"
+
+[[skills]]
+name = "make-thing"
+produces = ["thing"]
+trigger = { type = "on_signal", name = "go" }
+"#;
+        let manifest_path = dir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, toml).unwrap();
+
+        let err = parse(&manifest_path).unwrap_err();
+        match err {
+            ManifestError::SchemaFileNotFound {
+                artifact_type,
+                path: _,
+            } => assert_eq!(artifact_type, "thing"),
+            other => panic!("expected SchemaFileNotFound, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn parse_invalid_json_schema_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bad.json"), "{not json").unwrap();
+
+        let toml = r#"
+name = "bad-json"
+
+[[artifact_types]]
+name = "thing"
+schema = "bad.json"
+
+[[skills]]
+name = "make-thing"
+produces = ["thing"]
+trigger = { type = "on_signal", name = "go" }
+"#;
+        let manifest_path = dir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, toml).unwrap();
+
+        let err = parse(&manifest_path).unwrap_err();
+        match err {
+            ManifestError::SchemaFileInvalidJson {
+                artifact_type,
+                path: _,
+                detail: _,
+            } => assert_eq!(artifact_type, "thing"),
+            other => panic!("expected SchemaFileInvalidJson, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn parse_mixed_inline_and_file_schemas() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ext.schema.json"),
+            r#"{"type": "object", "required": ["url"]}"#,
+        )
+        .unwrap();
+
+        let toml = r#"
+name = "mixed"
+
+[[artifact_types]]
+name = "inline-thing"
+schema = { type = "object", required = ["name"] }
+
+[[artifact_types]]
+name = "file-thing"
+schema = "ext.schema.json"
+
+[[skills]]
+name = "do-it"
+produces = ["inline-thing", "file-thing"]
+trigger = { type = "on_signal", name = "go" }
+"#;
+        let manifest_path = dir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, toml).unwrap();
+
+        let manifest = parse(&manifest_path).unwrap();
+        assert!(manifest.artifact_types[0].schema.is_object());
+        assert_eq!(manifest.artifact_types[0].schema["type"], "object");
+        assert!(manifest.artifact_types[1].schema.is_object());
+        assert_eq!(manifest.artifact_types[1].schema["required"][0], "url");
     }
 
     #[test]

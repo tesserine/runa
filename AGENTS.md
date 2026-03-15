@@ -26,7 +26,7 @@ cargo run --bin runa -- --version  # Run CLI
 
 **libagent modules:**
 - `model.rs` — Core types: `Manifest`, `ArtifactType`, `SkillDeclaration`, `TriggerCondition`
-- `manifest.rs` — TOML parsing with validation (uniqueness checks at parse time)
+- `manifest.rs` — TOML parsing with validation (uniqueness checks at parse time, file path schema resolution)
 - `validation.rs` — JSON Schema validation for artifact instances, collects all violations before returning
 - `graph.rs` — Dependency graph from skill declarations: topological ordering, cycle detection, blocked-skill identification
 - `store.rs` — Artifact state tracking: validation status, content hashing, schema hashing, JSON persistence in `.runa/store/`
