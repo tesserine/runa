@@ -71,5 +71,5 @@ cargo test --lib     # Run all unit tests
 
 ## Documentation
 
-- [Governance](https://github.com/pentaxis93/governance) — Bedrock principles and architectural decision records (ADRs)
+- [Commons](https://github.com/pentaxis93/commons) — Bedrock principles and architectural decision records (ADRs)
 - [Interface Contract](docs/interface-contract.md) — Three primitives defining the methodology-runtime boundary

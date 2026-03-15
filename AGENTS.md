@@ -53,10 +53,10 @@ cargo run --bin runa -- --version  # Run CLI
 ## Design Principles
 
 All work in this repository is grounded in the bedrock principles maintained at
-[pentaxis93/governance](https://github.com/pentaxis93/governance). This is a
+[pentaxis93/commons](https://github.com/pentaxis93/commons). This is a
 requirement, not guidance — the principles are the foundation the runtime is
 built on, and work that does not ground in them produces output that fails
-downstream. The governance repo is the single source of truth for the full
+downstream. The commons repo is the single source of truth for the full
 principles and architectural decision records (ADRs).
 
 ## Dependencies
