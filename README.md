@@ -71,6 +71,5 @@ cargo test --lib     # Run all unit tests
 
 ## Documentation
 
-- [PRINCIPLES.md](docs/PRINCIPLES.md) — Seven bedrock principles governing runtime and boundary decisions
+- [Commons](https://github.com/pentaxis93/commons) — Bedrock principles and architectural decision records (ADRs)
 - [Interface Contract](docs/interface-contract.md) — Three primitives defining the methodology-runtime boundary
-- [ADRs](docs/adr/) — Architectural decision records

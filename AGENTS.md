@@ -52,12 +52,12 @@ cargo run --bin runa -- --version  # Run CLI
 
 ## Design Principles
 
-Decisions trace to principles in `docs/PRINCIPLES.md` and ADRs in `docs/adr/`. Key constraints:
-
-- **Sovereignty** — Clean ownership boundaries; runtime enforces contracts but never interprets domain semantics
-- **Everything earns its place** — No speculative abstractions, backward-compat shims, or tech debt. Every element traces to a current need or gets removed
-- **Verifiable completion** — Mechanically verifiable criteria only; no subjective "done"
-- **Unconditional responsibility** — Problems are fixed or queued, never deferred silently
+All work in this repository is grounded in the bedrock principles maintained at
+[pentaxis93/commons](https://github.com/pentaxis93/commons). This is a
+requirement, not guidance — the principles are the foundation the runtime is
+built on, and work that does not ground in them produces output that fails
+downstream. The commons repo is the single source of truth for the full
+principles and architectural decision records (ADRs).
 
 ## Dependencies
 
