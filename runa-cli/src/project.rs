@@ -174,7 +174,7 @@ pub fn load(
     let manifest = libagent::manifest::parse(Path::new(&config.methodology_path))
         .map_err(ProjectError::ManifestInvalid)?;
 
-    let graph = DependencyGraph::build(&manifest.skills).map_err(ProjectError::GraphInvalid)?;
+    let graph = DependencyGraph::build(&manifest.protocols).map_err(ProjectError::GraphInvalid)?;
 
     // Resolve artifact workspace dir: explicit config value or default,
     // relative to the project `.runa/` directory.
@@ -250,7 +250,7 @@ name = "test-methodology"
 name = "constraints"
 schema = { type = "object" }
 
-[[skills]]
+[[protocols]]
 name = "ground"
 produces = ["constraints"]
 trigger = { type = "on_signal", name = "init" }

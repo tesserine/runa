@@ -17,18 +17,18 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "design-doc"
 schema = { type = "object" }
 
-[[skills]]
+[[protocols]]
 name = "ground"
 produces = ["constraints"]
 trigger = { type = "on_signal", name = "init" }
 
-[[skills]]
+[[protocols]]
 name = "design"
 requires = ["constraints"]
 produces = ["design-doc"]
 trigger = { type = "on_artifact", name = "constraints" }
 
-[[skills]]
+[[protocols]]
 name = "review"
 requires = ["design-doc"]
 trigger = { type = "on_artifact", name = "design-doc" }

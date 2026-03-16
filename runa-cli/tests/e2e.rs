@@ -30,7 +30,7 @@ schema = { type = "object", required = ["text"], properties = { text = { type = 
 name = "implementation"
 schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
-[[skills]]
+[[protocols]]
 name = "research"
 requires = ["constraints"]
 accepts = ["prior-art"]
@@ -38,7 +38,7 @@ produces = ["design-doc"]
 may_produce = ["notes"]
 trigger = { type = "on_artifact", name = "constraints" }
 
-[[skills]]
+[[protocols]]
 name = "implement"
 requires = ["design-doc"]
 accepts = ["notes"]
@@ -48,7 +48,7 @@ trigger = { type = "all_of", conditions = [
     { type = "on_artifact", name = "prior-art" }
 ] }
 
-[[skills]]
+[[protocols]]
 name = "verify"
 requires = ["implementation"]
 trigger = { type = "on_artifact", name = "implementation" }
@@ -138,7 +138,7 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
         init_stdout.contains("5 artifact types"),
         "stdout: {init_stdout}"
     );
-    assert!(init_stdout.contains("3 skills"), "stdout: {init_stdout}");
+    assert!(init_stdout.contains("3 protocols"), "stdout: {init_stdout}");
     assert!(project_dir.join(".runa/config.toml").is_file());
     assert!(project_dir.join(".runa/state.toml").is_file());
     assert!(project_dir.join(".runa/store").is_dir());
@@ -216,7 +216,7 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
     );
 
     let first_status = run_json(&project_dir, &["status", "--json"]);
-    let first_skills = first_status["skills"].as_array().unwrap();
+    let first_skills = first_status["protocols"].as_array().unwrap();
     assert_eq!(first_skills.len(), 3, "{first_status:#}");
     assert_eq!(first_skills[0]["name"], "research");
     assert_eq!(first_skills[0]["status"], "ready");
@@ -257,7 +257,7 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
     let first_step = run_json(&project_dir, &["step", "--dry-run", "--json"]);
     let first_plan = first_step["execution_plan"].as_array().unwrap();
     assert_eq!(first_plan.len(), 1, "{first_step:#}");
-    assert_eq!(first_plan[0]["skill"], "research");
+    assert_eq!(first_plan[0]["protocol"], "research");
     assert_eq!(first_plan[0]["trigger"], "on_artifact(constraints)");
     assert_eq!(
         first_plan[0]["context"]["expected_outputs"],
@@ -327,7 +327,7 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
     );
 
     let second_status = run_json(&project_dir, &["status", "--json"]);
-    let second_skills = second_status["skills"].as_array().unwrap();
+    let second_skills = second_status["protocols"].as_array().unwrap();
     assert_eq!(second_skills.len(), 3, "{second_status:#}");
     assert_eq!(second_skills[0]["name"], "research");
     assert_eq!(second_skills[0]["status"], "ready");
@@ -360,8 +360,8 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
     let second_step = run_json(&project_dir, &["step", "--dry-run", "--json"]);
     let second_plan = second_step["execution_plan"].as_array().unwrap();
     assert_eq!(second_plan.len(), 2, "{second_step:#}");
-    assert_eq!(second_plan[0]["skill"], "research");
-    assert_eq!(second_plan[1]["skill"], "implement");
+    assert_eq!(second_plan[0]["protocol"], "research");
+    assert_eq!(second_plan[1]["protocol"], "implement");
     assert_context_inputs(
         &second_plan[1]["context"]["inputs"],
         &[

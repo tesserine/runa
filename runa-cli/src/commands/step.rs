@@ -4,7 +4,7 @@ use std::path::Path;
 use libagent::context::{ArtifactRelationship, ContextInjection};
 use serde::Serialize;
 
-use crate::commands::skill_eval;
+use crate::commands::protocol_eval;
 use crate::project::{self, ProjectError};
 
 const NOT_IMPLEMENTED_MESSAGE: &str =
@@ -48,12 +48,12 @@ struct StepJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     cycle: Option<Vec<String>>,
     execution_plan: Vec<PlanEntry>,
-    skills: Vec<skill_eval::SkillJson>,
+    protocols: Vec<protocol_eval::ProtocolJson>,
 }
 
 #[derive(Serialize)]
 struct PlanEntry {
-    skill: String,
+    protocol: String,
     trigger: String,
     context: ContextInjection,
 }
@@ -73,17 +73,17 @@ pub fn run(
         project::load_signals(&working_dir.join(project::RUNA_DIR));
     let scan_result =
         libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(StepError::Scan)?;
-    let scan_findings = skill_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
+    let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
     let evaluated =
-        skill_eval::evaluate_skills(&loaded, working_dir, &scan_findings, &active_signals);
+        protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings, &active_signals);
     let mut warnings = scan_findings.warnings.clone();
     warnings.extend(signal_warnings);
 
-    let skill_map: std::collections::HashMap<&str, &libagent::SkillDeclaration> = loaded
+    let protocol_map: std::collections::HashMap<&str, &libagent::ProtocolDeclaration> = loaded
         .manifest
-        .skills
+        .protocols
         .iter()
-        .map(|skill| (skill.name.as_str(), skill))
+        .map(|protocol| (protocol.name.as_str(), protocol))
         .collect();
 
     let cycle_participants: std::collections::HashSet<&str> = evaluated
@@ -96,10 +96,10 @@ pub fn run(
         .iter()
         .filter(|entry| !cycle_participants.contains(entry.name.as_str()))
         .map(|entry| {
-            let skill = skill_map
+            let protocol = protocol_map
                 .get(entry.name.as_str())
-                .expect("planned skill must exist in manifest");
-            let mut context = libagent::context::build_context(skill, &loaded.store);
+                .expect("planned protocol must exist in manifest");
+            let mut context = libagent::context::build_context(protocol, &loaded.store);
             context.inputs.retain(|input| {
                 input.relationship == ArtifactRelationship::Requires
                     || !scan_findings
@@ -107,8 +107,8 @@ pub fn run(
                         .contains(input.artifact_type.as_str())
             });
             PlanEntry {
-                skill: entry.name.clone(),
-                trigger: skill.trigger.to_string(),
+                protocol: entry.name.clone(),
+                trigger: protocol.trigger.to_string(),
                 context,
             }
         })
@@ -121,7 +121,7 @@ pub fn run(
             scan_warnings: warnings.clone(),
             cycle: evaluated.cycle.as_ref().map(|cycle| cycle.path.clone()),
             execution_plan,
-            skills: evaluated.json_skills(),
+            protocols: evaluated.json_protocols(),
         };
         println!(
             "{}",
@@ -145,13 +145,13 @@ pub fn run(
         if execution_plan.is_empty() {
             println!("Execution plan: none");
             if evaluated.cycle.is_none() {
-                println!("No READY skills.");
+                println!("No READY protocols.");
             }
         } else {
             println!("Execution plan:");
             for (index, entry) in execution_plan.iter().enumerate() {
                 println!();
-                println!("  {}. {}", index + 1, entry.skill);
+                println!("  {}. {}", index + 1, entry.protocol);
                 println!("     trigger: {}", entry.trigger);
                 println!("     context:");
                 let context =
@@ -163,11 +163,11 @@ pub fn run(
         }
 
         println!();
-        skill_eval::print_group("READY", &evaluated.ready);
+        protocol_eval::print_group("READY", &evaluated.ready);
         println!();
-        skill_eval::print_group("BLOCKED", &evaluated.blocked);
+        protocol_eval::print_group("BLOCKED", &evaluated.blocked);
         println!();
-        skill_eval::print_group("WAITING", &evaluated.waiting);
+        protocol_eval::print_group("WAITING", &evaluated.waiting);
     }
 
     Ok(())

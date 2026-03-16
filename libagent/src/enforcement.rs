@@ -1,8 +1,8 @@
-//! Pre/post-execution enforcement for skill declarations.
+//! Pre/post-execution enforcement for protocol declarations.
 //!
 //! Enforcement turns methodology declarations into runtime guarantees.
-//! Given a skill declaration and the current artifact store state,
-//! enforcement checks whether the skill's contracts are satisfied.
+//! Given a protocol declaration and the current artifact store state,
+//! enforcement checks whether the protocol's contracts are satisfied.
 //!
 //! - Pre-execution: all `requires` artifacts must exist and be valid
 //! - Post-execution: all `produces` artifacts must exist and be valid;
@@ -11,11 +11,11 @@
 
 use std::fmt;
 
-use crate::model::SkillDeclaration;
+use crate::model::ProtocolDeclaration;
 use crate::store::{ArtifactStore, ValidationStatus};
 use crate::validation::Violation;
 
-/// The declared relationship between a skill and an artifact type.
+/// The declared relationship between a protocol and an artifact type.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Relationship {
     Requires,
@@ -57,14 +57,14 @@ pub enum Phase {
     Post,
 }
 
-/// Enforcement failed: a skill's contracts are not satisfied.
+/// Enforcement failed: a protocol's contracts are not satisfied.
 ///
-/// Contains the skill name, enforcement phase, and all artifact
+/// Contains the protocol name, enforcement phase, and all artifact
 /// failures found. Collects all failures before returning (does
 /// not short-circuit on first failure).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnforcementError {
-    pub skill_name: String,
+    pub protocol_name: String,
     pub phase: Phase,
     pub failures: Vec<ArtifactFailure>,
 }
@@ -156,8 +156,8 @@ impl fmt::Display for EnforcementError {
         };
         write!(
             f,
-            "enforcement failed for skill '{}' ({phase_label}):",
-            self.skill_name
+            "enforcement failed for protocol '{}' ({phase_label}):",
+            self.protocol_name
         )?;
         for failure in &self.failures {
             write!(f, "\n  - {failure}")?;
@@ -222,21 +222,21 @@ fn check_artifact(
 
 /// Check that all `requires` artifacts exist and are valid.
 ///
-/// Returns `Ok(())` if every artifact type listed in the skill's `requires`
+/// Returns `Ok(())` if every artifact type listed in the protocol's `requires`
 /// has at least one instance in the store and **all** instances of each
 /// required type are valid. One invalid or stale instance of a required
 /// type blocks execution.
 ///
 /// `accepts` artifacts are explicitly NOT checked. Their absence is expected
-/// behavior — they represent optional inputs that the skill can consume if
+/// behavior — they represent optional inputs that the protocol can consume if
 /// available, not preconditions for execution.
 pub fn enforce_preconditions(
-    skill: &SkillDeclaration,
+    protocol: &ProtocolDeclaration,
     store: &ArtifactStore,
 ) -> Result<(), EnforcementError> {
     let mut failures = Vec::new();
 
-    for artifact_type in &skill.requires {
+    for artifact_type in &protocol.requires {
         if let Some(failure) = check_artifact(store, artifact_type, Relationship::Requires) {
             failures.push(failure);
         }
@@ -246,7 +246,7 @@ pub fn enforce_preconditions(
         Ok(())
     } else {
         Err(EnforcementError {
-            skill_name: skill.name.clone(),
+            protocol_name: protocol.name.clone(),
             phase: Phase::Pre,
             failures,
         })
@@ -258,7 +258,7 @@ pub fn enforce_preconditions(
 ///
 /// Returns `Ok(())` if:
 /// - Every artifact type in `produces` has at least one instance and **all**
-///   instances are valid. One invalid or stale instance means the skill's
+///   instances are valid. One invalid or stale instance means the protocol's
 ///   output contract is not satisfied.
 /// - Every artifact type in `may_produce` either has no instances or has
 ///   all-valid instances.
@@ -266,18 +266,18 @@ pub fn enforce_preconditions(
 /// `accepts` artifacts are explicitly NOT checked. They are input edges,
 /// not output edges, and are irrelevant to post-execution enforcement.
 pub fn enforce_postconditions(
-    skill: &SkillDeclaration,
+    protocol: &ProtocolDeclaration,
     store: &ArtifactStore,
 ) -> Result<(), EnforcementError> {
     let mut failures = Vec::new();
 
-    for artifact_type in &skill.produces {
+    for artifact_type in &protocol.produces {
         if let Some(failure) = check_artifact(store, artifact_type, Relationship::Produces) {
             failures.push(failure);
         }
     }
 
-    for artifact_type in &skill.may_produce {
+    for artifact_type in &protocol.may_produce {
         // may_produce: absent is ok — only check if instances exist.
         let instances = store.instances_of(artifact_type);
         if instances.is_empty() {
@@ -292,7 +292,7 @@ pub fn enforce_postconditions(
         Ok(())
     } else {
         Err(EnforcementError {
-            skill_name: skill.name.clone(),
+            protocol_name: protocol.name.clone(),
             phase: Phase::Post,
             failures,
         })
@@ -308,14 +308,14 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
-    fn make_skill(
+    fn make_protocol(
         name: &str,
         requires: &[&str],
         accepts: &[&str],
         produces: &[&str],
         may_produce: &[&str],
-    ) -> SkillDeclaration {
-        SkillDeclaration {
+    ) -> ProtocolDeclaration {
+        ProtocolDeclaration {
             name: name.into(),
             requires: requires.iter().map(|s| s.to_string()).collect(),
             accepts: accepts.iter().map(|s| s.to_string()).collect(),
@@ -337,8 +337,8 @@ mod tests {
             .record("doc", "a", Path::new("a.json"), &json!({"title": "A"}))
             .unwrap();
 
-        let skill = make_skill("design", &["doc"], &[], &[], &[]);
-        assert!(enforce_preconditions(&skill, &store).is_ok());
+        let protocol = make_protocol("design", &["doc"], &[], &[], &[]);
+        assert!(enforce_preconditions(&protocol, &store).is_ok());
     }
 
     #[test]
@@ -346,9 +346,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
-        let skill = make_skill("design", &["doc"], &[], &[], &[]);
-        let err = enforce_preconditions(&skill, &store).unwrap_err();
-        assert_eq!(err.skill_name, "design");
+        let protocol = make_protocol("design", &["doc"], &[], &[], &[]);
+        let err = enforce_preconditions(&protocol, &store).unwrap_err();
+        assert_eq!(err.protocol_name, "design");
         assert_eq!(err.phase, Phase::Pre);
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
@@ -366,8 +366,8 @@ mod tests {
             .record("doc", "bad", Path::new("b.json"), &json!({"bad": true}))
             .unwrap();
 
-        let skill = make_skill("design", &["doc"], &[], &[], &[]);
-        let err = enforce_preconditions(&skill, &store).unwrap_err();
+        let protocol = make_protocol("design", &["doc"], &[], &[], &[]);
+        let err = enforce_preconditions(&protocol, &store).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
             &err.failures[0],
@@ -385,8 +385,8 @@ mod tests {
             .unwrap();
         store.invalidate("doc", "a").unwrap();
 
-        let skill = make_skill("design", &["doc"], &[], &[], &[]);
-        let err = enforce_preconditions(&skill, &store).unwrap_err();
+        let protocol = make_protocol("design", &["doc"], &[], &[], &[]);
+        let err = enforce_preconditions(&protocol, &store).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
             &err.failures[0],
@@ -400,8 +400,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
-        let skill = make_skill("design", &[], &[], &[], &[]);
-        assert!(enforce_preconditions(&skill, &store).is_ok());
+        let protocol = make_protocol("design", &[], &[], &[], &[]);
+        assert!(enforce_preconditions(&protocol, &store).is_ok());
     }
 
     #[test]
@@ -410,8 +410,8 @@ mod tests {
         let store = make_store(&tmp.path().join("s"), vec!["doc", "notes"]);
 
         // "notes" is in accepts and is missing — should not cause failure.
-        let skill = make_skill("design", &[], &["notes"], &[], &[]);
-        assert!(enforce_preconditions(&skill, &store).is_ok());
+        let protocol = make_protocol("design", &[], &["notes"], &[], &[]);
+        assert!(enforce_preconditions(&protocol, &store).is_ok());
     }
 
     #[test]
@@ -419,8 +419,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc", "spec"]);
 
-        let skill = make_skill("design", &["doc", "spec"], &[], &[], &[]);
-        let err = enforce_preconditions(&skill, &store).unwrap_err();
+        let protocol = make_protocol("design", &["doc", "spec"], &[], &[], &[]);
+        let err = enforce_preconditions(&protocol, &store).unwrap_err();
         assert_eq!(err.failures.len(), 2);
         // Both should be Missing.
         for failure in &err.failures {
@@ -442,8 +442,8 @@ mod tests {
             .unwrap();
         store.invalidate("doc", "ok").unwrap();
 
-        let skill = make_skill("design", &["doc"], &[], &[], &[]);
-        let err = enforce_preconditions(&skill, &store).unwrap_err();
+        let protocol = make_protocol("design", &["doc"], &[], &[], &[]);
+        let err = enforce_preconditions(&protocol, &store).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         // Invalid takes precedence over Stale.
         assert!(matches!(
@@ -463,8 +463,8 @@ mod tests {
             .record("doc", "a", Path::new("a.json"), &json!({"title": "A"}))
             .unwrap();
 
-        let skill = make_skill("design", &[], &[], &["doc"], &[]);
-        assert!(enforce_postconditions(&skill, &store).is_ok());
+        let protocol = make_protocol("design", &[], &[], &["doc"], &[]);
+        assert!(enforce_postconditions(&protocol, &store).is_ok());
     }
 
     #[test]
@@ -472,8 +472,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
-        let skill = make_skill("design", &[], &[], &["doc"], &[]);
-        let err = enforce_postconditions(&skill, &store).unwrap_err();
+        let protocol = make_protocol("design", &[], &[], &["doc"], &[]);
+        let err = enforce_postconditions(&protocol, &store).unwrap_err();
         assert_eq!(err.phase, Phase::Post);
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
@@ -491,8 +491,8 @@ mod tests {
             .record("doc", "bad", Path::new("b.json"), &json!({"bad": true}))
             .unwrap();
 
-        let skill = make_skill("design", &[], &[], &["doc"], &[]);
-        let err = enforce_postconditions(&skill, &store).unwrap_err();
+        let protocol = make_protocol("design", &[], &[], &["doc"], &[]);
+        let err = enforce_postconditions(&protocol, &store).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
             &err.failures[0],
@@ -512,8 +512,8 @@ mod tests {
             .unwrap();
         store.invalidate("doc", "a").unwrap();
 
-        let skill = make_skill("design", &[], &[], &["doc"], &[]);
-        let err = enforce_postconditions(&skill, &store).unwrap_err();
+        let protocol = make_protocol("design", &[], &[], &["doc"], &[]);
+        let err = enforce_postconditions(&protocol, &store).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
             &err.failures[0],
@@ -533,8 +533,8 @@ mod tests {
             .record("notes", "n1", Path::new("n.json"), &json!({"title": "N"}))
             .unwrap();
 
-        let skill = make_skill("design", &[], &[], &["doc"], &["notes"]);
-        assert!(enforce_postconditions(&skill, &store).is_ok());
+        let protocol = make_protocol("design", &[], &[], &["doc"], &["notes"]);
+        assert!(enforce_postconditions(&protocol, &store).is_ok());
     }
 
     #[test]
@@ -548,8 +548,8 @@ mod tests {
             .record("notes", "bad", Path::new("n.json"), &json!({"bad": true}))
             .unwrap();
 
-        let skill = make_skill("design", &[], &[], &["doc"], &["notes"]);
-        let err = enforce_postconditions(&skill, &store).unwrap_err();
+        let protocol = make_protocol("design", &[], &[], &["doc"], &["notes"]);
+        let err = enforce_postconditions(&protocol, &store).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
             &err.failures[0],
@@ -570,8 +570,8 @@ mod tests {
             .unwrap();
         store.invalidate("notes", "n1").unwrap();
 
-        let skill = make_skill("design", &[], &[], &["doc"], &["notes"]);
-        let err = enforce_postconditions(&skill, &store).unwrap_err();
+        let protocol = make_protocol("design", &[], &[], &["doc"], &["notes"]);
+        let err = enforce_postconditions(&protocol, &store).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
             &err.failures[0],
@@ -589,8 +589,8 @@ mod tests {
             .unwrap();
 
         // "notes" has no instances — may_produce should not fail.
-        let skill = make_skill("design", &[], &[], &["doc"], &["notes"]);
-        assert!(enforce_postconditions(&skill, &store).is_ok());
+        let protocol = make_protocol("design", &[], &[], &["doc"], &["notes"]);
+        assert!(enforce_postconditions(&protocol, &store).is_ok());
     }
 
     #[test]
@@ -598,8 +598,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
-        let skill = make_skill("design", &[], &[], &[], &[]);
-        assert!(enforce_postconditions(&skill, &store).is_ok());
+        let protocol = make_protocol("design", &[], &[], &[], &[]);
+        assert!(enforce_postconditions(&protocol, &store).is_ok());
     }
 
     #[test]
@@ -611,8 +611,8 @@ mod tests {
             .unwrap();
         // "context" is in accepts and is missing — should not cause failure.
 
-        let skill = make_skill("design", &[], &["context"], &["doc"], &[]);
-        assert!(enforce_postconditions(&skill, &store).is_ok());
+        let protocol = make_protocol("design", &[], &["context"], &["doc"], &[]);
+        assert!(enforce_postconditions(&protocol, &store).is_ok());
     }
 
     // --- Display formatting ---
@@ -620,7 +620,7 @@ mod tests {
     #[test]
     fn error_display_pre_missing() {
         let err = EnforcementError {
-            skill_name: "design".into(),
+            protocol_name: "design".into(),
             phase: Phase::Pre,
             failures: vec![ArtifactFailure::Missing {
                 artifact_type: "constraints".into(),
@@ -628,14 +628,14 @@ mod tests {
             }],
         };
         let msg = err.to_string();
-        assert!(msg.contains("enforcement failed for skill 'design' (pre-execution):"));
+        assert!(msg.contains("enforcement failed for protocol 'design' (pre-execution):"));
         assert!(msg.contains("requires artifact type 'constraints' which is missing"));
     }
 
     #[test]
     fn error_display_post_missing() {
         let err = EnforcementError {
-            skill_name: "design".into(),
+            protocol_name: "design".into(),
             phase: Phase::Post,
             failures: vec![ArtifactFailure::Missing {
                 artifact_type: "doc".into(),
@@ -654,7 +654,7 @@ mod tests {
     #[test]
     fn error_display_invalid_with_violations() {
         let err = EnforcementError {
-            skill_name: "design".into(),
+            protocol_name: "design".into(),
             phase: Phase::Pre,
             failures: vec![ArtifactFailure::Invalid {
                 artifact_type: "doc".into(),
@@ -675,7 +675,7 @@ mod tests {
     #[test]
     fn error_display_stale() {
         let err = EnforcementError {
-            skill_name: "design".into(),
+            protocol_name: "design".into(),
             phase: Phase::Pre,
             failures: vec![ArtifactFailure::Stale {
                 artifact_type: "doc".into(),

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// A methodology's complete registration with the runa runtime.
 ///
 /// The manifest is the methodology's only interface with the runtime.
-/// It declares the methodology's artifact types and skill declarations.
+/// It declares the methodology's artifact types and protocol declarations.
 /// runa reads it, builds the dependency graph, and begins monitoring.
 ///
 /// Format: TOML. See `manifest::parse` for reading from files.
@@ -15,8 +15,8 @@ pub struct Manifest {
     pub name: String,
     /// Artifact types declared by this methodology.
     pub artifact_types: Vec<ArtifactType>,
-    /// Skills declared by this methodology.
-    pub skills: Vec<SkillDeclaration>,
+    /// Protocols declared by this methodology.
+    pub protocols: Vec<ProtocolDeclaration>,
 }
 
 /// A named category of work product with a machine-checkable schema contract.
@@ -31,18 +31,18 @@ pub struct ArtifactType {
     pub schema: serde_json::Value,
 }
 
-/// A skill's declared relationship to artifacts and its activation condition.
+/// A protocol's declared relationship to artifacts and its activation condition.
 ///
-/// Skills declare what they require, accept, produce, and may produce.
-/// Topology emerges from the graph of these relationships across skills.
+/// Protocols declare what they require, accept, produce, and may produce.
+/// Topology emerges from the graph of these relationships across protocols.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SkillDeclaration {
-    /// Unique identifier for the skill.
+pub struct ProtocolDeclaration {
+    /// Unique identifier for the protocol.
     pub name: String,
     /// Artifact types that must exist and validate before execution.
     #[serde(default)]
     pub requires: Vec<String>,
-    /// Artifact types consumed if available; skill operates without them.
+    /// Artifact types consumed if available; protocol operates without them.
     #[serde(default)]
     pub accepts: Vec<String>,
     /// Artifact types that must exist and validate after execution.
@@ -51,11 +51,11 @@ pub struct SkillDeclaration {
     /// Artifact types that may be produced; validated if present.
     #[serde(default)]
     pub may_produce: Vec<String>,
-    /// Condition that activates this skill.
+    /// Condition that activates this protocol.
     pub trigger: TriggerCondition,
 }
 
-/// Defines when the runtime should activate a skill.
+/// Defines when the runtime should activate a protocol.
 ///
 /// Primitive conditions test artifact state or external events.
 /// Composite conditions combine primitives with `AllOf` and `AnyOf`.
@@ -65,7 +65,7 @@ pub struct SkillDeclaration {
 pub enum TriggerCondition {
     /// The named artifact exists and satisfies its schema.
     OnArtifact { name: String },
-    /// The named artifact has been modified since the skill's last activation.
+    /// The named artifact has been modified since the protocol's last activation.
     OnChange { name: String },
     /// The named artifact exists but fails schema validation.
     OnInvalid { name: String },
@@ -143,8 +143,8 @@ mod tests {
     }
 
     #[test]
-    fn skill_declaration_round_trip() {
-        let skill = SkillDeclaration {
+    fn protocol_declaration_round_trip() {
+        let protocol = ProtocolDeclaration {
             name: "design".into(),
             requires: vec!["constraints".into()],
             accepts: vec!["prior-design".into()],
@@ -154,9 +154,9 @@ mod tests {
                 name: "constraints".into(),
             },
         };
-        let json = serde_json::to_string(&skill).unwrap();
-        let deserialized: SkillDeclaration = serde_json::from_str(&json).unwrap();
-        assert_eq!(skill, deserialized);
+        let json = serde_json::to_string(&protocol).unwrap();
+        let deserialized: ProtocolDeclaration = serde_json::from_str(&json).unwrap();
+        assert_eq!(protocol, deserialized);
     }
 
     #[test]
@@ -236,8 +236,8 @@ mod tests {
     }
 
     #[test]
-    fn skill_declaration_empty_vecs() {
-        let skill = SkillDeclaration {
+    fn protocol_declaration_empty_vecs() {
+        let protocol = ProtocolDeclaration {
             name: "signal-only".into(),
             requires: vec![],
             accepts: vec![],
@@ -247,9 +247,9 @@ mod tests {
                 name: "manual".into(),
             },
         };
-        let json = serde_json::to_string(&skill).unwrap();
-        let deserialized: SkillDeclaration = serde_json::from_str(&json).unwrap();
-        assert_eq!(skill, deserialized);
+        let json = serde_json::to_string(&protocol).unwrap();
+        let deserialized: ProtocolDeclaration = serde_json::from_str(&json).unwrap();
+        assert_eq!(protocol, deserialized);
     }
 
     #[test]

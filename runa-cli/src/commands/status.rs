@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::commands::skill_eval;
+use crate::commands::protocol_eval;
 use crate::project::{self, ProjectError};
 
 #[derive(Debug)]
@@ -38,7 +38,7 @@ struct StatusJson<'a> {
     version: u32,
     methodology: &'a str,
     scan_warnings: Vec<String>,
-    skills: Vec<skill_eval::SkillJson>,
+    protocols: Vec<protocol_eval::ProtocolJson>,
 }
 
 pub fn run(
@@ -51,9 +51,9 @@ pub fn run(
         project::load_signals(&working_dir.join(project::RUNA_DIR));
     let scan_result =
         libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(StatusError::Scan)?;
-    let scan_findings = skill_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
+    let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
     let evaluated =
-        skill_eval::evaluate_skills(&loaded, working_dir, &scan_findings, &active_signals);
+        protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings, &active_signals);
     let mut warnings = scan_findings.warnings.clone();
     warnings.extend(signal_warnings);
 
@@ -62,7 +62,7 @@ pub fn run(
             version: 1,
             methodology: &loaded.manifest.name,
             scan_warnings: warnings.clone(),
-            skills: evaluated.json_skills(),
+            protocols: evaluated.json_protocols(),
         };
         println!(
             "{}",
@@ -78,11 +78,11 @@ pub fn run(
             }
         }
         println!();
-        skill_eval::print_group("READY", &evaluated.ready);
+        protocol_eval::print_group("READY", &evaluated.ready);
         println!();
-        skill_eval::print_group("BLOCKED", &evaluated.blocked);
+        protocol_eval::print_group("BLOCKED", &evaluated.blocked);
         println!();
-        skill_eval::print_group("WAITING", &evaluated.waiting);
+        protocol_eval::print_group("WAITING", &evaluated.waiting);
     }
 
     Ok(())

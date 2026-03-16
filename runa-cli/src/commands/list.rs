@@ -38,53 +38,53 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), Lis
     println!("Methodology: {}", loaded.manifest.name);
 
     // Get execution order. On cycle, fall back to manifest order with warning.
-    let skill_order: Vec<&str> = match loaded.graph.topological_order() {
+    let protocol_order: Vec<&str> = match loaded.graph.topological_order() {
         Ok(order) => order,
         Err(cycle) => {
             eprintln!("warning: {cycle}");
             loaded
                 .manifest
-                .skills
+                .protocols
                 .iter()
                 .map(|s| s.name.as_str())
                 .collect()
         }
     };
 
-    // Build a lookup from skill name to declaration.
-    let skill_map: HashMap<&str, &libagent::SkillDeclaration> = loaded
+    // Build a lookup from protocol name to declaration.
+    let protocol_map: HashMap<&str, &libagent::ProtocolDeclaration> = loaded
         .manifest
-        .skills
+        .protocols
         .iter()
         .map(|s| (s.name.as_str(), s))
         .collect();
 
-    println!("Skills (execution order):");
+    println!("Protocols (execution order):");
 
-    for (i, &name) in skill_order.iter().enumerate() {
-        let Some(skill) = skill_map.get(name) else {
+    for (i, &name) in protocol_order.iter().enumerate() {
+        let Some(protocol) = protocol_map.get(name) else {
             continue;
         };
 
         println!();
         println!("  {}. {}", i + 1, name);
 
-        if !skill.requires.is_empty() {
-            println!("     requires: {}", skill.requires.join(", "));
+        if !protocol.requires.is_empty() {
+            println!("     requires: {}", protocol.requires.join(", "));
         }
-        if !skill.accepts.is_empty() {
-            println!("     accepts:  {}", skill.accepts.join(", "));
+        if !protocol.accepts.is_empty() {
+            println!("     accepts:  {}", protocol.accepts.join(", "));
         }
-        if !skill.produces.is_empty() {
-            println!("     produces: {}", skill.produces.join(", "));
+        if !protocol.produces.is_empty() {
+            println!("     produces: {}", protocol.produces.join(", "));
         }
-        if !skill.may_produce.is_empty() {
-            println!("     may_produce: {}", skill.may_produce.join(", "));
+        if !protocol.may_produce.is_empty() {
+            println!("     may_produce: {}", protocol.may_produce.join(", "));
         }
 
-        println!("     trigger:  {}", skill.trigger);
+        println!("     trigger:  {}", protocol.trigger);
 
-        if let Err(err) = enforce_preconditions(skill, &loaded.store) {
+        if let Err(err) = enforce_preconditions(protocol, &loaded.store) {
             println!("     BLOCKED:  {}", format_failures(&err.failures));
         }
     }

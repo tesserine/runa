@@ -21,19 +21,19 @@ schema = { type = "object", required = ["source"], properties = { source = { typ
 name = "implementation"
 schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
-[[skills]]
+[[protocols]]
 name = "implement"
 requires = ["constraints"]
 accepts = ["prior-art"]
 produces = ["implementation"]
 trigger = { type = "on_artifact", name = "constraints" }
 
-[[skills]]
+[[protocols]]
 name = "verify"
 requires = ["implementation"]
 trigger = { type = "on_artifact", name = "constraints" }
 
-[[skills]]
+[[protocols]]
 name = "ground"
 trigger = { type = "on_signal", name = "begin" }
 "#
@@ -100,9 +100,9 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
 
     let execution_plan = value["execution_plan"].as_array().unwrap();
     assert_eq!(execution_plan.len(), 1, "{value:#}");
-    assert_eq!(execution_plan[0]["skill"], "implement");
+    assert_eq!(execution_plan[0]["protocol"], "implement");
     assert_eq!(execution_plan[0]["trigger"], "on_artifact(constraints)");
-    assert_eq!(execution_plan[0]["context"]["skill"], "implement");
+    assert_eq!(execution_plan[0]["context"]["protocol"], "implement");
     assert_eq!(
         execution_plan[0]["context"]["expected_outputs"],
         serde_json::json!({
@@ -130,16 +130,16 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
         ])
     );
 
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills.len(), 3, "{value:#}");
-    assert_eq!(skills[0]["name"], "implement");
-    assert_eq!(skills[0]["status"], "ready");
-    assert_eq!(skills[1]["name"], "verify");
-    assert_eq!(skills[1]["status"], "blocked");
-    assert_eq!(skills[2]["name"], "ground");
-    assert_eq!(skills[2]["status"], "waiting");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 3, "{value:#}");
+    assert_eq!(protocols[0]["name"], "implement");
+    assert_eq!(protocols[0]["status"], "ready");
+    assert_eq!(protocols[1]["name"], "verify");
+    assert_eq!(protocols[1]["status"], "blocked");
+    assert_eq!(protocols[2]["name"], "ground");
+    assert_eq!(protocols[2]["status"], "waiting");
     assert_eq!(
-        skills[2]["unsatisfied_conditions"],
+        protocols[2]["unsatisfied_conditions"],
         serde_json::json!(["on_signal(begin): signal 'begin' is not active"])
     );
 }
@@ -177,7 +177,7 @@ fn step_succeeds_with_warning_when_signals_file_is_malformed() {
         ])
     );
     assert_eq!(value["execution_plan"], serde_json::json!([]));
-    let ground = value["skills"]
+    let ground = value["protocols"]
         .as_array()
         .unwrap()
         .iter()
@@ -211,7 +211,7 @@ fn step_dry_run_text_reports_why_when_no_skills_are_ready() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Execution plan: none"), "stdout: {stdout}");
-    assert!(stdout.contains("No READY skills."), "stdout: {stdout}");
+    assert!(stdout.contains("No READY protocols."), "stdout: {stdout}");
     assert!(stdout.contains("WAITING:"), "stdout: {stdout}");
     assert!(
         stdout.contains(
@@ -269,7 +269,7 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "implementation"
 schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
-[[skills]]
+[[protocols]]
 name = "verify"
 requires = ["implementation"]
 trigger = { type = "on_artifact", name = "constraints" }
@@ -304,7 +304,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Execution plan: none"), "stdout: {stdout}");
-    assert!(stdout.contains("No READY skills."), "stdout: {stdout}");
+    assert!(stdout.contains("No READY protocols."), "stdout: {stdout}");
     assert!(stdout.contains("BLOCKED:"), "stdout: {stdout}");
     assert!(
         stdout.contains("implementation (missing)"),
@@ -381,10 +381,10 @@ fn step_dry_run_omits_partially_scanned_accepted_inputs_from_context() {
         ])
     );
 
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills[0]["status"], "ready");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols[0]["status"], "ready");
     assert_eq!(
-        skills[0]["inputs"],
+        protocols[0]["inputs"],
         serde_json::json!([
             {
                 "artifact_type": "constraints",
@@ -413,13 +413,13 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "b"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[skills]]
+[[protocols]]
 name = "first"
 requires = ["b"]
 produces = ["a"]
 trigger = { type = "on_signal", name = "go" }
 
-[[skills]]
+[[protocols]]
 name = "second"
 requires = ["a"]
 produces = ["b"]
@@ -453,10 +453,10 @@ trigger = { type = "on_signal", name = "go" }
         "{value:#}"
     );
     assert_eq!(value["execution_plan"], serde_json::json!([]));
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills.len(), 2, "{value:#}");
-    assert_eq!(skills[0]["name"], "first");
-    assert_eq!(skills[1]["name"], "second");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 2, "{value:#}");
+    assert_eq!(protocols[0]["name"], "first");
+    assert_eq!(protocols[1]["name"], "second");
 }
 
 #[test]
@@ -476,13 +476,13 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "b"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[skills]]
+[[protocols]]
 name = "first"
 requires = ["b"]
 produces = ["a"]
 trigger = { type = "on_signal", name = "go" }
 
-[[skills]]
+[[protocols]]
 name = "second"
 requires = ["a"]
 produces = ["b"]
@@ -542,19 +542,19 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "result"
 schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
-[[skills]]
+[[protocols]]
 name = "independent"
 requires = ["seed"]
 produces = ["result"]
 trigger = { type = "on_artifact", name = "seed" }
 
-[[skills]]
+[[protocols]]
 name = "first"
 requires = ["b"]
 produces = ["a"]
 trigger = { type = "on_signal", name = "go" }
 
-[[skills]]
+[[protocols]]
 name = "second"
 requires = ["a"]
 produces = ["b"]
@@ -594,11 +594,11 @@ trigger = { type = "on_signal", name = "go" }
 
     let execution_plan = value["execution_plan"].as_array().unwrap();
     assert_eq!(execution_plan.len(), 1, "{value:#}");
-    assert_eq!(execution_plan[0]["skill"], "independent");
+    assert_eq!(execution_plan[0]["protocol"], "independent");
 
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills.len(), 3, "{value:#}");
-    assert_eq!(skills[0]["name"], "independent");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 3, "{value:#}");
+    assert_eq!(protocols[0]["name"], "independent");
 }
 
 #[test]
@@ -622,19 +622,19 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "result"
 schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
-[[skills]]
+[[protocols]]
 name = "first"
 requires = ["b"]
 produces = ["a"]
 trigger = { type = "on_signal", name = "go" }
 
-[[skills]]
+[[protocols]]
 name = "second"
 requires = ["a"]
 produces = ["b"]
 trigger = { type = "on_signal", name = "go" }
 
-[[skills]]
+[[protocols]]
 name = "publish"
 requires = ["a"]
 produces = ["result"]
@@ -678,11 +678,11 @@ trigger = { type = "on_artifact", name = "a" }
 
     let execution_plan = value["execution_plan"].as_array().unwrap();
     assert_eq!(execution_plan.len(), 1, "{value:#}");
-    assert_eq!(execution_plan[0]["skill"], "publish");
+    assert_eq!(execution_plan[0]["protocol"], "publish");
 
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills[0]["name"], "publish");
-    assert_eq!(skills[0]["status"], "ready");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols[0]["name"], "publish");
+    assert_eq!(protocols[0]["status"], "ready");
 }
 
 #[test]
@@ -714,25 +714,25 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "b"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[skills]]
+[[protocols]]
 name = "independent"
 requires = ["root"]
 produces = ["seed"]
 trigger = { type = "on_artifact", name = "root" }
 
-[[skills]]
+[[protocols]]
 name = "publish"
 requires = ["seed"]
 produces = ["result"]
 trigger = { type = "on_artifact", name = "seed" }
 
-[[skills]]
+[[protocols]]
 name = "first"
 requires = ["b"]
 produces = ["a"]
 trigger = { type = "on_signal", name = "go" }
 
-[[skills]]
+[[protocols]]
 name = "second"
 requires = ["a"]
 produces = ["b"]
@@ -768,6 +768,6 @@ trigger = { type = "on_signal", name = "go" }
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let execution_plan = value["execution_plan"].as_array().unwrap();
     assert_eq!(execution_plan.len(), 2, "{value:#}");
-    assert_eq!(execution_plan[0]["skill"], "independent");
-    assert_eq!(execution_plan[1]["skill"], "publish");
+    assert_eq!(execution_plan[0]["protocol"], "independent");
+    assert_eq!(execution_plan[1]["protocol"], "publish");
 }

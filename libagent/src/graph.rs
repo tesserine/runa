@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::model::SkillDeclaration;
+use crate::model::ProtocolDeclaration;
 
 /// A cycle was detected in the hard dependency graph.
 #[derive(Debug, Clone, PartialEq)]
@@ -21,9 +21,9 @@ impl std::error::Error for CycleError {}
 /// Errors that can occur when building a dependency graph.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraphError {
-    /// A skill name appears more than once in the input.
-    DuplicateSkill(String),
-    /// Multiple skills declare the same artifact type in `produces`.
+    /// A protocol name appears more than once in the input.
+    DuplicateProtocol(String),
+    /// Multiple protocols declare the same artifact type in `produces`.
     ConflictingProducers {
         artifact_type: String,
         first: String,
@@ -34,8 +34,8 @@ pub enum GraphError {
 impl fmt::Display for GraphError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            GraphError::DuplicateSkill(name) => {
-                write!(f, "duplicate skill name '{name}'")
+            GraphError::DuplicateProtocol(name) => {
+                write!(f, "duplicate protocol name '{name}'")
             }
             GraphError::ConflictingProducers {
                 artifact_type,
@@ -51,68 +51,68 @@ impl fmt::Display for GraphError {
 
 impl std::error::Error for GraphError {}
 
-/// A directed dependency graph computed from skill declarations.
+/// A directed dependency graph computed from protocol declarations.
 ///
-/// Edges are derived from the relationship between skills' `requires`/`accepts`
-/// fields and other skills' `produces`/`may_produce` fields. The graph enables
-/// execution ordering, cycle detection, and blocked-skill identification.
+/// Edges are derived from the relationship between protocols' `requires`/`accepts`
+/// fields and other protocols' `produces`/`may_produce` fields. The graph enables
+/// execution ordering, cycle detection, and blocked-protocol identification.
 #[derive(Debug)]
 pub struct DependencyGraph {
     /// Skill names, indexed for O(1) lookup. All `&str` returns borrow from here.
-    skill_names: Vec<String>,
-    /// Map from skill name to its index in `skill_names`.
-    skill_index: HashMap<String, usize>,
-    /// Required artifact types per skill (for `blocked_skills`).
+    protocol_names: Vec<String>,
+    /// Map from protocol name to its index in `protocol_names`.
+    protocol_index: HashMap<String, usize>,
+    /// Required artifact types per protocol (for `blocked_protocols`).
     requires_per_skill: Vec<Vec<String>>,
-    /// Hard dependency edges: `hard_deps[i]` = indices of skills that skill i depends on.
+    /// Hard dependency edges: `hard_deps[i]` = indices of protocols that protocol i depends on.
     hard_deps: Vec<Vec<usize>>,
-    /// Soft dependency edges: `soft_deps[i]` = indices of skills that skill i softly depends on.
+    /// Soft dependency edges: `soft_deps[i]` = indices of protocols that protocol i softly depends on.
     soft_deps: Vec<Vec<usize>>,
-    /// Reverse hard edges: `hard_dependents[i]` = indices of skills that depend on skill i.
+    /// Reverse hard edges: `hard_dependents[i]` = indices of protocols that depend on protocol i.
     hard_dependents: Vec<Vec<usize>>,
-    /// Reverse soft edges: `soft_dependents[i]` = indices of skills that softly depend on skill i.
+    /// Reverse soft edges: `soft_dependents[i]` = indices of protocols that softly depend on protocol i.
     soft_dependents: Vec<Vec<usize>>,
 }
 
 impl DependencyGraph {
-    /// Build a dependency graph from skill declarations.
+    /// Build a dependency graph from protocol declarations.
     ///
-    /// Validates that skill names are unique and no two skills both `produces` the
+    /// Validates that protocol names are unique and no two protocols both `produces` the
     /// same artifact type. Required artifacts with no producer are treated as
     /// external dependencies (no graph edge). Returns `GraphError` on validation
     /// failure.
-    pub fn build(skills: &[SkillDeclaration]) -> Result<DependencyGraph, GraphError> {
-        let n = skills.len();
+    pub fn build(protocols: &[ProtocolDeclaration]) -> Result<DependencyGraph, GraphError> {
+        let n = protocols.len();
 
-        // Index skill names.
-        let mut skill_names = Vec::with_capacity(n);
-        let mut skill_index = HashMap::with_capacity(n);
-        for skill in skills {
-            if skill_index.contains_key(&skill.name) {
-                return Err(GraphError::DuplicateSkill(skill.name.clone()));
+        // Index protocol names.
+        let mut protocol_names = Vec::with_capacity(n);
+        let mut protocol_index = HashMap::with_capacity(n);
+        for protocol in protocols {
+            if protocol_index.contains_key(&protocol.name) {
+                return Err(GraphError::DuplicateProtocol(protocol.name.clone()));
             }
-            skill_index.insert(skill.name.clone(), skill_names.len());
-            skill_names.push(skill.name.clone());
+            protocol_index.insert(protocol.name.clone(), protocol_names.len());
+            protocol_names.push(protocol.name.clone());
         }
 
         // Build producer maps.
-        // hard_producer: artifact -> skill index (from `produces`)
-        // soft_producer: artifact -> skill indices (from `may_produce`)
+        // hard_producer: artifact -> protocol index (from `produces`)
+        // soft_producer: artifact -> protocol indices (from `may_produce`)
         let mut hard_producer: HashMap<String, usize> = HashMap::new();
         let mut soft_producer: HashMap<String, Vec<usize>> = HashMap::new();
 
-        for (idx, skill) in skills.iter().enumerate() {
-            for artifact in &skill.produces {
+        for (idx, protocol) in protocols.iter().enumerate() {
+            for artifact in &protocol.produces {
                 if let Some(&prev_idx) = hard_producer.get(artifact) {
                     return Err(GraphError::ConflictingProducers {
                         artifact_type: artifact.clone(),
-                        first: skill_names[prev_idx].clone(),
-                        second: skill.name.clone(),
+                        first: protocol_names[prev_idx].clone(),
+                        second: protocol.name.clone(),
                     });
                 }
                 hard_producer.insert(artifact.clone(), idx);
             }
-            for artifact in &skill.may_produce {
+            for artifact in &protocol.may_produce {
                 // may_produce x may_produce is allowed; all producers get edges.
                 soft_producer.entry(artifact.clone()).or_default().push(idx);
             }
@@ -125,13 +125,13 @@ impl DependencyGraph {
         let mut soft_dependents = vec![Vec::new(); n];
         let mut requires_per_skill = Vec::with_capacity(n);
 
-        for (idx, skill) in skills.iter().enumerate() {
-            requires_per_skill.push(skill.requires.clone());
+        for (idx, protocol) in protocols.iter().enumerate() {
+            requires_per_skill.push(protocol.requires.clone());
 
             // requires -> produces = hard edge
             // requires -> may_produce = soft edge (to all producers)
             // requires -> nothing = external dependency (no edge)
-            for artifact in &skill.requires {
+            for artifact in &protocol.requires {
                 if let Some(&producer_idx) = hard_producer.get(artifact) {
                     if producer_idx != idx {
                         hard_deps[idx].push(producer_idx);
@@ -150,7 +150,7 @@ impl DependencyGraph {
 
             // accepts -> any producer = soft edge
             // accepts -> nothing = silently ignored
-            for artifact in &skill.accepts {
+            for artifact in &protocol.accepts {
                 if let Some(&producer_idx) = hard_producer.get(artifact) {
                     if producer_idx != idx {
                         soft_deps[idx].push(producer_idx);
@@ -180,8 +180,8 @@ impl DependencyGraph {
         }
 
         Ok(DependencyGraph {
-            skill_names,
-            skill_index,
+            protocol_names,
+            protocol_index,
             requires_per_skill,
             hard_deps,
             soft_deps,
@@ -190,7 +190,7 @@ impl DependencyGraph {
         })
     }
 
-    /// Return skills in a valid execution order.
+    /// Return protocols in a valid execution order.
     ///
     /// Uses Kahn's algorithm on combined hard+soft edges. If a cycle is found
     /// in the combined graph, retries on hard edges only. A cycle in hard edges
@@ -201,7 +201,7 @@ impl DependencyGraph {
         if let Some(order) = self.kahns_sort(true) {
             return Ok(order
                 .iter()
-                .map(|&i| self.skill_names[i].as_str())
+                .map(|&i| self.protocol_names[i].as_str())
                 .collect());
         }
 
@@ -209,7 +209,7 @@ impl DependencyGraph {
         if let Some(order) = self.kahns_sort(false) {
             return Ok(order
                 .iter()
-                .map(|&i| self.skill_names[i].as_str())
+                .map(|&i| self.protocol_names[i].as_str())
                 .collect());
         }
 
@@ -217,7 +217,7 @@ impl DependencyGraph {
         Err(self.extract_cycle())
     }
 
-    /// Return skills in execution order with the named skills removed.
+    /// Return protocols in execution order with the named protocols removed.
     ///
     /// Uses the same combined-then-hard fallback as `topological_order()` but
     /// ignores all excluded nodes and edges incident to them.
@@ -225,14 +225,14 @@ impl DependencyGraph {
         if let Some(order) = self.kahns_sort_excluding(true, exclude) {
             return order
                 .iter()
-                .map(|&i| self.skill_names[i].as_str())
+                .map(|&i| self.protocol_names[i].as_str())
                 .collect();
         }
 
         if let Some(order) = self.kahns_sort_excluding(false, exclude) {
             return order
                 .iter()
-                .map(|&i| self.skill_names[i].as_str())
+                .map(|&i| self.protocol_names[i].as_str())
                 .collect();
         }
 
@@ -241,17 +241,17 @@ impl DependencyGraph {
             "topological_order_excluding encountered an unexpected remaining hard cycle"
         );
 
-        self.skill_names
+        self.protocol_names
             .iter()
             .map(String::as_str)
             .filter(|name| !exclude.contains(name))
             .collect()
     }
 
-    /// Return `(skill_name, missing_artifact_types)` for each skill that has
+    /// Return `(protocol_name, missing_artifact_types)` for each protocol that has
     /// unmet `requires`. Missing artifact types are those in `requires` that
-    /// aren't in `available_artifacts`. Results are sorted by skill name.
-    pub fn blocked_skills_with_reasons(
+    /// aren't in `available_artifacts`. Results are sorted by protocol name.
+    pub fn blocked_protocols_with_reasons(
         &self,
         available_artifacts: &HashSet<String>,
     ) -> Vec<(&str, Vec<&str>)> {
@@ -268,7 +268,7 @@ impl DependencyGraph {
                 if missing.is_empty() {
                     None
                 } else {
-                    Some((self.skill_names[idx].as_str(), missing))
+                    Some((self.protocol_names[idx].as_str(), missing))
                 }
             })
             .collect();
@@ -276,35 +276,35 @@ impl DependencyGraph {
         result
     }
 
-    /// Return skills whose `requires` are not all present in `available_artifacts`.
-    pub fn blocked_skills(&self, available_artifacts: &HashSet<String>) -> Vec<&str> {
-        self.blocked_skills_with_reasons(available_artifacts)
+    /// Return protocols whose `requires` are not all present in `available_artifacts`.
+    pub fn blocked_protocols(&self, available_artifacts: &HashSet<String>) -> Vec<&str> {
+        self.blocked_protocols_with_reasons(available_artifacts)
             .into_iter()
             .map(|(name, _)| name)
             .collect()
     }
 
-    /// Return the names of skills that this skill directly depends on (hard edges).
-    pub fn dependencies_of(&self, skill_name: &str) -> Vec<&str> {
-        self.skill_index
-            .get(skill_name)
+    /// Return the names of protocols that this protocol directly depends on (hard edges).
+    pub fn dependencies_of(&self, protocol_name: &str) -> Vec<&str> {
+        self.protocol_index
+            .get(protocol_name)
             .map(|&idx| {
                 self.hard_deps[idx]
                     .iter()
-                    .map(|&dep| self.skill_names[dep].as_str())
+                    .map(|&dep| self.protocol_names[dep].as_str())
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    /// Return the names of skills that depend on this skill (hard edges).
-    pub fn dependents_of(&self, skill_name: &str) -> Vec<&str> {
-        self.skill_index
-            .get(skill_name)
+    /// Return the names of protocols that depend on this protocol (hard edges).
+    pub fn dependents_of(&self, protocol_name: &str) -> Vec<&str> {
+        self.protocol_index
+            .get(protocol_name)
             .map(|&idx| {
                 self.hard_dependents[idx]
                     .iter()
-                    .map(|&dep| self.skill_names[dep].as_str())
+                    .map(|&dep| self.protocol_names[dep].as_str())
                     .collect()
             })
             .unwrap_or_default()
@@ -315,7 +315,7 @@ impl DependencyGraph {
     fn kahns_sort(&self, include_soft: bool) -> Option<Vec<usize>> {
         let empty = HashSet::new();
         let order = self.kahns_prefix(include_soft, &empty);
-        if order.len() == self.skill_names.len() {
+        if order.len() == self.protocol_names.len() {
             Some(order)
         } else {
             None
@@ -330,7 +330,7 @@ impl DependencyGraph {
         exclude: &HashSet<&str>,
     ) -> Option<Vec<usize>> {
         let expected = self
-            .skill_names
+            .protocol_names
             .iter()
             .filter(|name| !exclude.contains(name.as_str()))
             .count();
@@ -344,9 +344,9 @@ impl DependencyGraph {
 
     /// Run Kahn's algorithm and return the resulting order.
     fn kahns_prefix(&self, include_soft: bool, exclude: &HashSet<&str>) -> Vec<usize> {
-        let n = self.skill_names.len();
+        let n = self.protocol_names.len();
         let mut in_degree = vec![0usize; n];
-        let is_excluded = |idx: usize| exclude.contains(self.skill_names[idx].as_str());
+        let is_excluded = |idx: usize| exclude.contains(self.protocol_names[idx].as_str());
 
         // Compute in-degrees.
         for (idx, degree) in in_degree.iter_mut().enumerate().take(n) {
@@ -402,7 +402,7 @@ impl DependencyGraph {
 
     /// Extract a cycle from hard edges using DFS. Called only when a hard cycle exists.
     fn extract_cycle(&self) -> CycleError {
-        let n = self.skill_names.len();
+        let n = self.protocol_names.len();
         // 0 = unvisited, 1 = in current path, 2 = done
         let mut state = vec![0u8; n];
         let mut path = Vec::new();
@@ -436,7 +436,7 @@ impl DependencyGraph {
                 let cycle_start = path.iter().position(|&n| n == dep).unwrap();
                 let cycle_path: Vec<String> = path[cycle_start..]
                     .iter()
-                    .map(|&i| self.skill_names[i].clone())
+                    .map(|&i| self.protocol_names[i].clone())
                     .collect();
                 return Some(CycleError { path: cycle_path });
             }
@@ -458,8 +458,8 @@ mod tests {
     use super::*;
     use crate::model::TriggerCondition;
 
-    fn skill(name: &str, requires: &[&str], produces: &[&str]) -> SkillDeclaration {
-        SkillDeclaration {
+    fn protocol(name: &str, requires: &[&str], produces: &[&str]) -> ProtocolDeclaration {
+        ProtocolDeclaration {
             name: name.into(),
             requires: requires.iter().map(|s| (*s).into()).collect(),
             accepts: vec![],
@@ -476,8 +476,8 @@ mod tests {
         requires: &[&str],
         produces: &[&str],
         may_produce: &[&str],
-    ) -> SkillDeclaration {
-        SkillDeclaration {
+    ) -> ProtocolDeclaration {
+        ProtocolDeclaration {
             name: name.into(),
             requires: requires.iter().map(|s| (*s).into()).collect(),
             accepts: vec![],
@@ -489,13 +489,13 @@ mod tests {
         }
     }
 
-    fn skill_with_accepts(
+    fn protocol_with_accepts(
         name: &str,
         requires: &[&str],
         accepts: &[&str],
         produces: &[&str],
-    ) -> SkillDeclaration {
-        SkillDeclaration {
+    ) -> ProtocolDeclaration {
+        ProtocolDeclaration {
             name: name.into(),
             requires: requires.iter().map(|s| (*s).into()).collect(),
             accepts: accepts.iter().map(|s| (*s).into()).collect(),
@@ -525,12 +525,12 @@ mod tests {
 
     #[test]
     fn linear_chain() {
-        let skills = vec![
-            skill("A", &[], &["X"]),
-            skill("B", &["X"], &["Y"]),
-            skill("C", &["Y"], &[]),
+        let protocols = vec![
+            protocol("A", &[], &["X"]),
+            protocol("B", &["X"], &["Y"]),
+            protocol("C", &["Y"], &[]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let order = graph.topological_order().unwrap();
         assert_eq!(order.len(), 3);
         assert_before(&order, "A", "B");
@@ -539,12 +539,12 @@ mod tests {
 
     #[test]
     fn fan_out() {
-        let skills = vec![
-            skill("A", &[], &["X", "Y"]),
-            skill("B", &["X"], &[]),
-            skill("C", &["Y"], &[]),
+        let protocols = vec![
+            protocol("A", &[], &["X", "Y"]),
+            protocol("B", &["X"], &[]),
+            protocol("C", &["Y"], &[]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let order = graph.topological_order().unwrap();
         assert_eq!(order.len(), 3);
         assert_before(&order, "A", "B");
@@ -553,12 +553,12 @@ mod tests {
 
     #[test]
     fn fan_in() {
-        let skills = vec![
-            skill("A", &[], &["X"]),
-            skill("B", &[], &["Y"]),
-            skill("C", &["X", "Y"], &[]),
+        let protocols = vec![
+            protocol("A", &[], &["X"]),
+            protocol("B", &[], &["Y"]),
+            protocol("C", &["X", "Y"], &[]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let order = graph.topological_order().unwrap();
         assert_eq!(order.len(), 3);
         assert_before(&order, "A", "C");
@@ -567,13 +567,13 @@ mod tests {
 
     #[test]
     fn diamond_dependency() {
-        let skills = vec![
-            skill("A", &[], &["X"]),
-            skill("B", &["X"], &["Y"]),
-            skill("C", &["X"], &["Z"]),
-            skill("D", &["Y", "Z"], &[]),
+        let protocols = vec![
+            protocol("A", &[], &["X"]),
+            protocol("B", &["X"], &["Y"]),
+            protocol("C", &["X"], &["Z"]),
+            protocol("D", &["Y", "Z"], &[]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let order = graph.topological_order().unwrap();
         assert_eq!(order.len(), 4);
         assert_before(&order, "A", "B");
@@ -584,12 +584,12 @@ mod tests {
 
     #[test]
     fn isolated_skill() {
-        let skills = vec![
-            skill("A", &[], &["X"]),
-            skill("B", &["X"], &[]),
-            skill("isolated", &[], &[]),
+        let protocols = vec![
+            protocol("A", &[], &["X"]),
+            protocol("B", &["X"], &[]),
+            protocol("isolated", &[], &[]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let order = graph.topological_order().unwrap();
         assert_eq!(order.len(), 3);
         assert_before(&order, "A", "B");
@@ -598,10 +598,10 @@ mod tests {
 
     #[test]
     fn self_referencing_skill() {
-        // A skill that requires an artifact it also produces.
+        // A protocol that requires an artifact it also produces.
         // The producer_idx != idx guard should prevent a self-edge.
-        let skills = vec![skill("A", &["X"], &["X"])];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let protocols = vec![protocol("A", &["X"], &["X"])];
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let order = graph.topological_order().unwrap();
         assert_eq!(order, vec!["A"]);
         assert!(graph.dependencies_of("A").is_empty());
@@ -612,8 +612,8 @@ mod tests {
 
     #[test]
     fn cycle_detection() {
-        let skills = vec![skill("A", &["Y"], &["X"]), skill("B", &["X"], &["Y"])];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let protocols = vec![protocol("A", &["Y"], &["X"]), protocol("B", &["X"], &["Y"])];
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let err = graph.topological_order().unwrap_err();
         assert!(err.path.contains(&"A".to_string()));
         assert!(err.path.contains(&"B".to_string()));
@@ -621,13 +621,13 @@ mod tests {
 
     #[test]
     fn topological_order_excluding_cycle_returns_valid_order_for_remaining_skills() {
-        let skills = vec![
-            skill("independent", &[], &["seed"]),
-            skill("publish", &["seed"], &["done"]),
-            skill("first", &["Y"], &["X"]),
-            skill("second", &["X"], &["Y"]),
+        let protocols = vec![
+            protocol("independent", &[], &["seed"]),
+            protocol("publish", &["seed"], &["done"]),
+            protocol("first", &["Y"], &["X"]),
+            protocol("second", &["X"], &["Y"]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let exclude: HashSet<&str> = ["first", "second"].into_iter().collect();
         let order = graph.topological_order_excluding(&exclude);
         assert_eq!(order, vec!["independent", "publish"]);
@@ -637,11 +637,11 @@ mod tests {
 
     #[test]
     fn may_produce_creates_soft_ordering() {
-        let skills = vec![
+        let protocols = vec![
             skill_with_may("A", &[], &[], &["X"]),
-            skill("B", &["X"], &[]),
+            protocol("B", &["X"], &[]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let order = graph.topological_order().unwrap();
         assert_eq!(order.len(), 2);
         assert_before(&order, "A", "B");
@@ -653,14 +653,14 @@ mod tests {
         // Hard edges: A -> B (A requires Y which B produces).
         // Soft edges: B -> A (B requires X which A may_produce).
         // Combined graph has a cycle but hard graph does not.
-        let skills = vec![
+        let protocols = vec![
             skill_with_may("A", &["Y"], &[], &["X"]),
-            skill("B", &["X"], &["Y"]),
+            protocol("B", &["X"], &["Y"]),
         ];
         // B requires X, only A may_produce it -> soft edge B depends on A.
         // A requires Y, B produces it -> hard edge A depends on B.
         // Combined: cycle. Hard only: A -> B, no cycle.
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let order = graph.topological_order().unwrap();
         assert_eq!(order.len(), 2);
         // Hard order: B before A (A depends on B for Y).
@@ -671,11 +671,11 @@ mod tests {
 
     #[test]
     fn accepts_creates_soft_ordering() {
-        let skills = vec![
-            skill("A", &[], &["X"]),
-            skill_with_accepts("B", &[], &["X"], &[]),
+        let protocols = vec![
+            protocol("A", &[], &["X"]),
+            protocol_with_accepts("B", &[], &["X"], &[]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let order = graph.topological_order().unwrap();
         assert_eq!(order.len(), 2);
         assert_before(&order, "A", "B");
@@ -684,46 +684,46 @@ mod tests {
     #[test]
     fn accepts_does_not_block() {
         // B accepts X but nobody produces it. Build should succeed.
-        let skills = vec![skill_with_accepts("B", &[], &["X"], &[])];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let protocols = vec![protocol_with_accepts("B", &[], &["X"], &[])];
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let order = graph.topological_order().unwrap();
         assert_eq!(order, vec!["B"]);
     }
 
     #[test]
-    fn accepts_not_in_blocked_skills() {
-        let skills = vec![
-            skill("A", &[], &["X"]),
-            skill_with_accepts("B", &[], &["X"], &[]),
+    fn accepts_not_in_blocked_protocols() {
+        let protocols = vec![
+            protocol("A", &[], &["X"]),
+            protocol_with_accepts("B", &[], &["X"], &[]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
         // No artifacts available, but B only accepts X (doesn't require it).
-        let blocked = graph.blocked_skills(&HashSet::new());
+        let blocked = graph.blocked_protocols(&HashSet::new());
         assert!(!blocked.contains(&"B"));
         assert!(!blocked.contains(&"A")); // A has no requires either
     }
 
-    // --- blocked_skills ---
+    // --- blocked_protocols ---
 
     #[test]
-    fn blocked_skills_with_partial_artifacts() {
-        let skills = vec![
-            skill("A", &[], &["X"]),
-            skill("B", &["X"], &["Y"]),
-            skill("C", &["X", "Y"], &[]),
+    fn blocked_protocols_with_partial_artifacts() {
+        let protocols = vec![
+            protocol("A", &[], &["X"]),
+            protocol("B", &["X"], &["Y"]),
+            protocol("C", &["X", "Y"], &[]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
 
         // Only X available: B is unblocked, C is blocked (needs Y).
         let available: HashSet<String> = ["X".into()].into();
-        let blocked = graph.blocked_skills(&available);
+        let blocked = graph.blocked_protocols(&available);
         assert!(!blocked.contains(&"A"));
         assert!(!blocked.contains(&"B"));
         assert!(blocked.contains(&"C"));
 
         // Both available: nothing blocked.
         let available: HashSet<String> = ["X".into(), "Y".into()].into();
-        let blocked = graph.blocked_skills(&available);
+        let blocked = graph.blocked_protocols(&available);
         assert!(blocked.is_empty());
     }
 
@@ -731,13 +731,13 @@ mod tests {
 
     #[test]
     fn dependencies_and_dependents_diamond() {
-        let skills = vec![
-            skill("A", &[], &["X"]),
-            skill("B", &["X"], &["Y"]),
-            skill("C", &["X"], &["Z"]),
-            skill("D", &["Y", "Z"], &[]),
+        let protocols = vec![
+            protocol("A", &[], &["X"]),
+            protocol("B", &["X"], &["Y"]),
+            protocol("C", &["X"], &["Z"]),
+            protocol("D", &["Y", "Z"], &[]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
 
         assert!(graph.dependencies_of("A").is_empty());
 
@@ -760,8 +760,8 @@ mod tests {
 
     #[test]
     fn unknown_skill_returns_empty() {
-        let skills = vec![skill("A", &[], &["X"])];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let protocols = vec![protocol("A", &[], &["X"])];
+        let graph = DependencyGraph::build(&protocols).unwrap();
         assert!(graph.dependencies_of("nonexistent").is_empty());
         assert!(graph.dependents_of("nonexistent").is_empty());
     }
@@ -770,15 +770,15 @@ mod tests {
 
     #[test]
     fn duplicate_skill_name() {
-        let skills = vec![skill("A", &[], &["X"]), skill("A", &[], &["Y"])];
-        let err = DependencyGraph::build(&skills).unwrap_err();
-        assert_eq!(err, GraphError::DuplicateSkill("A".into()));
+        let protocols = vec![protocol("A", &[], &["X"]), protocol("A", &[], &["Y"])];
+        let err = DependencyGraph::build(&protocols).unwrap_err();
+        assert_eq!(err, GraphError::DuplicateProtocol("A".into()));
     }
 
     #[test]
     fn conflicting_producers() {
-        let skills = vec![skill("A", &[], &["X"]), skill("B", &[], &["X"])];
-        let err = DependencyGraph::build(&skills).unwrap_err();
+        let protocols = vec![protocol("A", &[], &["X"]), protocol("B", &[], &["X"])];
+        let err = DependencyGraph::build(&protocols).unwrap_err();
         assert!(matches!(
             err,
             GraphError::ConflictingProducers {
@@ -790,30 +790,30 @@ mod tests {
 
     #[test]
     fn may_produce_does_not_conflict_with_produces() {
-        let skills = vec![
-            skill("A", &[], &["X"]),
+        let protocols = vec![
+            protocol("A", &[], &["X"]),
             skill_with_may("B", &[], &[], &["X"]),
         ];
         // produces x may_produce is NOT a conflict.
-        assert!(DependencyGraph::build(&skills).is_ok());
+        assert!(DependencyGraph::build(&protocols).is_ok());
     }
 
     #[test]
     fn may_produce_does_not_conflict_with_may_produce() {
-        let skills = vec![
+        let protocols = vec![
             skill_with_may("A", &[], &[], &["X"]),
             skill_with_may("B", &[], &[], &["X"]),
         ];
-        assert!(DependencyGraph::build(&skills).is_ok());
+        assert!(DependencyGraph::build(&protocols).is_ok());
     }
 
     // --- External dependencies ---
 
     #[test]
     fn external_dependency_builds_successfully() {
-        // A requires X but no skill produces X — external dependency.
-        let skills = vec![skill("A", &["X"], &[])];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        // A requires X but no protocol produces X — external dependency.
+        let protocols = vec![protocol("A", &["X"], &[])];
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let order = graph.topological_order().unwrap();
         assert_eq!(order, vec!["A"]);
         assert!(graph.dependencies_of("A").is_empty());
@@ -821,14 +821,14 @@ mod tests {
 
     #[test]
     fn external_dependency_reported_as_blocked() {
-        // A requires X (external). blocked_skills should report it when X unavailable.
-        let skills = vec![skill("A", &["X"], &[])];
-        let graph = DependencyGraph::build(&skills).unwrap();
-        let blocked = graph.blocked_skills(&HashSet::new());
+        // A requires X (external). blocked_protocols should report it when X unavailable.
+        let protocols = vec![protocol("A", &["X"], &[])];
+        let graph = DependencyGraph::build(&protocols).unwrap();
+        let blocked = graph.blocked_protocols(&HashSet::new());
         assert_eq!(blocked, vec!["A"]);
         // When X is available, A is unblocked.
         let available: HashSet<String> = ["X".into()].into();
-        let blocked = graph.blocked_skills(&available);
+        let blocked = graph.blocked_protocols(&available);
         assert!(blocked.is_empty());
     }
 
@@ -838,12 +838,12 @@ mod tests {
     fn multiple_may_produce_creates_soft_edges_to_all() {
         // A and B both may_produce X. C requires X.
         // C should have soft edges to both A and B.
-        let skills = vec![
+        let protocols = vec![
             skill_with_may("A", &[], &[], &["X"]),
             skill_with_may("B", &[], &[], &["X"]),
-            skill("C", &["X"], &[]),
+            protocol("C", &["X"], &[]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let order = graph.topological_order().unwrap();
         assert_eq!(order.len(), 3);
         // Both A and B should come before C in topo order.
@@ -851,28 +851,28 @@ mod tests {
         assert_before(&order, "B", "C");
     }
 
-    // --- blocked_skills_with_reasons ---
+    // --- blocked_protocols_with_reasons ---
 
     #[test]
     fn blocked_with_reasons_all_requires_met() {
-        let skills = vec![
-            skill("A", &[], &["X"]),
-            skill("B", &["X"], &["Y"]),
-            skill("C", &["X", "Y"], &[]),
+        let protocols = vec![
+            protocol("A", &[], &["X"]),
+            protocol("B", &["X"], &["Y"]),
+            protocol("C", &["X", "Y"], &[]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
         let available: HashSet<String> = ["X".into(), "Y".into()].into();
-        let result = graph.blocked_skills_with_reasons(&available);
+        let result = graph.blocked_protocols_with_reasons(&available);
         assert!(result.is_empty());
     }
 
     #[test]
     fn blocked_with_reasons_some_missing() {
-        let skills = vec![skill("A", &[], &["X", "Y"]), skill("B", &["X", "Y"], &[])];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let protocols = vec![protocol("A", &[], &["X", "Y"]), protocol("B", &["X", "Y"], &[])];
+        let graph = DependencyGraph::build(&protocols).unwrap();
         // Only X available; B needs Y too.
         let available: HashSet<String> = ["X".into()].into();
-        let result = graph.blocked_skills_with_reasons(&available);
+        let result = graph.blocked_protocols_with_reasons(&available);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "B");
         assert_eq!(result[0].1, vec!["Y"]);
@@ -880,18 +880,18 @@ mod tests {
 
     #[test]
     fn blocked_with_reasons_multiple_skills_partial_overlap() {
-        let skills = vec![
-            skill("A", &[], &["X"]),
-            skill("B", &["X", "Y"], &["Y"]),
-            skill("C", &["Y", "Z"], &["Z"]),
+        let protocols = vec![
+            protocol("A", &[], &["X"]),
+            protocol("B", &["X", "Y"], &["Y"]),
+            protocol("C", &["Y", "Z"], &["Z"]),
         ];
-        let graph = DependencyGraph::build(&skills).unwrap();
+        let graph = DependencyGraph::build(&protocols).unwrap();
         // Nothing available.
         let available: HashSet<String> = HashSet::new();
-        let result = graph.blocked_skills_with_reasons(&available);
+        let result = graph.blocked_protocols_with_reasons(&available);
         // A has no requires, so not blocked. B missing X,Y. C missing Y,Z.
         assert_eq!(result.len(), 2);
-        // Sorted by skill name: B before C.
+        // Sorted by protocol name: B before C.
         assert_eq!(result[0].0, "B");
         assert_eq!(result[0].1, vec!["X", "Y"]);
         assert_eq!(result[1].0, "C");
@@ -900,9 +900,9 @@ mod tests {
 
     #[test]
     fn blocked_with_reasons_no_skills_have_requires() {
-        let skills = vec![skill("A", &[], &["X"]), skill("B", &[], &["Y"])];
-        let graph = DependencyGraph::build(&skills).unwrap();
-        let result = graph.blocked_skills_with_reasons(&HashSet::new());
+        let protocols = vec![protocol("A", &[], &["X"]), protocol("B", &[], &["Y"])];
+        let graph = DependencyGraph::build(&protocols).unwrap();
+        let result = graph.blocked_protocols_with_reasons(&HashSet::new());
         assert!(result.is_empty());
     }
 
@@ -910,8 +910,8 @@ mod tests {
 
     #[test]
     fn error_display_messages() {
-        let err = GraphError::DuplicateSkill("test".into());
-        assert_eq!(err.to_string(), "duplicate skill name 'test'");
+        let err = GraphError::DuplicateProtocol("test".into());
+        assert_eq!(err.to_string(), "duplicate protocol name 'test'");
 
         let err = GraphError::ConflictingProducers {
             artifact_type: "X".into(),
