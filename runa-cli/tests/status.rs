@@ -21,19 +21,19 @@ schema = { type = "object", required = ["source"], properties = { source = { typ
 name = "implementation"
 schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
-[[skills]]
+[[protocols]]
 name = "implement"
 requires = ["constraints"]
 accepts = ["prior-art"]
 produces = ["implementation"]
 trigger = { type = "on_artifact", name = "constraints" }
 
-[[skills]]
+[[protocols]]
 name = "verify"
 requires = ["implementation"]
 trigger = { type = "on_artifact", name = "constraints" }
 
-[[skills]]
+[[protocols]]
 name = "ground"
 trigger = { type = "on_signal", name = "begin" }
 "#
@@ -163,18 +163,18 @@ fn status_json_reports_ordered_skills_and_status_specific_fields() {
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["version"], 1);
+    assert_eq!(value["version"], 2);
     assert_eq!(value["methodology"], "groundwork");
     assert_eq!(value["scan_warnings"], serde_json::json!([]));
 
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills.len(), 3, "{value:#}");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 3, "{value:#}");
 
-    assert_eq!(skills[0]["name"], "implement");
-    assert_eq!(skills[0]["status"], "ready");
-    assert_eq!(skills[0]["trigger"], "satisfied");
+    assert_eq!(protocols[0]["name"], "implement");
+    assert_eq!(protocols[0]["status"], "ready");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
     assert_eq!(
-        skills[0]["inputs"],
+        protocols[0]["inputs"],
         serde_json::json!([
             {
                 "artifact_type": "constraints",
@@ -190,14 +190,14 @@ fn status_json_reports_ordered_skills_and_status_specific_fields() {
             }
         ])
     );
-    assert!(skills[0].get("precondition_failures").is_none());
-    assert!(skills[0].get("unsatisfied_conditions").is_none());
+    assert!(protocols[0].get("precondition_failures").is_none());
+    assert!(protocols[0].get("unsatisfied_conditions").is_none());
 
-    assert_eq!(skills[1]["name"], "verify");
-    assert_eq!(skills[1]["status"], "blocked");
-    assert_eq!(skills[1]["trigger"], "satisfied");
+    assert_eq!(protocols[1]["name"], "verify");
+    assert_eq!(protocols[1]["status"], "blocked");
+    assert_eq!(protocols[1]["trigger"], "satisfied");
     assert_eq!(
-        skills[1]["precondition_failures"],
+        protocols[1]["precondition_failures"],
         serde_json::json!([
             {
                 "artifact_type": "implementation",
@@ -205,18 +205,18 @@ fn status_json_reports_ordered_skills_and_status_specific_fields() {
             }
         ])
     );
-    assert!(skills[1].get("inputs").is_none());
-    assert!(skills[1].get("unsatisfied_conditions").is_none());
+    assert!(protocols[1].get("inputs").is_none());
+    assert!(protocols[1].get("unsatisfied_conditions").is_none());
 
-    assert_eq!(skills[2]["name"], "ground");
-    assert_eq!(skills[2]["status"], "waiting");
-    assert_eq!(skills[2]["trigger"], "not_satisfied");
+    assert_eq!(protocols[2]["name"], "ground");
+    assert_eq!(protocols[2]["status"], "waiting");
+    assert_eq!(protocols[2]["trigger"], "not_satisfied");
     assert_eq!(
-        skills[2]["unsatisfied_conditions"],
+        protocols[2]["unsatisfied_conditions"],
         serde_json::json!(["on_signal(begin): signal 'begin' is not active"])
     );
-    assert!(skills[2].get("inputs").is_none());
-    assert!(skills[2].get("precondition_failures").is_none());
+    assert!(protocols[2].get("inputs").is_none());
+    assert!(protocols[2].get("precondition_failures").is_none());
 }
 
 #[test]
@@ -277,7 +277,7 @@ fn status_keeps_signal_gated_skills_waiting_when_signals_file_is_corrupt() {
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let ground = value["skills"]
+    let ground = value["protocols"]
         .as_array()
         .unwrap()
         .iter()
@@ -307,12 +307,12 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "implementation"
 schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
-[[skills]]
+[[protocols]]
 name = "verify"
 requires = ["implementation"]
 trigger = { type = "on_artifact", name = "constraints" }
 
-[[skills]]
+[[protocols]]
 name = "release"
 trigger = { type = "all_of", conditions = [
     { type = "on_signal", name = "approve" },
@@ -365,14 +365,14 @@ trigger = { type = "all_of", conditions = [
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills.len(), 2, "{value:#}");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 2, "{value:#}");
     assert_eq!(value["scan_warnings"], serde_json::json!([]));
 
-    assert_eq!(skills[0]["name"], "verify");
-    assert_eq!(skills[0]["status"], "blocked");
+    assert_eq!(protocols[0]["name"], "verify");
+    assert_eq!(protocols[0]["status"], "blocked");
     assert_eq!(
-        skills[0]["precondition_failures"],
+        protocols[0]["precondition_failures"],
         serde_json::json!([
             {
                 "artifact_type": "implementation",
@@ -381,10 +381,10 @@ trigger = { type = "all_of", conditions = [
         ])
     );
 
-    assert_eq!(skills[1]["name"], "release");
-    assert_eq!(skills[1]["status"], "waiting");
+    assert_eq!(protocols[1]["name"], "release");
+    assert_eq!(protocols[1]["status"], "waiting");
     assert_eq!(
-        skills[1]["unsatisfied_conditions"],
+        protocols[1]["unsatisfied_conditions"],
         serde_json::json!([
             "on_signal(approve): signal 'approve' is not active",
             "on_artifact(implementation): artifact type 'implementation' has invalid, malformed, or stale instances",
@@ -456,11 +456,11 @@ fn status_keeps_skills_ready_when_only_accepted_types_are_partially_scanned() {
         ])
     );
 
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills[0]["name"], "implement");
-    assert_eq!(skills[0]["status"], "ready");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols[0]["name"], "implement");
+    assert_eq!(protocols[0]["status"], "ready");
     assert_eq!(
-        skills[0]["inputs"],
+        protocols[0]["inputs"],
         serde_json::json!([
             {
                 "artifact_type": "constraints",
@@ -531,12 +531,12 @@ fn status_blocks_skills_with_partial_required_types_and_reports_scan_warnings() 
         ])
     );
 
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills[0]["name"], "implement");
-    assert_eq!(skills[0]["status"], "blocked");
-    assert_eq!(skills[0]["trigger"], "satisfied");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols[0]["name"], "implement");
+    assert_eq!(protocols[0]["status"], "blocked");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
     assert_eq!(
-        skills[0]["precondition_failures"],
+        protocols[0]["precondition_failures"],
         serde_json::json!([
             {
                 "artifact_type": "constraints",
@@ -544,7 +544,7 @@ fn status_blocks_skills_with_partial_required_types_and_reports_scan_warnings() 
             }
         ])
     );
-    assert!(skills[0].get("inputs").is_none());
+    assert!(protocols[0].get("inputs").is_none());
 
     assert!(
         text_output.status.success(),
@@ -581,7 +581,7 @@ name = "groundwork"
 name = "constraints"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[skills]]
+[[protocols]]
 name = "implement"
 requires = ["constraints"]
 trigger = { type = "on_signal", name = "begin" }
@@ -620,12 +620,12 @@ trigger = { type = "on_signal", name = "begin" }
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills[0]["name"], "implement");
-    assert_eq!(skills[0]["status"], "blocked");
-    assert_eq!(skills[0]["trigger"], "not_satisfied");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols[0]["name"], "implement");
+    assert_eq!(protocols[0]["status"], "blocked");
+    assert_eq!(protocols[0]["trigger"], "not_satisfied");
     assert_eq!(
-        skills[0]["precondition_failures"],
+        protocols[0]["precondition_failures"],
         serde_json::json!([
             {
                 "artifact_type": "constraints",
@@ -633,7 +633,7 @@ trigger = { type = "on_signal", name = "begin" }
             }
         ])
     );
-    assert!(skills[0].get("unsatisfied_conditions").is_none());
+    assert!(protocols[0].get("unsatisfied_conditions").is_none());
 }
 
 #[cfg(unix)]
@@ -656,7 +656,7 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "implementation"
 schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
-[[skills]]
+[[protocols]]
 name = "verify"
 requires = ["constraints", "implementation"]
 trigger = { type = "on_artifact", name = "constraints" }
@@ -709,11 +709,11 @@ trigger = { type = "on_artifact", name = "constraints" }
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills[0]["name"], "verify");
-    assert_eq!(skills[0]["status"], "blocked");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols[0]["name"], "verify");
+    assert_eq!(protocols[0]["status"], "blocked");
     assert_eq!(
-        skills[0]["precondition_failures"],
+        protocols[0]["precondition_failures"],
         serde_json::json!([
             {
                 "artifact_type": "constraints",
@@ -743,7 +743,7 @@ name = "groundwork"
 name = "report"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[skills]]
+[[protocols]]
 name = "repair"
 trigger = { type = "on_artifact", name = "report" }
 "#,
@@ -781,12 +781,12 @@ trigger = { type = "on_artifact", name = "report" }
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills[0]["name"], "repair");
-    assert_eq!(skills[0]["status"], "blocked");
-    assert_eq!(skills[0]["trigger"], "satisfied");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols[0]["name"], "repair");
+    assert_eq!(protocols[0]["status"], "blocked");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
     assert_eq!(
-        skills[0]["precondition_failures"],
+        protocols[0]["precondition_failures"],
         serde_json::json!([
             {
                 "artifact_type": "report",
@@ -807,7 +807,7 @@ name = "groundwork"
 
 artifact_types = []
 
-[[skills]]
+[[protocols]]
 name = "impossible"
 trigger = { type = "any_of", conditions = [] }
 "#,
@@ -832,11 +832,11 @@ trigger = { type = "any_of", conditions = [] }
     );
 
     let value: serde_json::Value = serde_json::from_slice(&json_output.stdout).unwrap();
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills[0]["name"], "impossible");
-    assert_eq!(skills[0]["status"], "waiting");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols[0]["name"], "impossible");
+    assert_eq!(protocols[0]["status"], "waiting");
     assert_eq!(
-        skills[0]["unsatisfied_conditions"],
+        protocols[0]["unsatisfied_conditions"],
         serde_json::json!(["any_of(): any_of with no conditions"])
     );
 
@@ -875,7 +875,7 @@ name = "groundwork"
 name = "report"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[skills]]
+[[protocols]]
 name = "repair"
 trigger = { type = "on_invalid", name = "report" }
 "#,
@@ -909,11 +909,11 @@ trigger = { type = "on_invalid", name = "report" }
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills[0]["name"], "repair");
-    assert_eq!(skills[0]["status"], "ready");
-    assert_eq!(skills[0]["trigger"], "satisfied");
-    assert!(skills[0].get("precondition_failures").is_none());
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols[0]["name"], "repair");
+    assert_eq!(protocols[0]["status"], "ready");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
+    assert!(protocols[0].get("precondition_failures").is_none());
 }
 
 #[cfg(unix)]
@@ -936,7 +936,7 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "report"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[skills]]
+[[protocols]]
 name = "implement"
 trigger = { type = "any_of", conditions = [
     { type = "on_invalid", name = "constraints" },
@@ -974,10 +974,10 @@ trigger = { type = "any_of", conditions = [
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills[0]["name"], "implement");
-    assert_eq!(skills[0]["status"], "ready");
-    assert_eq!(skills[0]["trigger"], "satisfied");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols[0]["name"], "implement");
+    assert_eq!(protocols[0]["status"], "ready");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
 }
 
 #[cfg(unix)]
@@ -996,7 +996,7 @@ name = "groundwork"
 name = "report"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[skills]]
+[[protocols]]
 name = "publish"
 trigger = { type = "on_artifact", name = "report" }
 "#,
@@ -1029,12 +1029,12 @@ trigger = { type = "on_artifact", name = "report" }
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills[0]["name"], "publish");
-    assert_eq!(skills[0]["status"], "blocked");
-    assert_eq!(skills[0]["trigger"], "not_satisfied");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols[0]["name"], "publish");
+    assert_eq!(protocols[0]["status"], "blocked");
+    assert_eq!(protocols[0]["trigger"], "not_satisfied");
     assert_eq!(
-        skills[0]["precondition_failures"],
+        protocols[0]["precondition_failures"],
         serde_json::json!([
             {
                 "artifact_type": "report",
@@ -1064,11 +1064,11 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "doc"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[skills]]
+[[protocols]]
 name = "repair"
 trigger = { type = "on_invalid", name = "report" }
 
-[[skills]]
+[[protocols]]
 name = "review"
 trigger = { type = "on_change", name = "doc" }
 "#,
@@ -1106,14 +1106,14 @@ trigger = { type = "on_change", name = "doc" }
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let skills = value["skills"].as_array().unwrap();
-    let repair = skills
+    let protocols = value["protocols"].as_array().unwrap();
+    let repair = protocols
         .iter()
-        .find(|skill| skill["name"] == "repair")
+        .find(|protocol| protocol["name"] == "repair")
         .unwrap();
-    let review = skills
+    let review = protocols
         .iter()
-        .find(|skill| skill["name"] == "review")
+        .find(|protocol| protocol["name"] == "review")
         .unwrap();
 
     assert_eq!(repair["status"], "blocked");
@@ -1157,7 +1157,7 @@ name = "groundwork"
 name = "constraints"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[skills]]
+[[protocols]]
 name = "implement"
 requires = ["constraints"]
 trigger = { type = "on_signal", name = "begin" }
@@ -1192,12 +1192,12 @@ trigger = { type = "on_signal", name = "begin" }
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills[0]["name"], "implement");
-    assert_eq!(skills[0]["status"], "blocked");
-    assert_eq!(skills[0]["trigger"], "not_satisfied");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols[0]["name"], "implement");
+    assert_eq!(protocols[0]["status"], "blocked");
+    assert_eq!(protocols[0]["trigger"], "not_satisfied");
     assert_eq!(
-        skills[0]["precondition_failures"],
+        protocols[0]["precondition_failures"],
         serde_json::json!([
             {
                 "artifact_type": "constraints",
@@ -1227,7 +1227,7 @@ name = "groundwork"
 name = "report"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[skills]]
+[[protocols]]
 name = "publish"
 trigger = { type = "on_artifact", name = "report" }
 "#,
@@ -1261,15 +1261,15 @@ trigger = { type = "on_artifact", name = "report" }
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let skills = value["skills"].as_array().unwrap();
-    assert_eq!(skills[0]["name"], "publish");
-    assert_eq!(skills[0]["status"], "waiting");
-    assert_eq!(skills[0]["trigger"], "not_satisfied");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols[0]["name"], "publish");
+    assert_eq!(protocols[0]["status"], "waiting");
+    assert_eq!(protocols[0]["trigger"], "not_satisfied");
     assert_eq!(
-        skills[0]["unsatisfied_conditions"],
+        protocols[0]["unsatisfied_conditions"],
         serde_json::json!([
             "on_artifact(report): artifact type 'report' has invalid, malformed, or stale instances"
         ])
     );
-    assert!(skills[0].get("precondition_failures").is_none());
+    assert!(protocols[0].get("precondition_failures").is_none());
 }

@@ -17,18 +17,18 @@ schema = { type = "object" }
 name = "design-doc"
 schema = { type = "object" }
 
-[[skills]]
+[[protocols]]
 name = "ground"
 produces = ["constraints"]
 trigger = { type = "on_signal", name = "init" }
 
-[[skills]]
+[[protocols]]
 name = "design"
 requires = ["constraints"]
 produces = ["design-doc"]
 trigger = { type = "on_artifact", name = "constraints" }
 
-[[skills]]
+[[protocols]]
 name = "review"
 requires = ["design-doc"]
 trigger = { type = "on_artifact", name = "design-doc" }
@@ -61,7 +61,7 @@ fn init_creates_runa_directory() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("groundwork"), "stdout: {stdout}");
     assert!(stdout.contains("2 artifact types"), "stdout: {stdout}");
-    assert!(stdout.contains("3 skills"), "stdout: {stdout}");
+    assert!(stdout.contains("3 protocols"), "stdout: {stdout}");
 
     assert!(project_dir.join(".runa").is_dir());
     assert!(project_dir.join(".runa/state.toml").is_file());

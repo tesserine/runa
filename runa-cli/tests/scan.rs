@@ -13,7 +13,7 @@ name = "groundwork"
 name = "constraints"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[skills]]
+[[protocols]]
 name = "ground"
 produces = ["constraints"]
 trigger = { type = "on_signal", name = "init" }

@@ -29,7 +29,7 @@ enum Commands {
         #[arg(long)]
         artifacts_dir: Option<String>,
     },
-    /// Display skills, dependencies, and execution order
+    /// Display protocols, dependencies, and execution order
     List,
     /// Check project health: validate artifacts, identify problems
     Doctor,
@@ -40,13 +40,13 @@ enum Commands {
         #[command(subcommand)]
         command: SignalCommand,
     },
-    /// Evaluate skill readiness and report status
+    /// Evaluate protocol readiness and report status
     Status {
         /// Emit machine-readable JSON instead of text output
         #[arg(long)]
         json: bool,
     },
-    /// Build an execution plan for skills that are ready to run
+    /// Build an execution plan for protocols that are ready to run
     Step {
         /// Show the execution plan without attempting agent execution
         #[arg(long)]
@@ -110,8 +110,8 @@ fn main() {
                         summary.methodology_name
                     );
                     println!(
-                        "  {} artifact types, {} skills",
-                        summary.artifact_type_count, summary.skill_count
+                        "  {} artifact types, {} protocols",
+                        summary.artifact_type_count, summary.protocol_count
                     );
                 }
                 Err(e) => {

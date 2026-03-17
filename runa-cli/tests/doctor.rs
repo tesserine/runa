@@ -17,18 +17,18 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "design-doc"
 schema = { type = "object" }
 
-[[skills]]
+[[protocols]]
 name = "ground"
 produces = ["constraints"]
 trigger = { type = "on_signal", name = "init" }
 
-[[skills]]
+[[protocols]]
 name = "design"
 requires = ["constraints"]
 produces = ["design-doc"]
 trigger = { type = "on_artifact", name = "constraints" }
 
-[[skills]]
+[[protocols]]
 name = "review"
 requires = ["design-doc"]
 trigger = { type = "on_artifact", name = "design-doc" }
@@ -75,7 +75,7 @@ name = "simple"
 name = "report"
 schema = { type = "object" }
 
-[[skills]]
+[[protocols]]
 name = "generate"
 produces = ["report"]
 trigger = { type = "on_signal", name = "go" }
@@ -120,7 +120,7 @@ fn doctor_unready_skills_exit_one() {
 
     assert!(
         !output.status.success(),
-        "should exit 1 with unready skills"
+        "should exit 1 with unready protocols"
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);

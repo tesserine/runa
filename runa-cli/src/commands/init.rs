@@ -10,7 +10,7 @@ use crate::project::{
 pub struct InitSummary {
     pub methodology_name: String,
     pub artifact_type_count: usize,
-    pub skill_count: usize,
+    pub protocol_count: usize,
 }
 
 #[derive(Debug)]
@@ -98,7 +98,7 @@ pub fn run(
     Ok(InitSummary {
         methodology_name: manifest.name,
         artifact_type_count: manifest.artifact_types.len(),
-        skill_count: manifest.skills.len(),
+        protocol_count: manifest.protocols.len(),
     })
 }
 
@@ -154,18 +154,18 @@ schema = { type = "object" }
 name = "design-doc"
 schema = { type = "object" }
 
-[[skills]]
+[[protocols]]
 name = "ground"
 produces = ["constraints"]
 trigger = { type = "on_signal", name = "init" }
 
-[[skills]]
+[[protocols]]
 name = "design"
 requires = ["constraints"]
 produces = ["design-doc"]
 trigger = { type = "on_artifact", name = "constraints" }
 
-[[skills]]
+[[protocols]]
 name = "review"
 requires = ["design-doc"]
 trigger = { type = "on_artifact", name = "design-doc" }
@@ -185,7 +185,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
 
         assert_eq!(summary.methodology_name, "groundwork");
         assert_eq!(summary.artifact_type_count, 2);
-        assert_eq!(summary.skill_count, 3);
+        assert_eq!(summary.protocol_count, 3);
 
         let runa_dir = working.join(".runa");
         assert!(runa_dir.is_dir());
@@ -359,6 +359,6 @@ trigger = { type = "on_artifact", name = "design-doc" }
 
         assert_eq!(summary1.methodology_name, summary2.methodology_name);
         assert_eq!(summary1.artifact_type_count, summary2.artifact_type_count);
-        assert_eq!(summary1.skill_count, summary2.skill_count);
+        assert_eq!(summary1.protocol_count, summary2.protocol_count);
     }
 }

@@ -14,11 +14,11 @@ name = "groundwork"
 name = "constraints"
 schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
-[[skills]]
+[[protocols]]
 name = "ground"
 trigger = { type = "on_signal", name = "begin" }
 
-[[skills]]
+[[protocols]]
 name = "implement"
 requires = ["constraints"]
 trigger = { type = "on_artifact", name = "constraints" }
@@ -86,8 +86,8 @@ fn signal_begin_persists_state_across_invocations() {
         String::from_utf8_lossy(&status.stderr)
     );
     let value: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
-    assert_eq!(value["skills"][0]["name"], "ground");
-    assert_eq!(value["skills"][0]["status"], "ready");
+    assert_eq!(value["protocols"][0]["name"], "ground");
+    assert_eq!(value["protocols"][0]["status"], "ready");
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn signal_clear_removes_signal_and_step_waits_again() {
         String::from_utf8_lossy(&step_ready.stderr)
     );
     let ready_value: serde_json::Value = serde_json::from_slice(&step_ready.stdout).unwrap();
-    assert_eq!(ready_value["execution_plan"][0]["skill"], "ground");
+    assert_eq!(ready_value["execution_plan"][0]["protocol"], "ground");
 
     let clear = run_command(&project_dir, &["signal", "clear", "begin"]);
     assert!(
@@ -159,8 +159,8 @@ fn signal_clear_removes_signal_and_step_waits_again() {
     );
     let waiting_value: serde_json::Value = serde_json::from_slice(&step_waiting.stdout).unwrap();
     assert_eq!(waiting_value["execution_plan"], serde_json::json!([]));
-    assert_eq!(waiting_value["skills"][1]["name"], "ground");
-    assert_eq!(waiting_value["skills"][1]["status"], "waiting");
+    assert_eq!(waiting_value["protocols"][1]["name"], "ground");
+    assert_eq!(waiting_value["protocols"][1]["status"], "waiting");
 
     let status_waiting = run_command(&project_dir, &["status", "--json"]);
     assert!(
@@ -169,7 +169,7 @@ fn signal_clear_removes_signal_and_step_waits_again() {
         String::from_utf8_lossy(&status_waiting.stderr)
     );
     let status_value: serde_json::Value = serde_json::from_slice(&status_waiting.stdout).unwrap();
-    let waiting_entry = status_value["skills"]
+    let waiting_entry = status_value["protocols"]
         .as_array()
         .unwrap()
         .iter()

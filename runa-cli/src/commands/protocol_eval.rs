@@ -8,7 +8,7 @@ use crate::project;
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum SkillStatus {
+pub(crate) enum ProtocolStatus {
     Ready,
     Blocked,
     Waiting,
@@ -22,9 +22,9 @@ pub(crate) enum TriggerState {
 }
 
 #[derive(Clone)]
-pub(crate) struct SkillEntry {
+pub(crate) struct ProtocolEntry {
     pub(crate) name: String,
-    pub(crate) status: SkillStatus,
+    pub(crate) status: ProtocolStatus,
     pub(crate) trigger: TriggerState,
     pub(crate) inputs: Vec<InputEntry>,
     pub(crate) precondition_failures: Vec<FailureEntry>,
@@ -32,9 +32,9 @@ pub(crate) struct SkillEntry {
 }
 
 #[derive(Clone, Serialize)]
-pub(crate) struct SkillJson {
+pub(crate) struct ProtocolJson {
     pub(crate) name: String,
-    pub(crate) status: SkillStatus,
+    pub(crate) status: ProtocolStatus,
     pub(crate) trigger: TriggerState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) inputs: Option<Vec<InputJson>>,
@@ -83,23 +83,23 @@ struct TriggerEvaluation {
     scan_types: Vec<String>,
 }
 
-pub(crate) struct EvaluatedSkills {
+pub(crate) struct EvaluatedProtocols {
     pub(crate) cycle: Option<libagent::CycleError>,
-    pub(crate) ready: Vec<SkillEntry>,
-    pub(crate) blocked: Vec<SkillEntry>,
-    pub(crate) waiting: Vec<SkillEntry>,
+    pub(crate) ready: Vec<ProtocolEntry>,
+    pub(crate) blocked: Vec<ProtocolEntry>,
+    pub(crate) waiting: Vec<ProtocolEntry>,
 }
 
-impl EvaluatedSkills {
-    pub(crate) fn ordered_entries(&self) -> impl Iterator<Item = &SkillEntry> {
+impl EvaluatedProtocols {
+    pub(crate) fn ordered_entries(&self) -> impl Iterator<Item = &ProtocolEntry> {
         self.ready
             .iter()
             .chain(self.blocked.iter())
             .chain(self.waiting.iter())
     }
 
-    pub(crate) fn json_skills(&self) -> Vec<SkillJson> {
-        self.ordered_entries().cloned().map(skill_json).collect()
+    pub(crate) fn json_protocols(&self) -> Vec<ProtocolJson> {
+        self.ordered_entries().cloned().map(protocol_json).collect()
     }
 }
 
@@ -139,12 +139,12 @@ pub(crate) fn collect_scan_findings(
     }
 }
 
-pub(crate) fn evaluate_skills(
+pub(crate) fn evaluate_protocols(
     loaded: &project::LoadedProject,
     working_dir: &Path,
     scan_findings: &ScanFindings,
     active_signals: &HashSet<String>,
-) -> EvaluatedSkills {
+) -> EvaluatedProtocols {
     let (skill_order, cycle) = match loaded.graph.topological_order() {
         Ok(order) => (order, None),
         Err(cycle) => {
@@ -157,20 +157,20 @@ pub(crate) fn evaluate_skills(
             order.extend(
                 loaded
                     .manifest
-                    .skills
+                    .protocols
                     .iter()
-                    .map(|skill| skill.name.as_str())
+                    .map(|protocol| protocol.name.as_str())
                     .filter(|name| cycle_participants.contains(name)),
             );
             (order, Some(cycle))
         }
     };
 
-    let skill_map: HashMap<&str, &libagent::SkillDeclaration> = loaded
+    let skill_map: HashMap<&str, &libagent::ProtocolDeclaration> = loaded
         .manifest
-        .skills
+        .protocols
         .iter()
-        .map(|skill| (skill.name.as_str(), skill))
+        .map(|protocol| (protocol.name.as_str(), protocol))
         .collect();
 
     let timestamps = HashMap::new();
@@ -185,14 +185,14 @@ pub(crate) fn evaluate_skills(
     let mut waiting = Vec::new();
 
     for name in skill_order {
-        let Some(skill) = skill_map.get(name) else {
+        let Some(protocol) = skill_map.get(name) else {
             continue;
         };
 
         let trigger_eval = evaluate_trigger_trust(
-            &skill.trigger,
+            &protocol.trigger,
             &context,
-            &skill.name,
+            &protocol.name,
             &scan_findings.affected_types,
         );
         let trigger_state = if trigger_eval.satisfied {
@@ -202,22 +202,22 @@ pub(crate) fn evaluate_skills(
         };
 
         let scan_failures =
-            scan_incomplete_failures(skill, scan_findings, &trigger_eval.scan_types);
+            scan_incomplete_failures(protocol, scan_findings, &trigger_eval.scan_types);
         let entry = match trigger_state {
             TriggerState::Satisfied => {
                 let mut precondition_failures = scan_failures;
 
-                if let Err(err) = enforce_preconditions(skill, &loaded.store) {
+                if let Err(err) = enforce_preconditions(protocol, &loaded.store) {
                     precondition_failures.extend(err.failures.iter().map(failure_entry));
                 }
 
                 if precondition_failures.is_empty() {
-                    SkillEntry {
-                        name: skill.name.clone(),
-                        status: SkillStatus::Ready,
+                    ProtocolEntry {
+                        name: protocol.name.clone(),
+                        status: ProtocolStatus::Ready,
                         trigger: TriggerState::Satisfied,
                         inputs: collect_inputs(
-                            skill,
+                            protocol,
                             &loaded.store,
                             working_dir,
                             &scan_findings.affected_types,
@@ -226,9 +226,9 @@ pub(crate) fn evaluate_skills(
                         unsatisfied_conditions: Vec::new(),
                     }
                 } else {
-                    SkillEntry {
-                        name: skill.name.clone(),
-                        status: SkillStatus::Blocked,
+                    ProtocolEntry {
+                        name: protocol.name.clone(),
+                        status: ProtocolStatus::Blocked,
                         trigger: TriggerState::Satisfied,
                         inputs: Vec::new(),
                         precondition_failures,
@@ -238,26 +238,26 @@ pub(crate) fn evaluate_skills(
             }
             TriggerState::NotSatisfied => {
                 if scan_failures.is_empty() {
-                    SkillEntry {
-                        name: skill.name.clone(),
-                        status: SkillStatus::Waiting,
+                    ProtocolEntry {
+                        name: protocol.name.clone(),
+                        status: ProtocolStatus::Waiting,
                         trigger: TriggerState::NotSatisfied,
                         inputs: Vec::new(),
                         precondition_failures: Vec::new(),
                         unsatisfied_conditions: collect_unsatisfied_conditions(
-                            &skill.trigger,
+                            &protocol.trigger,
                             &context,
-                            &skill.name,
+                            &protocol.name,
                         ),
                     }
                 } else {
                     let mut precondition_failures = scan_failures;
-                    if let Err(err) = enforce_preconditions(skill, &loaded.store) {
+                    if let Err(err) = enforce_preconditions(protocol, &loaded.store) {
                         precondition_failures.extend(err.failures.iter().map(failure_entry));
                     }
-                    SkillEntry {
-                        name: skill.name.clone(),
-                        status: SkillStatus::Blocked,
+                    ProtocolEntry {
+                        name: protocol.name.clone(),
+                        status: ProtocolStatus::Blocked,
                         trigger: TriggerState::NotSatisfied,
                         inputs: Vec::new(),
                         precondition_failures,
@@ -268,13 +268,13 @@ pub(crate) fn evaluate_skills(
         };
 
         match entry.status {
-            SkillStatus::Ready => ready.push(entry),
-            SkillStatus::Blocked => blocked.push(entry),
-            SkillStatus::Waiting => waiting.push(entry),
+            ProtocolStatus::Ready => ready.push(entry),
+            ProtocolStatus::Blocked => blocked.push(entry),
+            ProtocolStatus::Waiting => waiting.push(entry),
         }
     }
 
-    EvaluatedSkills {
+    EvaluatedProtocols {
         cycle,
         ready,
         blocked,
@@ -282,7 +282,7 @@ pub(crate) fn evaluate_skills(
     }
 }
 
-pub(crate) fn print_group(label: &str, entries: &[SkillEntry]) {
+pub(crate) fn print_group(label: &str, entries: &[ProtocolEntry]) {
     println!("{label}:");
     if entries.is_empty() {
         println!("  (none)");
@@ -292,7 +292,7 @@ pub(crate) fn print_group(label: &str, entries: &[SkillEntry]) {
     for entry in entries {
         println!("  {}", entry.name);
         match entry.status {
-            SkillStatus::Ready => {
+            ProtocolStatus::Ready => {
                 for input in &entry.inputs {
                     println!(
                         "    - {}/{} ({})",
@@ -300,12 +300,12 @@ pub(crate) fn print_group(label: &str, entries: &[SkillEntry]) {
                     );
                 }
             }
-            SkillStatus::Blocked => {
+            ProtocolStatus::Blocked => {
                 for failure in &entry.precondition_failures {
                     println!("    - {} ({})", failure.artifact_type, failure.reason);
                 }
             }
-            SkillStatus::Waiting => {
+            ProtocolStatus::Waiting => {
                 for condition in &entry.unsatisfied_conditions {
                     println!("    - {condition}");
                 }
@@ -315,14 +315,14 @@ pub(crate) fn print_group(label: &str, entries: &[SkillEntry]) {
 }
 
 fn collect_inputs(
-    skill: &libagent::SkillDeclaration,
+    protocol: &libagent::ProtocolDeclaration,
     store: &libagent::ArtifactStore,
     working_dir: &Path,
     affected_types: &HashSet<String>,
 ) -> Vec<InputEntry> {
     let mut inputs = Vec::new();
 
-    for artifact_type in &skill.requires {
+    for artifact_type in &protocol.requires {
         if affected_types.contains(artifact_type) {
             continue;
         }
@@ -338,7 +338,7 @@ fn collect_inputs(
         }
     }
 
-    for artifact_type in &skill.accepts {
+    for artifact_type in &protocol.accepts {
         if affected_types.contains(artifact_type) {
             continue;
         }
@@ -382,13 +382,13 @@ fn failure_entry(failure: &libagent::ArtifactFailure) -> FailureEntry {
 }
 
 fn scan_incomplete_failures(
-    skill: &libagent::SkillDeclaration,
+    protocol: &libagent::ProtocolDeclaration,
     scan_findings: &ScanFindings,
     trigger_scan_types: &[String],
 ) -> Vec<FailureEntry> {
     let mut artifact_types = trigger_scan_types.to_vec();
 
-    for artifact_type in &skill.requires {
+    for artifact_type in &protocol.requires {
         if scan_findings
             .affected_types
             .contains(artifact_type.as_str())
@@ -410,14 +410,14 @@ fn scan_incomplete_failures(
 fn evaluate_trigger_trust(
     condition: &libagent::TriggerCondition,
     context: &TriggerContext<'_>,
-    skill_name: &str,
+    protocol_name: &str,
     affected_types: &HashSet<String>,
 ) -> TriggerEvaluation {
     match condition {
         libagent::TriggerCondition::OnArtifact { name } => primitive_trigger_eval(
             condition,
             context,
-            skill_name,
+            protocol_name,
             affected_types.contains(name.as_str()),
             !has_visible_defect(context.store, name),
             true,
@@ -426,7 +426,7 @@ fn evaluate_trigger_trust(
         libagent::TriggerCondition::OnInvalid { name } => primitive_trigger_eval(
             condition,
             context,
-            skill_name,
+            protocol_name,
             affected_types.contains(name.as_str()),
             true,
             false,
@@ -435,19 +435,19 @@ fn evaluate_trigger_trust(
         libagent::TriggerCondition::OnChange { name } => primitive_trigger_eval(
             condition,
             context,
-            skill_name,
+            protocol_name,
             affected_types.contains(name.as_str()),
             true,
             false,
             Some(name.clone()),
         ),
         libagent::TriggerCondition::OnSignal { .. } => {
-            primitive_trigger_eval(condition, context, skill_name, false, false, false, None)
+            primitive_trigger_eval(condition, context, protocol_name, false, false, false, None)
         }
         libagent::TriggerCondition::AllOf { conditions } => {
             let children: Vec<_> = conditions
                 .iter()
-                .map(|child| evaluate_trigger_trust(child, context, skill_name, affected_types))
+                .map(|child| evaluate_trigger_trust(child, context, protocol_name, affected_types))
                 .collect();
 
             if children.iter().all(|child| child.satisfied) {
@@ -498,7 +498,7 @@ fn evaluate_trigger_trust(
 
             let children: Vec<_> = conditions
                 .iter()
-                .map(|child| evaluate_trigger_trust(child, context, skill_name, affected_types))
+                .map(|child| evaluate_trigger_trust(child, context, protocol_name, affected_types))
                 .collect();
 
             if children
@@ -551,14 +551,14 @@ fn evaluate_trigger_trust(
 fn primitive_trigger_eval(
     condition: &libagent::TriggerCondition,
     context: &TriggerContext<'_>,
-    skill_name: &str,
+    protocol_name: &str,
     affected: bool,
     untrustworthy_when_not_satisfied: bool,
     untrustworthy_when_satisfied: bool,
     artifact_type: Option<String>,
 ) -> TriggerEvaluation {
     let satisfied = matches!(
-        evaluate_trigger(condition, context, skill_name),
+        evaluate_trigger(condition, context, protocol_name),
         TriggerResult::Satisfied
     );
 
@@ -612,14 +612,14 @@ fn artifact_type_from_path(path: &Path, workspace_dir: &Path) -> Option<String> 
 fn collect_unsatisfied_conditions(
     condition: &libagent::TriggerCondition,
     context: &TriggerContext<'_>,
-    skill_name: &str,
+    protocol_name: &str,
 ) -> Vec<String> {
-    match evaluate_trigger(condition, context, skill_name) {
+    match evaluate_trigger(condition, context, protocol_name) {
         TriggerResult::Satisfied => Vec::new(),
         TriggerResult::NotSatisfied(reason) => match condition {
             libagent::TriggerCondition::AllOf { conditions } => conditions
                 .iter()
-                .flat_map(|child| collect_unsatisfied_conditions(child, context, skill_name))
+                .flat_map(|child| collect_unsatisfied_conditions(child, context, protocol_name))
                 .collect(),
             libagent::TriggerCondition::AnyOf { conditions } => {
                 if conditions.is_empty() {
@@ -628,7 +628,7 @@ fn collect_unsatisfied_conditions(
                     conditions
                         .iter()
                         .flat_map(|child| {
-                            collect_unsatisfied_conditions(child, context, skill_name)
+                            collect_unsatisfied_conditions(child, context, protocol_name)
                         })
                         .collect()
                 }
@@ -638,8 +638,8 @@ fn collect_unsatisfied_conditions(
     }
 }
 
-fn skill_json(entry: SkillEntry) -> SkillJson {
-    SkillJson {
+fn protocol_json(entry: ProtocolEntry) -> ProtocolJson {
+    ProtocolJson {
         name: entry.name,
         status: entry.status,
         trigger: entry.trigger,

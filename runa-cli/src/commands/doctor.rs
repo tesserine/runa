@@ -147,27 +147,27 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, D
 
     // --- Skill readiness ---
     println!();
-    println!("Skills:");
+    println!("Protocols:");
 
-    if loaded.manifest.skills.is_empty() {
+    if loaded.manifest.protocols.is_empty() {
         println!("  (none)");
     }
 
-    for skill in &loaded.manifest.skills {
-        if skill.requires.is_empty() {
-            println!("  {}: ok", skill.name);
+    for protocol in &loaded.manifest.protocols {
+        if protocol.requires.is_empty() {
+            println!("  {}: ok", protocol.name);
             continue;
         }
 
-        if let Err(err) = enforce_preconditions(skill, &loaded.store) {
+        if let Err(err) = enforce_preconditions(protocol, &loaded.store) {
             problems += 1;
             println!(
                 "  {}: cannot execute ({})",
-                skill.name,
+                protocol.name,
                 format_failures(&err.failures)
             );
         } else {
-            println!("  {}: ok", skill.name);
+            println!("  {}: ok", protocol.name);
         }
     }
 

@@ -13,8 +13,8 @@ pub enum ManifestError {
     Parse(toml::de::Error),
     /// Two artifact types share the same name.
     DuplicateArtifactType(String),
-    /// Two skills share the same name.
-    DuplicateSkillName(String),
+    /// Two protocols share the same name.
+    DuplicateProtocolName(String),
     /// An on_signal trigger uses an invalid signal name.
     InvalidSignalName(String),
     /// A schema file path reference does not exist on disk.
@@ -38,8 +38,8 @@ impl fmt::Display for ManifestError {
             ManifestError::DuplicateArtifactType(name) => {
                 write!(f, "duplicate artifact type name: {name}")
             }
-            ManifestError::DuplicateSkillName(name) => {
-                write!(f, "duplicate skill name: {name}")
+            ManifestError::DuplicateProtocolName(name) => {
+                write!(f, "duplicate protocol name: {name}")
             }
             ManifestError::InvalidSignalName(name) => {
                 write!(
@@ -97,7 +97,7 @@ impl From<toml::de::Error> for ManifestError {
 /// Parse a manifest from a file path.
 ///
 /// Reads the file, parses TOML into a `Manifest`, validates that
-/// artifact type names and skill names are unique, and resolves any
+/// artifact type names and protocol names are unique, and resolves any
 /// string-valued schema fields as file paths relative to the manifest
 /// directory.
 pub fn parse(path: &Path) -> Result<Manifest, ManifestError> {
@@ -138,7 +138,7 @@ fn resolve_schema_paths(manifest: &mut Manifest, manifest_dir: &Path) -> Result<
 /// Parse a manifest from a TOML string.
 ///
 /// Parses the string into a `Manifest` and validates that artifact type
-/// names and skill names are unique.
+/// names and protocol names are unique.
 pub fn from_str(content: &str) -> Result<Manifest, ManifestError> {
     let manifest: Manifest = toml::from_str(content)?;
     validate(&manifest)?;
@@ -154,11 +154,11 @@ fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
     }
 
     let mut seen = HashSet::new();
-    for skill in &manifest.skills {
-        if !seen.insert(&skill.name) {
-            return Err(ManifestError::DuplicateSkillName(skill.name.clone()));
+    for protocol in &manifest.protocols {
+        if !seen.insert(&protocol.name) {
+            return Err(ManifestError::DuplicateProtocolName(protocol.name.clone()));
         }
-        validate_trigger(&skill.trigger)?;
+        validate_trigger(&protocol.trigger)?;
     }
 
     Ok(())
@@ -188,7 +188,7 @@ fn validate_trigger(trigger: &TriggerCondition) -> Result<(), ManifestError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ArtifactType, SkillDeclaration, TriggerCondition};
+    use crate::model::{ArtifactType, ProtocolDeclaration, TriggerCondition};
 
     #[test]
     fn parse_valid_manifest() {
@@ -215,22 +215,22 @@ required = ["content"]
 [artifact_types.schema.properties.content]
 type = "string"
 
-[[skills]]
+[[protocols]]
 name = "ground"
 produces = ["constraints"]
 
-[skills.trigger]
+[protocols.trigger]
 type = "on_signal"
 name = "init"
 
-[[skills]]
+[[protocols]]
 name = "design"
 requires = ["constraints"]
 accepts = ["prior-design"]
 produces = ["design-doc"]
 may_produce = ["design-notes"]
 
-[skills.trigger]
+[protocols.trigger]
 type = "on_artifact"
 name = "constraints"
 "#;
@@ -239,22 +239,22 @@ name = "constraints"
         assert_eq!(manifest.artifact_types.len(), 2);
         assert_eq!(manifest.artifact_types[0].name, "constraints");
         assert_eq!(manifest.artifact_types[1].name, "design-doc");
-        assert_eq!(manifest.skills.len(), 2);
-        assert_eq!(manifest.skills[0].name, "ground");
-        assert_eq!(manifest.skills[0].produces, vec!["constraints"]);
+        assert_eq!(manifest.protocols.len(), 2);
+        assert_eq!(manifest.protocols[0].name, "ground");
+        assert_eq!(manifest.protocols[0].produces, vec!["constraints"]);
         assert_eq!(
-            manifest.skills[0].trigger,
+            manifest.protocols[0].trigger,
             TriggerCondition::OnSignal {
                 name: "init".into()
             }
         );
-        assert_eq!(manifest.skills[1].name, "design");
-        assert_eq!(manifest.skills[1].requires, vec!["constraints"]);
-        assert_eq!(manifest.skills[1].accepts, vec!["prior-design"]);
-        assert_eq!(manifest.skills[1].produces, vec!["design-doc"]);
-        assert_eq!(manifest.skills[1].may_produce, vec!["design-notes"]);
+        assert_eq!(manifest.protocols[1].name, "design");
+        assert_eq!(manifest.protocols[1].requires, vec!["constraints"]);
+        assert_eq!(manifest.protocols[1].accepts, vec!["prior-design"]);
+        assert_eq!(manifest.protocols[1].produces, vec!["design-doc"]);
+        assert_eq!(manifest.protocols[1].may_produce, vec!["design-notes"]);
         assert_eq!(
-            manifest.skills[1].trigger,
+            manifest.protocols[1].trigger,
             TriggerCondition::OnArtifact {
                 name: "constraints".into()
             }
@@ -270,7 +270,7 @@ name = "test-methodology"
 name = "report"
 schema = { type = "object" }
 
-[[skills]]
+[[protocols]]
 name = "generate"
 produces = ["report"]
 trigger = { type = "on_signal", name = "go" }
@@ -282,7 +282,7 @@ trigger = { type = "on_signal", name = "go" }
         let manifest = parse(&path).unwrap();
         assert_eq!(manifest.name, "test-methodology");
         assert_eq!(manifest.artifact_types.len(), 1);
-        assert_eq!(manifest.skills.len(), 1);
+        assert_eq!(manifest.protocols.len(), 1);
     }
 
     #[test]
@@ -293,14 +293,42 @@ trigger = { type = "on_signal", name = "go" }
 name = "x"
 schema = { type = "object" }
 
-[[skills]]
+[[protocols]]
 name = "y"
 trigger = { type = "on_signal", name = "go" }
 "#;
-        let err = from_str(toml).unwrap_err();
+        let err = from_str(&toml).unwrap_err();
         assert!(
             matches!(err, ManifestError::Parse(_)),
             "expected Parse error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_legacy_skills_key_is_rejected() {
+        let toml = format!(
+            r#"
+name = "legacy"
+
+[[artifact_types]]
+name = "thing"
+schema = {{ type = "object" }}
+
+{legacy_key}
+name = "do-it"
+produces = ["thing"]
+trigger = {{ type = "on_signal", name = "go" }}
+"#,
+            legacy_key = concat!("[[", "skills", "]]"),
+        );
+        let err = from_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ManifestError::Parse(_)),
+            "expected Parse error, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("protocols"),
+            "expected legacy-key error to mention protocols, got: {err}"
         );
     }
 
@@ -313,7 +341,7 @@ name = "bad"
 name = "x"
 schema = { type = "object" }
 
-[[skills]]
+[[protocols]]
 name = "y"
 trigger = { type = "bogus", name = "whatever" }
 "#;
@@ -333,7 +361,7 @@ name = "bad"
 name = "x"
 schema = { type = "object" }
 
-[[skills]]
+[[protocols]]
 name = "y"
 trigger = { type = "on_signal", name = "release/v1" }
 "#;
@@ -357,7 +385,7 @@ schema = { type = "object" }
 name = "report"
 schema = { type = "string" }
 
-[[skills]]
+[[protocols]]
 name = "gen"
 trigger = { type = "on_signal", name = "go" }
 "#;
@@ -369,7 +397,7 @@ trigger = { type = "on_signal", name = "go" }
     }
 
     #[test]
-    fn parse_duplicate_skill_names() {
+    fn parse_duplicate_protocol_names() {
         let toml = r#"
 name = "dupes"
 
@@ -377,18 +405,18 @@ name = "dupes"
 name = "x"
 schema = { type = "object" }
 
-[[skills]]
+[[protocols]]
 name = "do-thing"
 trigger = { type = "on_signal", name = "go" }
 
-[[skills]]
+[[protocols]]
 name = "do-thing"
 trigger = { type = "on_signal", name = "start" }
 "#;
         let err = from_str(toml).unwrap_err();
         match err {
-            ManifestError::DuplicateSkillName(name) => assert_eq!(name, "do-thing"),
-            other => panic!("expected DuplicateSkillName, got: {other}"),
+            ManifestError::DuplicateProtocolName(name) => assert_eq!(name, "do-thing"),
+            other => panic!("expected DuplicateProtocolName, got: {other}"),
         }
     }
 
@@ -405,11 +433,11 @@ schema = { type = "object" }
 name = "auto-approve"
 schema = { type = "object" }
 
-[[skills]]
+[[protocols]]
 name = "deploy"
 requires = ["constraints"]
 
-[skills.trigger]
+[protocols.trigger]
 type = "all_of"
 conditions = [
     { type = "on_artifact", name = "constraints" },
@@ -420,7 +448,7 @@ conditions = [
 ]
 "#;
         let manifest = from_str(toml).unwrap();
-        let trigger = &manifest.skills[0].trigger;
+        let trigger = &manifest.protocols[0].trigger;
         assert_eq!(
             *trigger,
             TriggerCondition::AllOf {
@@ -463,7 +491,7 @@ conditions = [
                     schema: serde_json::json!({ "type": "object" }),
                 },
             ],
-            skills: vec![SkillDeclaration {
+            protocols: vec![ProtocolDeclaration {
                 name: "analyze".into(),
                 requires: vec!["constraints".into()],
                 accepts: vec![],
@@ -498,7 +526,7 @@ name = "file-schema-test"
 name = "thing"
 schema = "schemas/thing.schema.json"
 
-[[skills]]
+[[protocols]]
 name = "make-thing"
 produces = ["thing"]
 trigger = { type = "on_signal", name = "go" }
@@ -523,7 +551,7 @@ name = "missing-schema"
 name = "thing"
 schema = "schemas/nonexistent.schema.json"
 
-[[skills]]
+[[protocols]]
 name = "make-thing"
 produces = ["thing"]
 trigger = { type = "on_signal", name = "go" }
@@ -553,7 +581,7 @@ name = "bad-json"
 name = "thing"
 schema = "bad.json"
 
-[[skills]]
+[[protocols]]
 name = "make-thing"
 produces = ["thing"]
 trigger = { type = "on_signal", name = "go" }
@@ -592,7 +620,7 @@ schema = { type = "object", required = ["name"] }
 name = "file-thing"
 schema = "ext.schema.json"
 
-[[skills]]
+[[protocols]]
 name = "do-it"
 produces = ["inline-thing", "file-thing"]
 trigger = { type = "on_signal", name = "go" }
@@ -616,16 +644,16 @@ name = "minimal"
 name = "thing"
 schema = { type = "object" }
 
-[[skills]]
+[[protocols]]
 name = "do-it"
 produces = ["thing"]
 trigger = { type = "on_signal", name = "go" }
 "#;
         let manifest = from_str(toml).unwrap();
-        let skill = &manifest.skills[0];
-        assert!(skill.requires.is_empty());
-        assert!(skill.accepts.is_empty());
-        assert_eq!(skill.produces, vec!["thing"]);
-        assert!(skill.may_produce.is_empty());
+        let protocol = &manifest.protocols[0];
+        assert!(protocol.requires.is_empty());
+        assert!(protocol.accepts.is_empty());
+        assert_eq!(protocol.produces, vec!["thing"]);
+        assert!(protocol.may_produce.is_empty());
     }
 }

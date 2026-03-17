@@ -5,11 +5,11 @@ use crate::store::{ArtifactStore, ValidationStatus};
 
 /// Outcome of evaluating a trigger condition against current state.
 ///
-/// `NotSatisfied` is a normal outcome, not an error — a skill simply
+/// `NotSatisfied` is a normal outcome, not an error — a protocol simply
 /// doesn't activate yet.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TriggerResult {
-    /// The condition is met; the skill should activate.
+    /// The condition is met; the protocol should activate.
     Satisfied,
     /// The condition is not met; includes a human-readable reason.
     NotSatisfied(String),
@@ -17,7 +17,7 @@ pub enum TriggerResult {
 
 /// Read-only snapshot of the state needed to evaluate trigger conditions.
 ///
-/// Bundles the artifact store with per-skill activation timestamps and
+/// Bundles the artifact store with per-protocol activation timestamps and
 /// currently active signals. Evaluation is pure — no side effects.
 pub struct TriggerContext<'a> {
     pub store: &'a ArtifactStore,
@@ -27,12 +27,12 @@ pub struct TriggerContext<'a> {
 
 /// Evaluate whether a trigger condition is satisfied given current state.
 ///
-/// `skill_name` identifies the skill being evaluated, used to look up
+/// `protocol_name` identifies the protocol being evaluated, used to look up
 /// its last activation timestamp for `OnChange` conditions.
 pub fn evaluate(
     condition: &TriggerCondition,
     context: &TriggerContext<'_>,
-    skill_name: &str,
+    protocol_name: &str,
 ) -> TriggerResult {
     match condition {
         TriggerCondition::OnArtifact { name } => {
@@ -67,7 +67,7 @@ pub fn evaluate(
                     "no instances of artifact type '{name}' exist"
                 )),
                 Some(latest) => {
-                    match context.activation_timestamps.get(skill_name) {
+                    match context.activation_timestamps.get(protocol_name) {
                         None => {
                             // Never activated — any instance counts as changed.
                             TriggerResult::Satisfied
@@ -106,7 +106,7 @@ pub fn evaluate(
 
         TriggerCondition::AllOf { conditions } => {
             for child in conditions {
-                let result = evaluate(child, context, skill_name);
+                let result = evaluate(child, context, protocol_name);
                 if let TriggerResult::NotSatisfied(_) = result {
                     return result;
                 }
@@ -120,7 +120,7 @@ pub fn evaluate(
             }
             let mut reasons = Vec::new();
             for child in conditions {
-                match evaluate(child, context, skill_name) {
+                match evaluate(child, context, protocol_name) {
                     TriggerResult::Satisfied => return TriggerResult::Satisfied,
                     TriggerResult::NotSatisfied(reason) => {
                         reasons.push(reason);
@@ -161,7 +161,7 @@ mod tests {
 
         let ctx = empty_context(&store);
         let cond = TriggerCondition::OnArtifact { name: "doc".into() };
-        assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
     #[test]
@@ -178,7 +178,7 @@ mod tests {
         let ctx = empty_context(&store);
         let cond = TriggerCondition::OnArtifact { name: "doc".into() };
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -200,7 +200,7 @@ mod tests {
         let ctx = empty_context(&store);
         let cond = TriggerCondition::OnArtifact { name: "doc".into() };
         assert_eq!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(
                 "artifact type 'doc' has invalid, malformed, or stale instances".into()
             )
@@ -215,7 +215,7 @@ mod tests {
         let ctx = empty_context(&store);
         let cond = TriggerCondition::OnArtifact { name: "doc".into() };
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -232,7 +232,7 @@ mod tests {
         let ctx = empty_context(&store);
         let cond = TriggerCondition::OnArtifact { name: "doc".into() };
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -261,7 +261,7 @@ mod tests {
             active_signals: &signals,
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
-        assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
     #[test]
@@ -278,7 +278,7 @@ mod tests {
             )
             .unwrap();
 
-        let timestamps = HashMap::from([("skill".to_string(), 1000u64)]);
+        let timestamps = HashMap::from([("protocol".to_string(), 1000u64)]);
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
@@ -286,7 +286,7 @@ mod tests {
             active_signals: &signals,
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
-        assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
     #[test]
@@ -303,7 +303,7 @@ mod tests {
             )
             .unwrap();
 
-        let timestamps = HashMap::from([("skill".to_string(), 2000u64)]);
+        let timestamps = HashMap::from([("protocol".to_string(), 2000u64)]);
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
@@ -312,7 +312,7 @@ mod tests {
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -325,7 +325,7 @@ mod tests {
         let ctx = empty_context(&store);
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -344,7 +344,7 @@ mod tests {
             )
             .unwrap();
 
-        let timestamps = HashMap::from([("skill".to_string(), 1000u64)]);
+        let timestamps = HashMap::from([("protocol".to_string(), 1000u64)]);
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
@@ -353,7 +353,7 @@ mod tests {
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -383,7 +383,7 @@ mod tests {
             )
             .unwrap();
 
-        let timestamps = HashMap::from([("skill".to_string(), 1000u64)]);
+        let timestamps = HashMap::from([("protocol".to_string(), 1000u64)]);
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
@@ -392,7 +392,7 @@ mod tests {
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         // Any single instance newer than activation → satisfied.
-        assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
     // --- OnInvalid ---
@@ -407,7 +407,7 @@ mod tests {
 
         let ctx = empty_context(&store);
         let cond = TriggerCondition::OnInvalid { name: "doc".into() };
-        assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
     #[test]
@@ -426,7 +426,7 @@ mod tests {
 
         let ctx = empty_context(&store);
         let cond = TriggerCondition::OnInvalid { name: "doc".into() };
-        assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
     #[test]
@@ -440,7 +440,7 @@ mod tests {
         let ctx = empty_context(&store);
         let cond = TriggerCondition::OnInvalid { name: "doc".into() };
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -453,7 +453,7 @@ mod tests {
         let ctx = empty_context(&store);
         let cond = TriggerCondition::OnInvalid { name: "doc".into() };
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -471,7 +471,7 @@ mod tests {
         let cond = TriggerCondition::OnInvalid { name: "doc".into() };
         // Stale is not Invalid — should not satisfy on_invalid.
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -493,7 +493,7 @@ mod tests {
         let cond = TriggerCondition::OnSignal {
             name: "deploy".into(),
         };
-        assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
     #[test]
@@ -506,7 +506,7 @@ mod tests {
             name: "deploy".into(),
         };
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -535,7 +535,7 @@ mod tests {
                 TriggerCondition::OnSignal { name: "go".into() },
             ],
         };
-        assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
     #[test]
@@ -557,7 +557,7 @@ mod tests {
             ],
         };
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -569,7 +569,7 @@ mod tests {
         let ctx = empty_context(&store);
 
         let cond = TriggerCondition::AllOf { conditions: vec![] };
-        assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
     // --- AnyOf ---
@@ -593,7 +593,7 @@ mod tests {
                 TriggerCondition::OnSignal { name: "go".into() },
             ],
         };
-        assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
     #[test]
@@ -611,7 +611,7 @@ mod tests {
             ],
         };
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -624,7 +624,7 @@ mod tests {
 
         let cond = TriggerCondition::AnyOf { conditions: vec![] };
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -665,7 +665,7 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(evaluate(&cond, &ctx, "skill"), TriggerResult::Satisfied);
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
     #[test]
@@ -696,7 +696,7 @@ mod tests {
             ],
         };
         assert!(matches!(
-            evaluate(&cond, &ctx, "skill"),
+            evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
     }

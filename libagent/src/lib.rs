@@ -4,14 +4,14 @@
 //! that the runtime uses to enforce contracts between methodologies and agents.
 //! The CLI is a thin layer over this library.
 //!
-//! - [`model`] — Core types: `Manifest`, `ArtifactType`, `SkillDeclaration`, `TriggerCondition`
+//! - [`model`] — Core types: `Manifest`, `ArtifactType`, `ProtocolDeclaration`, `TriggerCondition`
 //! - [`manifest`] — TOML manifest parsing with uniqueness validation
 //! - [`validation`] — JSON Schema validation for artifact instances
-//! - [`graph`] — Dependency graph: topological ordering, cycle detection, blocked-skill identification
+//! - [`graph`] — Dependency graph: topological ordering, cycle detection, blocked-protocol identification
 //! - [`store`] — Artifact state tracking: validation status, content hashing, JSON persistence
 //! - [`scan`] — Filesystem reconciliation from artifact workspace into store state
 //! - [`trigger`] — Trigger condition evaluation against runtime state
-//! - [`enforcement`] — Pre/post-execution enforcement of skill contracts
+//! - [`enforcement`] — Pre/post-execution enforcement of protocol contracts
 //!
 //! See `ARCHITECTURE.md` in the repository root for data flow and design details.
 
@@ -32,7 +32,7 @@ pub use enforcement::{
 };
 pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use manifest::ManifestError;
-pub use model::{ArtifactType, Manifest, SkillDeclaration, TriggerCondition, is_valid_signal_name};
+pub use model::{ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition, is_valid_signal_name};
 pub use scan::{
     ArtifactRef, InvalidArtifact, MalformedArtifact, PartiallyScannedType, ScanError, ScanResult,
     UnreadableArtifact, scan,

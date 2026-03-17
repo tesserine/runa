@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{ArtifactStore, SkillDeclaration, ValidationStatus};
+use crate::{ArtifactStore, ProtocolDeclaration, ValidationStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,33 +26,33 @@ pub struct ExpectedOutputs {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextInjection {
-    pub skill: String,
+    pub protocol: String,
     pub inputs: Vec<ArtifactRef>,
     pub expected_outputs: ExpectedOutputs,
 }
 
-pub fn build_context(skill: &SkillDeclaration, store: &ArtifactStore) -> ContextInjection {
+pub fn build_context(protocol: &ProtocolDeclaration, store: &ArtifactStore) -> ContextInjection {
     let mut inputs = Vec::new();
 
     collect_inputs(
         &mut inputs,
         store,
-        &skill.requires,
+        &protocol.requires,
         ArtifactRelationship::Requires,
     );
     collect_inputs(
         &mut inputs,
         store,
-        &skill.accepts,
+        &protocol.accepts,
         ArtifactRelationship::Accepts,
     );
 
     ContextInjection {
-        skill: skill.name.clone(),
+        protocol: protocol.name.clone(),
         inputs,
         expected_outputs: ExpectedOutputs {
-            produces: skill.produces.clone(),
-            may_produce: skill.may_produce.clone(),
+            produces: protocol.produces.clone(),
+            may_produce: protocol.may_produce.clone(),
         },
     }
 }
@@ -108,7 +108,7 @@ mod tests {
             .record("notes", "notes", &notes_path, &json!({"title": "keep"}))
             .unwrap();
 
-        let skill = SkillDeclaration {
+        let protocol = ProtocolDeclaration {
             name: "implement".into(),
             requires: vec!["constraints".into()],
             accepts: vec!["notes".into()],
@@ -119,8 +119,8 @@ mod tests {
             },
         };
 
-        let context = build_context(&skill, &store);
-        assert_eq!(context.skill, "implement");
+        let context = build_context(&protocol, &store);
+        assert_eq!(context.protocol, "implement");
         assert_eq!(
             context.expected_outputs,
             ExpectedOutputs {
@@ -174,7 +174,7 @@ mod tests {
             )
             .unwrap();
 
-        let skill = SkillDeclaration {
+        let protocol = ProtocolDeclaration {
             name: "implement".into(),
             requires: vec!["constraints".into()],
             accepts: vec!["notes".into(), "missing".into()],
@@ -185,7 +185,7 @@ mod tests {
             },
         };
 
-        let context = build_context(&skill, &store);
+        let context = build_context(&protocol, &store);
         assert_eq!(context.inputs.len(), 1);
         assert_eq!(context.inputs[0].artifact_type, "constraints");
         assert_eq!(
