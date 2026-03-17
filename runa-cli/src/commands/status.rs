@@ -59,7 +59,7 @@ pub fn run(
 
     if json_output {
         let payload = StatusJson {
-            version: 1,
+            version: 2,
             methodology: &loaded.manifest.name,
             scan_warnings: warnings.clone(),
             protocols: evaluated.json_protocols(),

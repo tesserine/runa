@@ -163,7 +163,7 @@ fn status_json_reports_ordered_skills_and_status_specific_fields() {
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["version"], 1);
+    assert_eq!(value["version"], 2);
     assert_eq!(value["methodology"], "groundwork");
     assert_eq!(value["scan_warnings"], serde_json::json!([]));
 

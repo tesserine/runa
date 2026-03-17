@@ -93,7 +93,7 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["version"], 1);
+    assert_eq!(value["version"], 2);
     assert_eq!(value["methodology"], "groundwork");
     assert_eq!(value["scan_warnings"], serde_json::json!([]));
     assert!(value.get("cycle").is_none(), "{value:#}");

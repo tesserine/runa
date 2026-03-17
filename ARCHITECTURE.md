@@ -118,7 +118,7 @@ Runs an implicit workspace scan, then evaluates every protocol against current r
 Text output groups protocols as `READY`, `BLOCKED`, then `WAITING`, preserving the graph-derived protocol order within each group. `READY` entries list valid required and accepted artifact instances, `BLOCKED` entries list required artifact failures (`missing`, `invalid`, `stale`, `scan_incomplete`), and `WAITING` entries list detailed unsatisfied trigger conditions including the trigger condition and the specific `TriggerResult::NotSatisfied` reason. When scan reconciliation is partial, status prints scan warnings before the protocol groups and treats any protocol whose `requires` includes an affected artifact type as blocked because readiness cannot be verified; affected `accepts` types remain non-blocking and are omitted from the reported inputs.
 
 `--json` emits a versioned envelope:
-- `version` — integer envelope version, currently `1`
+- `version` — integer envelope version, currently `2`
 - `methodology` — manifest name
 - `scan_warnings` — array of human-readable warnings for partial scan findings and degraded signal loading, empty when neither condition applies
 - `protocols` — flat ordered array of protocol objects with `name`, `status`, `trigger`, plus the status-specific field `inputs`, `precondition_failures`, or `unsatisfied_conditions`
