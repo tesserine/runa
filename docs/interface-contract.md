@@ -17,7 +17,7 @@ An artifact type declaration:
 
 runa ships no artifact types. Every artifact type is methodology-owned.
 
-### 2. Skill Declarations
+### 2. Protocol Declarations
 
 A protocol declares its relationship to artifacts through four kinds of edges:
 
@@ -55,9 +55,9 @@ Nesting is permitted. `all_of(on_artifact("constraints"), any_of(on_signal("appr
 
 ## What runa Does
 
-runa is an event-driven runtime. The CLI commands (init, list, doctor, update) are windows into its state. The runtime itself is the monitoring loop.
+runa is an event-driven runtime. The CLI commands (init, scan, list, status, step, doctor, signal) are windows into its state. The runtime itself is the monitoring loop.
 
-Given the declarations above, runa provides four runtime capabilities:
+Given the declarations above, runa provides five runtime capabilities:
 
 **Monitoring.** runa watches artifact state and evaluates trigger conditions on relevant state changes. When a protocol's trigger condition becomes satisfied, runa activates the protocol.
 
@@ -66,6 +66,8 @@ Given the declarations above, runa provides four runtime capabilities:
 **Graph computation.** runa computes the dependency graph from protocol declarations. This enables: freshness analysis (which artifacts are stale), execution ordering (what can run now), cycle detection (where the methodology creates loops), and blocked-protocol identification (what's waiting on what).
 
 **Enforcement.** A protocol cannot execute if its `requires` artifacts are missing or invalid. A protocol's execution is incomplete if its `produces` artifacts are missing or invalid. These are hard constraints the runtime enforces regardless of what the methodology intends.
+
+**Context injection.** When a protocol is ready to execute, runa resolves which artifact instances the protocol needs — all valid `requires` instances and all available valid `accepts` instances — and delivers them as the protocol's input context alongside the expected output artifact types. The protocol receives its inputs without querying the store directly.
 
 ## What runa Does Not Do
 
