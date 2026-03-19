@@ -47,7 +47,9 @@ Stable agent-facing context injection contract. `build_context` gathers all vali
 
 ### `store.rs`
 
-Artifact state tracking keyed by `(type_name, instance_id)`. Each `ArtifactState` records the filesystem path, `ValidationStatus` (Valid, Invalid with violations, Malformed with a parse error, or Stale), millisecond-precision modification timestamp, a `sha256:<hex>` content hash, and a `schema_hash` for the artifact type schema used during validation. Parsed JSON uses canonical JSON hashing (recursively sorted keys); malformed files hash raw bytes. Persists as JSON files under `.runa/store/{type_name}/{instance_id}.json`. Uses atomic write (tmp + rename).
+Artifact state tracking keyed by `(type_name, instance_id)`. Each `ArtifactState` records the filesystem path, `ValidationStatus` (Valid, Invalid with violations, Malformed with a parse error, or Stale), millisecond-precision modification timestamp, a `sha256:<hex>` content hash, a `schema_hash` for the artifact type schema used during validation, and an optional `work_unit` string extracted from artifact JSON at record time. Parsed JSON uses canonical JSON hashing (recursively sorted keys); malformed files hash raw bytes. Persists as JSON files under `.runa/store/{type_name}/{instance_id}.json`. Uses atomic write (tmp + rename).
+
+Query methods (`is_valid`, `has_any_invalid`, `instances_of`, `latest_modification_ms`) accept an `Option<&str>` work unit filter. `None` returns all instances (unscoped). `Some(wu)` returns instances matching that work unit plus unpartitioned instances (those with no `work_unit` field). This scoping threads through trigger evaluation, enforcement, and context injection.
 
 ### `scan.rs`
 
@@ -77,7 +79,7 @@ Returns `EnforcementError` on failure, containing the protocol name, enforcement
       {instance_id}.json        # Agent-produced artifact file
   store/                        # Internal artifact state store (not configurable)
     {type_name}/
-      {instance_id}.json        # ArtifactState: path, status, last_modified_ms, content_hash, schema_hash
+      {instance_id}.json        # ArtifactState: path, status, last_modified_ms, content_hash, schema_hash, work_unit
 ```
 
 ## CLI Commands

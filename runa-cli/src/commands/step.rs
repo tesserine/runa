@@ -99,7 +99,7 @@ pub fn run(
             let protocol = protocol_map
                 .get(entry.name.as_str())
                 .expect("planned protocol must exist in manifest");
-            let mut context = libagent::context::build_context(protocol, &loaded.store);
+            let mut context = libagent::context::build_context(protocol, &loaded.store, None);
             context.inputs.retain(|input| {
                 input.relationship == ArtifactRelationship::Requires
                     || !scan_findings

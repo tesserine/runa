@@ -178,6 +178,7 @@ pub(crate) fn evaluate_protocols(
         store: &loaded.store,
         activation_timestamps: &timestamps,
         active_signals,
+        work_unit: None,
     };
 
     let mut ready = Vec::new();
@@ -207,7 +208,7 @@ pub(crate) fn evaluate_protocols(
             TriggerState::Satisfied => {
                 let mut precondition_failures = scan_failures;
 
-                if let Err(err) = enforce_preconditions(protocol, &loaded.store) {
+                if let Err(err) = enforce_preconditions(protocol, &loaded.store, None) {
                     precondition_failures.extend(err.failures.iter().map(failure_entry));
                 }
 
@@ -252,7 +253,7 @@ pub(crate) fn evaluate_protocols(
                     }
                 } else {
                     let mut precondition_failures = scan_failures;
-                    if let Err(err) = enforce_preconditions(protocol, &loaded.store) {
+                    if let Err(err) = enforce_preconditions(protocol, &loaded.store, None) {
                         precondition_failures.extend(err.failures.iter().map(failure_entry));
                     }
                     ProtocolEntry {
@@ -326,7 +327,7 @@ fn collect_inputs(
         if affected_types.contains(artifact_type) {
             continue;
         }
-        for (instance_id, state) in store.instances_of(artifact_type) {
+        for (instance_id, state) in store.instances_of(artifact_type, None) {
             if matches!(state.status, libagent::ValidationStatus::Valid) {
                 inputs.push(InputEntry {
                     artifact_type: artifact_type.clone(),
@@ -342,7 +343,7 @@ fn collect_inputs(
         if affected_types.contains(artifact_type) {
             continue;
         }
-        for (instance_id, state) in store.instances_of(artifact_type) {
+        for (instance_id, state) in store.instances_of(artifact_type, None) {
             if matches!(state.status, libagent::ValidationStatus::Valid) {
                 inputs.push(InputEntry {
                     artifact_type: artifact_type.clone(),
@@ -584,14 +585,17 @@ fn primitive_trigger_eval(
 }
 
 fn has_visible_defect(store: &libagent::ArtifactStore, artifact_type: &str) -> bool {
-    store.instances_of(artifact_type).iter().any(|(_, state)| {
-        matches!(
-            state.status,
-            libagent::ValidationStatus::Invalid(_)
-                | libagent::ValidationStatus::Malformed(_)
-                | libagent::ValidationStatus::Stale
-        )
-    })
+    store
+        .instances_of(artifact_type, None)
+        .iter()
+        .any(|(_, state)| {
+            matches!(
+                state.status,
+                libagent::ValidationStatus::Invalid(_)
+                    | libagent::ValidationStatus::Malformed(_)
+                    | libagent::ValidationStatus::Stale
+            )
+        })
 }
 
 fn append_unique(target: &mut Vec<String>, values: Vec<String>) {

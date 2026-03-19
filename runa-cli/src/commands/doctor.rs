@@ -74,7 +74,7 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, D
     }
 
     for type_name in &type_names {
-        let instances = loaded.store.instances_of(type_name);
+        let instances = loaded.store.instances_of(type_name, None);
         if instances.is_empty() {
             println!("  {type_name}: no instances");
             continue;
@@ -159,7 +159,7 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, D
             continue;
         }
 
-        if let Err(err) = enforce_preconditions(protocol, &loaded.store) {
+        if let Err(err) = enforce_preconditions(protocol, &loaded.store, None) {
             problems += 1;
             println!(
                 "  {}: cannot execute ({})",

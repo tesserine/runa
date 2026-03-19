@@ -31,7 +31,11 @@ pub struct ContextInjection {
     pub expected_outputs: ExpectedOutputs,
 }
 
-pub fn build_context(protocol: &ProtocolDeclaration, store: &ArtifactStore) -> ContextInjection {
+pub fn build_context(
+    protocol: &ProtocolDeclaration,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+) -> ContextInjection {
     let mut inputs = Vec::new();
 
     collect_inputs(
@@ -39,12 +43,14 @@ pub fn build_context(protocol: &ProtocolDeclaration, store: &ArtifactStore) -> C
         store,
         &protocol.requires,
         ArtifactRelationship::Requires,
+        work_unit,
     );
     collect_inputs(
         &mut inputs,
         store,
         &protocol.accepts,
         ArtifactRelationship::Accepts,
+        work_unit,
     );
 
     ContextInjection {
@@ -62,9 +68,10 @@ fn collect_inputs(
     store: &ArtifactStore,
     artifact_types: &[String],
     relationship: ArtifactRelationship,
+    work_unit: Option<&str>,
 ) {
     for artifact_type in artifact_types {
-        for (instance_id, state) in store.instances_of(artifact_type) {
+        for (instance_id, state) in store.instances_of(artifact_type, work_unit) {
             if matches!(state.status, ValidationStatus::Valid) {
                 target.push(ArtifactRef {
                     artifact_type: artifact_type.clone(),
@@ -119,7 +126,7 @@ mod tests {
             },
         };
 
-        let context = build_context(&protocol, &store);
+        let context = build_context(&protocol, &store, None);
         assert_eq!(context.protocol, "implement");
         assert_eq!(
             context.expected_outputs,
@@ -185,7 +192,7 @@ mod tests {
             },
         };
 
-        let context = build_context(&protocol, &store);
+        let context = build_context(&protocol, &store, None);
         assert_eq!(context.inputs.len(), 1);
         assert_eq!(context.inputs[0].artifact_type, "constraints");
         assert_eq!(
@@ -212,5 +219,59 @@ mod tests {
             relationship: ArtifactRelationship::Requires,
         };
         assert!(serde_json::to_string(&artifact).is_ok());
+    }
+
+    #[test]
+    fn build_context_scoped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["constraints"]);
+
+        // WU-A artifact.
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("constraints/a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        // WU-B artifact.
+        store
+            .record(
+                "constraints",
+                "b1",
+                Path::new("constraints/b1.json"),
+                &json!({"title": "B", "work_unit": "wu-b"}),
+            )
+            .unwrap();
+        // Unpartitioned artifact.
+        store
+            .record(
+                "constraints",
+                "shared",
+                Path::new("constraints/shared.json"),
+                &json!({"title": "shared"}),
+            )
+            .unwrap();
+
+        let protocol = ProtocolDeclaration {
+            name: "implement".into(),
+            requires: vec!["constraints".into()],
+            accepts: Vec::new(),
+            produces: Vec::new(),
+            may_produce: Vec::new(),
+            trigger: crate::TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        };
+
+        // Scoped to WU-A: sees a1 + shared, not b1.
+        let context = build_context(&protocol, &store, Some("wu-a"));
+        let ids: Vec<&str> = context
+            .inputs
+            .iter()
+            .map(|i| i.instance_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["a1", "shared"]);
     }
 }

@@ -174,12 +174,13 @@ fn check_artifact(
     store: &ArtifactStore,
     artifact_type: &str,
     relationship: Relationship,
+    work_unit: Option<&str>,
 ) -> Option<ArtifactFailure> {
-    if store.is_valid(artifact_type) {
+    if store.is_valid(artifact_type, work_unit) {
         return None;
     }
 
-    let instances = store.instances_of(artifact_type);
+    let instances = store.instances_of(artifact_type, work_unit);
     if instances.is_empty() {
         return Some(ArtifactFailure::Missing {
             artifact_type: artifact_type.to_string(),
@@ -233,11 +234,14 @@ fn check_artifact(
 pub fn enforce_preconditions(
     protocol: &ProtocolDeclaration,
     store: &ArtifactStore,
+    work_unit: Option<&str>,
 ) -> Result<(), EnforcementError> {
     let mut failures = Vec::new();
 
     for artifact_type in &protocol.requires {
-        if let Some(failure) = check_artifact(store, artifact_type, Relationship::Requires) {
+        if let Some(failure) =
+            check_artifact(store, artifact_type, Relationship::Requires, work_unit)
+        {
             failures.push(failure);
         }
     }
@@ -268,22 +272,27 @@ pub fn enforce_preconditions(
 pub fn enforce_postconditions(
     protocol: &ProtocolDeclaration,
     store: &ArtifactStore,
+    work_unit: Option<&str>,
 ) -> Result<(), EnforcementError> {
     let mut failures = Vec::new();
 
     for artifact_type in &protocol.produces {
-        if let Some(failure) = check_artifact(store, artifact_type, Relationship::Produces) {
+        if let Some(failure) =
+            check_artifact(store, artifact_type, Relationship::Produces, work_unit)
+        {
             failures.push(failure);
         }
     }
 
     for artifact_type in &protocol.may_produce {
         // may_produce: absent is ok — only check if instances exist.
-        let instances = store.instances_of(artifact_type);
+        let instances = store.instances_of(artifact_type, work_unit);
         if instances.is_empty() {
             continue;
         }
-        if let Some(failure) = check_artifact(store, artifact_type, Relationship::MayProduce) {
+        if let Some(failure) =
+            check_artifact(store, artifact_type, Relationship::MayProduce, work_unit)
+        {
             failures.push(failure);
         }
     }
@@ -338,7 +347,7 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol("design", &["doc"], &[], &[], &[]);
-        assert!(enforce_preconditions(&protocol, &store).is_ok());
+        assert!(enforce_preconditions(&protocol, &store, None).is_ok());
     }
 
     #[test]
@@ -347,7 +356,7 @@ mod tests {
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
         let protocol = make_protocol("design", &["doc"], &[], &[], &[]);
-        let err = enforce_preconditions(&protocol, &store).unwrap_err();
+        let err = enforce_preconditions(&protocol, &store, None).unwrap_err();
         assert_eq!(err.protocol_name, "design");
         assert_eq!(err.phase, Phase::Pre);
         assert_eq!(err.failures.len(), 1);
@@ -367,7 +376,7 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol("design", &["doc"], &[], &[], &[]);
-        let err = enforce_preconditions(&protocol, &store).unwrap_err();
+        let err = enforce_preconditions(&protocol, &store, None).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
             &err.failures[0],
@@ -386,7 +395,7 @@ mod tests {
         store.invalidate("doc", "a").unwrap();
 
         let protocol = make_protocol("design", &["doc"], &[], &[], &[]);
-        let err = enforce_preconditions(&protocol, &store).unwrap_err();
+        let err = enforce_preconditions(&protocol, &store, None).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
             &err.failures[0],
@@ -401,7 +410,7 @@ mod tests {
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
         let protocol = make_protocol("design", &[], &[], &[], &[]);
-        assert!(enforce_preconditions(&protocol, &store).is_ok());
+        assert!(enforce_preconditions(&protocol, &store, None).is_ok());
     }
 
     #[test]
@@ -411,7 +420,7 @@ mod tests {
 
         // "notes" is in accepts and is missing — should not cause failure.
         let protocol = make_protocol("design", &[], &["notes"], &[], &[]);
-        assert!(enforce_preconditions(&protocol, &store).is_ok());
+        assert!(enforce_preconditions(&protocol, &store, None).is_ok());
     }
 
     #[test]
@@ -420,7 +429,7 @@ mod tests {
         let store = make_store(&tmp.path().join("s"), vec!["doc", "spec"]);
 
         let protocol = make_protocol("design", &["doc", "spec"], &[], &[], &[]);
-        let err = enforce_preconditions(&protocol, &store).unwrap_err();
+        let err = enforce_preconditions(&protocol, &store, None).unwrap_err();
         assert_eq!(err.failures.len(), 2);
         // Both should be Missing.
         for failure in &err.failures {
@@ -443,7 +452,7 @@ mod tests {
         store.invalidate("doc", "ok").unwrap();
 
         let protocol = make_protocol("design", &["doc"], &[], &[], &[]);
-        let err = enforce_preconditions(&protocol, &store).unwrap_err();
+        let err = enforce_preconditions(&protocol, &store, None).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         // Invalid takes precedence over Stale.
         assert!(matches!(
@@ -464,7 +473,7 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol("design", &[], &[], &["doc"], &[]);
-        assert!(enforce_postconditions(&protocol, &store).is_ok());
+        assert!(enforce_postconditions(&protocol, &store, None).is_ok());
     }
 
     #[test]
@@ -473,7 +482,7 @@ mod tests {
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
         let protocol = make_protocol("design", &[], &[], &["doc"], &[]);
-        let err = enforce_postconditions(&protocol, &store).unwrap_err();
+        let err = enforce_postconditions(&protocol, &store, None).unwrap_err();
         assert_eq!(err.phase, Phase::Post);
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
@@ -492,7 +501,7 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol("design", &[], &[], &["doc"], &[]);
-        let err = enforce_postconditions(&protocol, &store).unwrap_err();
+        let err = enforce_postconditions(&protocol, &store, None).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
             &err.failures[0],
@@ -513,7 +522,7 @@ mod tests {
         store.invalidate("doc", "a").unwrap();
 
         let protocol = make_protocol("design", &[], &[], &["doc"], &[]);
-        let err = enforce_postconditions(&protocol, &store).unwrap_err();
+        let err = enforce_postconditions(&protocol, &store, None).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
             &err.failures[0],
@@ -534,7 +543,7 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol("design", &[], &[], &["doc"], &["notes"]);
-        assert!(enforce_postconditions(&protocol, &store).is_ok());
+        assert!(enforce_postconditions(&protocol, &store, None).is_ok());
     }
 
     #[test]
@@ -549,7 +558,7 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol("design", &[], &[], &["doc"], &["notes"]);
-        let err = enforce_postconditions(&protocol, &store).unwrap_err();
+        let err = enforce_postconditions(&protocol, &store, None).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
             &err.failures[0],
@@ -571,7 +580,7 @@ mod tests {
         store.invalidate("notes", "n1").unwrap();
 
         let protocol = make_protocol("design", &[], &[], &["doc"], &["notes"]);
-        let err = enforce_postconditions(&protocol, &store).unwrap_err();
+        let err = enforce_postconditions(&protocol, &store, None).unwrap_err();
         assert_eq!(err.failures.len(), 1);
         assert!(matches!(
             &err.failures[0],
@@ -590,7 +599,7 @@ mod tests {
 
         // "notes" has no instances — may_produce should not fail.
         let protocol = make_protocol("design", &[], &[], &["doc"], &["notes"]);
-        assert!(enforce_postconditions(&protocol, &store).is_ok());
+        assert!(enforce_postconditions(&protocol, &store, None).is_ok());
     }
 
     #[test]
@@ -599,7 +608,7 @@ mod tests {
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
         let protocol = make_protocol("design", &[], &[], &[], &[]);
-        assert!(enforce_postconditions(&protocol, &store).is_ok());
+        assert!(enforce_postconditions(&protocol, &store, None).is_ok());
     }
 
     #[test]
@@ -612,7 +621,7 @@ mod tests {
         // "context" is in accepts and is missing — should not cause failure.
 
         let protocol = make_protocol("design", &[], &["context"], &["doc"], &[]);
-        assert!(enforce_postconditions(&protocol, &store).is_ok());
+        assert!(enforce_postconditions(&protocol, &store, None).is_ok());
     }
 
     // --- Display formatting ---
@@ -686,5 +695,71 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("requires artifact type 'doc' which is stale"));
         assert!(msg.contains("2 instances need revalidation"));
+    }
+
+    // --- Work unit scoping ---
+
+    #[test]
+    fn preconditions_scoped() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        // Valid in WU-A.
+        store
+            .record(
+                "doc",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        // Invalid in WU-B.
+        store
+            .record(
+                "doc",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"bad": true, "work_unit": "wu-b"}),
+            )
+            .unwrap();
+
+        let protocol = make_protocol("design", &["doc"], &[], &[], &[]);
+
+        // Scoped to WU-A: passes.
+        assert!(enforce_preconditions(&protocol, &store, Some("wu-a")).is_ok());
+        // Scoped to WU-B: fails.
+        assert!(enforce_preconditions(&protocol, &store, Some("wu-b")).is_err());
+        // Unscoped: fails (sees invalid in WU-B).
+        assert!(enforce_preconditions(&protocol, &store, None).is_err());
+    }
+
+    #[test]
+    fn postconditions_scoped() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        // Valid in WU-A.
+        store
+            .record(
+                "doc",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        // Invalid in WU-B.
+        store
+            .record(
+                "doc",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"bad": true, "work_unit": "wu-b"}),
+            )
+            .unwrap();
+
+        let protocol = make_protocol("design", &[], &[], &["doc"], &[]);
+
+        // Scoped to WU-A: passes.
+        assert!(enforce_postconditions(&protocol, &store, Some("wu-a")).is_ok());
+        // Scoped to WU-B: fails.
+        assert!(enforce_postconditions(&protocol, &store, Some("wu-b")).is_err());
     }
 }

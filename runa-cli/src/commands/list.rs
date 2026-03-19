@@ -84,7 +84,7 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), Lis
 
         println!("     trigger:  {}", protocol.trigger);
 
-        if let Err(err) = enforce_preconditions(protocol, &loaded.store) {
+        if let Err(err) = enforce_preconditions(protocol, &loaded.store, None) {
             println!("     BLOCKED:  {}", format_failures(&err.failures));
         }
     }
