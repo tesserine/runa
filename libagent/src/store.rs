@@ -226,6 +226,7 @@ impl ArtifactStore {
             raw_bytes,
             error,
             current_time_ms(),
+            None,
         )
     }
 
@@ -392,6 +393,7 @@ impl ArtifactStore {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_malformed_with_timestamp(
         &mut self,
         artifact_type: &str,
@@ -400,6 +402,7 @@ impl ArtifactStore {
         raw_bytes: &[u8],
         error: impl Into<String>,
         timestamp_ms: u64,
+        work_unit: Option<String>,
     ) -> Result<(), StoreError> {
         let schema_hash = self.schema_hash_for(artifact_type)?;
         let state = ArtifactState {
@@ -408,7 +411,7 @@ impl ArtifactStore {
             last_modified_ms: timestamp_ms,
             content_hash: raw_content_hash(raw_bytes),
             schema_hash,
-            work_unit: None,
+            work_unit,
         };
         self.record_inner(artifact_type, instance_id, state)
     }
@@ -1336,5 +1339,80 @@ mod tests {
             Some(2000)
         );
         assert_eq!(store.latest_modification_ms("report", None), Some(2000));
+    }
+
+    #[test]
+    fn malformed_preserves_previous_work_unit() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        // Record valid artifact with work_unit.
+        store
+            .record(
+                "report",
+                "r1",
+                Path::new("r1.json"),
+                &json!({"title": "ok", "work_unit": "wu-1"}),
+            )
+            .unwrap();
+        assert_eq!(
+            store.get("report", "r1").unwrap().work_unit,
+            Some("wu-1".to_string())
+        );
+
+        // Now record it as malformed, passing previous work_unit.
+        store
+            .record_malformed_with_timestamp(
+                "report",
+                "r1",
+                Path::new("r1.json"),
+                b"{ nope }",
+                "parse error",
+                2000,
+                Some("wu-1".to_string()),
+            )
+            .unwrap();
+
+        let state = store.get("report", "r1").unwrap();
+        assert!(matches!(state.status, ValidationStatus::Malformed(_)));
+        assert_eq!(state.work_unit, Some("wu-1".to_string()));
+    }
+
+    #[test]
+    fn malformed_without_prior_state_gets_none() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        store
+            .record_malformed("report", "r1", Path::new("r1.json"), b"{ nope }", "oops")
+            .unwrap();
+
+        assert_eq!(store.get("report", "r1").unwrap().work_unit, None);
+    }
+
+    #[test]
+    fn has_any_invalid_scoped_with_malformed() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        // Malformed artifact scoped to wu-b.
+        store
+            .record_malformed_with_timestamp(
+                "report",
+                "bad",
+                Path::new("bad.json"),
+                b"{ nope }",
+                "oops",
+                1000,
+                Some("wu-b".to_string()),
+            )
+            .unwrap();
+
+        // Not visible to wu-a.
+        assert!(!store.has_any_invalid("report", Some("wu-a")));
+        // Visible to wu-b.
+        assert!(store.has_any_invalid("report", Some("wu-b")));
+        // Visible unscoped.
+        assert!(store.has_any_invalid("report", None));
     }
 }
