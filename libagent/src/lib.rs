@@ -15,17 +15,21 @@
 //!
 //! See `ARCHITECTURE.md` in the repository root for data flow and design details.
 
+pub mod activation;
 pub mod context;
 pub mod enforcement;
 pub mod graph;
 pub mod manifest;
 pub mod model;
+pub mod project;
 pub mod scan;
+pub mod selection;
 pub mod store;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 pub mod trigger;
 pub mod validation;
+pub use activation::{ActivationError, ActivationStore};
 pub use enforcement::{
     ArtifactFailure, EnforcementError, Phase, Relationship, enforce_postconditions,
     enforce_preconditions,
@@ -35,10 +39,12 @@ pub use manifest::ManifestError;
 pub use model::{
     ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition, is_valid_signal_name,
 };
+pub use project::{Config, LoadedProject, ProjectError, State};
 pub use scan::{
     ArtifactRef, InvalidArtifact, MalformedArtifact, PartiallyScannedType, ScanError, ScanResult,
     UnreadableArtifact, scan,
 };
+pub use selection::{Candidate, discover_ready_candidates};
 pub use store::{ArtifactState, ArtifactStore, StoreError, ValidationStatus};
 pub use trigger::{TriggerContext, TriggerResult, evaluate as evaluate_trigger};
 pub use validation::{ValidationError, Violation};

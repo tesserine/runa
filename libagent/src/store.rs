@@ -378,6 +378,11 @@ impl ArtifactStore {
             .max()
     }
 
+    /// Look up a registered artifact type by name.
+    pub fn artifact_type(&self, name: &str) -> Option<&ArtifactType> {
+        self.artifact_types.get(name)
+    }
+
     pub(crate) fn record_with_timestamp(
         &mut self,
         artifact_type: &str,

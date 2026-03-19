@@ -4,14 +4,15 @@ Runa is a cognitive runtime for AI agents. This document describes the codebase 
 
 ## Workspace Structure
 
-Two crates, Rust 2024 edition, resolver v3:
+Three crates, Rust 2024 edition, resolver v3:
 
-- **`libagent`** — All domain logic: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, context injection construction, pre/post-execution enforcement.
+- **`libagent`** — All domain logic: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, context injection construction, pre/post-execution enforcement, project loading, activation timestamp persistence, and protocol selection.
 - **`runa-cli`** — Thin CLI binary. Clap-based argument parsing, delegates to libagent. No domain logic.
+- **`runa-mcp`** — MCP server binary. Single-session stdio process that serves one (protocol, work_unit) pair per invocation. Loads the project, selects a ready candidate, exposes protocol outputs as MCP tools and context as an MCP prompt, then records activation on success.
 
 ## Data Flow
 
-These are library capabilities exposed by libagent. No runtime loop exists yet.
+These are library capabilities exposed by libagent and consumed by both the CLI and the MCP server.
 
 1. **TOML manifest → model types.** `manifest::parse` reads a methodology manifest file, deserializes TOML into `Manifest` (containing `ArtifactType` and `ProtocolDeclaration` vectors), and validates name uniqueness at parse time.
 
@@ -21,7 +22,11 @@ These are library capabilities exposed by libagent. No runtime loop exists yet.
 
 4. **Trigger evaluation.** `trigger::evaluate` recursively evaluates a `TriggerCondition` tree against a `TriggerContext` (artifact store, per-protocol activation timestamps, active signals) and returns a `TriggerResult`. Pure function, no side effects. In the CLI, active signals are loaded from `.runa/signals.json`; if the file is absent, evaluation treats the signal set as empty.
 
-5. **Context injection construction.** `context::build_context` converts a ready `ProtocolDeclaration` plus the current artifact store into the stable agent-facing payload used by `runa step`: protocol name, available required/accepted artifact refs, and expected outputs.
+5. **Context injection construction.** `context::build_context` converts a ready `ProtocolDeclaration` plus the current artifact store into the stable agent-facing payload used by `runa step` and `runa-mcp`: protocol name, available required/accepted artifact refs, and expected outputs.
+
+6. **Protocol selection.** `selection::discover_ready_candidates` evaluates protocols in topological order, discovers candidate work_units from artifact instances, and returns (protocol, work_unit) pairs where trigger, preconditions, and scan trust are all satisfied. Already-completed work (activated with passing postconditions) is suppressed.
+
+7. **MCP runtime loop.** `runa-mcp` loads the project, scans, selects the first ready candidate, serves an MCP session via stdio, then re-scans and checks postconditions. Successful postconditions trigger activation timestamp recording.
 
 ## Modules
 
@@ -67,6 +72,32 @@ Pre/post-execution enforcement of protocol contracts. Two pure functions that ch
 
 Returns `EnforcementError` on failure, containing the protocol name, enforcement phase, and a list of `ArtifactFailure` entries. Three failure variants distinguish corrective actions: `Missing` (no instances), `Invalid` (schema violations), `Stale` (needs revalidation).
 
+### `project.rs`
+
+Shared project loading logic used by both `runa-cli` and `runa-mcp`. Config resolution chain (explicit override → `.runa/config.toml` → XDG config → error), manifest parsing, dependency graph construction, and artifact store initialization. `load_signals` reads `.runa/signals.json` with graceful fallback on missing or malformed files.
+
+### `activation.rs`
+
+Per-(protocol, work_unit) activation timestamp persistence. `ActivationStore` stores millisecond timestamps keyed by (protocol name, optional work_unit). Persists as `.runa/activations.json` using atomic write (tmp + rename). `timestamps_for_trigger_context` bridges to the existing `TriggerContext.activation_timestamps` interface by producing a scoped `HashMap<String, u64>`.
+
+### `selection.rs`
+
+Work-unit discovery and protocol selection. `discover_ready_candidates` evaluates protocols in topological order, collecting candidate work_units from artifact instances referenced by the protocol's edges and trigger tree. For each candidate: checks scan trust (skips if any `requires` type is partially scanned), evaluates the trigger condition, checks preconditions, and suppresses already-completed work. Returns candidates in topological protocol order with deterministic lexicographic work_unit ordering within each protocol.
+
+## runa-mcp Modules
+
+### `main.rs`
+
+Runtime loop: loads the project, scans the workspace, discovers ready candidates, selects the first, builds the MCP handler, serves via stdio transport, then re-scans and checks postconditions. Records activation timestamps on successful postcondition checks.
+
+### `handler.rs`
+
+`ServerHandler` implementation. `RunaHandler` derives one MCP tool per output artifact type (`produces` + `may_produce`), with tool input schemas derived from artifact type JSON Schemas (with `work_unit` stripped). `call_tool` validates artifacts before writing, then writes to the workspace and records in the store. A single `"context"` prompt delivers the protocol context.
+
+### `context.rs`
+
+Natural language context prompt renderer. Transforms `ContextInjection` into a `GetPromptResult` with prose-rendered artifact content. JSON objects become labeled key-value sections with humanized keys, arrays become numbered lists, and nested structures are indented. Artifact read/parse errors are rendered inline rather than failing the prompt.
+
 ## `.runa/` Directory Layout
 
 ```
@@ -74,6 +105,7 @@ Returns `EnforcementError` on failure, containing the protocol name, enforcement
   config.toml                   # Created by `runa init`: methodology_path, optional artifacts_dir
   state.toml                    # Created by `runa init`: initialized_at, runa_version
   signals.json                  # Optional runtime signal state: { "active": ["name", ...] }
+  activations.json              # Per-(protocol, work_unit) activation timestamps (created by runa-mcp)
   workspace/                    # Default artifact workspace (configurable via artifacts_dir)
     {type_name}/
       {instance_id}.json        # Agent-produced artifact file

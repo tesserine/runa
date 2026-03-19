@@ -13,16 +13,19 @@ Runa is a cognitive runtime for AI agents, written in Rust. It enforces contract
 
 ```bash
 cargo build                        # Debug build
-cargo test --lib                   # Run all unit tests
+cargo test --lib                   # Run all unit tests (libagent + runa-cli)
+cargo test -p runa-mcp             # Run runa-mcp tests (binary crate)
 cargo test --lib <test_name>       # Run a single test
 cargo run --bin runa -- --version  # Run CLI
+cargo run --bin runa-mcp           # Run MCP server (stdio)
 ```
 
 ## Architecture
 
 **Workspace crates:**
-- `libagent` — Core library: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, pre/post-execution enforcement
-- `runa-cli` — CLI binary (minimal, depends on libagent). Commands in `commands/`, shared project loading in `project.rs`
+- `libagent` — Core library: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, pre/post-execution enforcement, project loading, activation timestamps, protocol selection
+- `runa-cli` — CLI binary (minimal, depends on libagent). Commands in `commands/`, re-exports project loading from libagent
+- `runa-mcp` — MCP server binary. Single-session stdio process: loads project, selects a ready (protocol, work_unit) pair, serves MCP tools and prompts, records activation on success
 
 **libagent modules:**
 - `model.rs` — Core types: `Manifest`, `ArtifactType`, `ProtocolDeclaration`, `TriggerCondition`
@@ -34,9 +37,12 @@ cargo run --bin runa -- --version  # Run CLI
 - `context.rs` — Agent-facing context injection contract: stable `ContextInjection` payload, ordered input artifact refs with text paths/hashes/relationships, expected outputs, `build_context()`
 - `trigger.rs` — Trigger condition evaluation: recursive evaluator, six condition variants, pure function against TriggerContext
 - `enforcement.rs` — Pre/post-execution enforcement: `enforce_preconditions` checks `requires`, `enforce_postconditions` checks `produces`/`may_produce`, three failure variants (Missing, Invalid, Stale)
+- `project.rs` — Shared project loading: `Config` and `State` structs, config resolution chain (`--config` / `RUNA_CONFIG` / `.runa/config.toml` / XDG), `load_signals()` for optional `.runa/signals.json` with warning-based fallback, `load()` function: resolves workspace and store paths, reads state, parses manifest, builds graph, opens store
+- `activation.rs` — Per-(protocol, work_unit) activation timestamp persistence in `.runa/activations.json`, atomic write, scoped timestamp queries for TriggerContext
+- `selection.rs` — Work-unit discovery and protocol selection: `discover_ready_candidates` evaluates protocols in topological order, discovers work_units from artifact instances, checks trigger/preconditions/scan-trust, suppresses completed work
 
 **runa-cli modules:**
-- `project.rs` — `Config` and `State` structs, config resolution chain (`--config` / `RUNA_CONFIG` / `.runa/config.toml` / XDG), standalone `load_signals()` for optional `.runa/signals.json` with warning-based fallback, `load()` function: resolves workspace and store paths, reads state, parses manifest, builds graph, opens store
+- `project.rs` — Re-exports `libagent::project::*`
 - `commands/init.rs` — `runa init`: parse manifest, create `.runa/config.toml`, `.runa/state.toml`, `.runa/store/`, and the artifact workspace
 - `commands/signal.rs` — `runa signal begin|clear|list`: validate signal names, persist operator signals in `.runa/signals.json`, and report the active set
 - `commands/list.rs` — `runa list`: implicitly scan, then display protocols in execution order with dependencies and blocked status
@@ -44,6 +50,11 @@ cargo run --bin runa -- --version  # Run CLI
 - `commands/scan.rs` — `runa scan`: reconcile the artifact workspace into the internal store and report findings
 - `commands/status.rs` — `runa status`: implicitly scan, then classify protocols as READY / BLOCKED / WAITING using persisted active signals plus an empty activation timestamp map; optional `--json` output with versioned machine-readable status and detailed unsatisfied trigger reasons
 - `commands/step.rs` — `runa step`: implicitly scan, then build dry-run execution plans for READY protocols using shared status evaluation, persisted active signals, and `libagent::context::build_context`; optional `--json` output with plan + full protocol status
+
+**runa-mcp modules:**
+- `main.rs` — Runtime loop: load project, scan, select first ready candidate, build handler, serve stdio, re-scan, check postconditions, record activation
+- `handler.rs` — `ServerHandler` impl: derives MCP tools from output artifact type schemas (with `work_unit` stripped), validates and writes artifacts on `call_tool`, serves protocol context on `get_prompt`
+- `context.rs` — Natural language context prompt renderer: transforms `ContextInjection` into prose with humanized keys, numbered lists, indented nesting
 
 **Key design:**
 - `TriggerCondition` uses tagged enum serialization (`#[serde(tag = "type")]`) with `all_of`/`any_of` composition
@@ -61,7 +72,7 @@ principles and architectural decision records (ADRs).
 
 ## Dependencies
 
-Rust 2024 edition, resolver v3. Minimal dependency set: serde, serde_json, toml, jsonschema, sha2. No async/network dependencies.
+Rust 2024 edition, resolver v3. libagent dependency set: serde, serde_json, toml, jsonschema, sha2. runa-mcp adds rmcp (MCP protocol) and tokio (async runtime, single-threaded).
 
 ## Development Discipline
 

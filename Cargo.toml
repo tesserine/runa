@@ -1,5 +1,5 @@
 [workspace]
-members = ["runa-cli", "libagent"]
+members = ["runa-cli", "libagent", "runa-mcp"]
 resolver = "3"
 
 [workspace.package]
@@ -16,3 +16,5 @@ tempfile = "3"
 jsonschema = { version = "0.45", default-features = false }
 toml = "0.8"
 sha2 = "0.10"
+rmcp = { version = "0.2", features = ["transport-io", "server"] }
+tokio = { version = "1", features = ["rt", "macros"] }
