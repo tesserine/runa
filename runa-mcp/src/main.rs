@@ -134,7 +134,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut store = ArtifactStore::new(loaded.manifest.artifact_types.clone(), store_dir)?;
     let post_scan = scan(&loaded.workspace_dir, &mut store)?;
 
-    // 12. Check whether the session produced output and postconditions pass.
+    // 12. Check postconditions and record completion.
     let work_unit_ref = candidate.work_unit.as_deref();
     let output_type_names: HashSet<&str> = protocol
         .produces
