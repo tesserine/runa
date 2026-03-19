@@ -98,7 +98,15 @@ pub fn discover_ready_candidates(
             // Skip suppression when the trigger contains on_change — the trigger
             // was satisfied because inputs changed after the last activation, so
             // the protocol should re-run even if prior outputs are still valid.
+            // Also skip when output types are partially scanned — postconditions
+            // against stale data are untrusted.
+            let outputs_partially_scanned = protocol
+                .produces
+                .iter()
+                .chain(&protocol.may_produce)
+                .any(|t| partially_scanned_types.contains(t.as_str()));
             if activations.is_activated(&protocol.name, wu_ref)
+                && !outputs_partially_scanned
                 && enforce_postconditions(protocol, store, wu_ref).is_ok()
                 && !any_on_change_satisfied(&protocol.trigger, &ctx, &protocol.name)
             {
@@ -801,6 +809,61 @@ mod tests {
         );
 
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn partially_scanned_output_type_skips_completed_suppression() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        // Output artifact present — postconditions would pass on full scan.
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let mut activations = ActivationStore::load(tmp.path()).unwrap();
+        activations.record_at("implement", Some("wu-a"), 1000);
+        let signals = HashSet::new();
+        // implementation is partially scanned — postcondition data is stale.
+        let partial = HashSet::from(["implementation".to_string()]);
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &activations,
+            &signals,
+            &["implement"],
+            &partial,
+        );
+
+        // Must NOT be suppressed: output type was partially scanned,
+        // so postcondition check against stale data is untrusted.
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "implement");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
     }
 
     #[test]
