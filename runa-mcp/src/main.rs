@@ -81,7 +81,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("candidate protocol exists in manifest")
                 .clone();
 
-            if let Err(e) = handler::validate_output_types(&p, &loaded.store) {
+            if let Err(e) =
+                handler::validate_output_types(&p, &loaded.store, c.work_unit.as_deref())
+            {
                 eprintln!(
                     "runa-mcp: skipping protocol '{}' work_unit={:?}: {e}",
                     p.name, c.work_unit

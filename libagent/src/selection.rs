@@ -151,11 +151,15 @@ fn any_on_change_satisfied(
                 TriggerResult::Satisfied
             )
         }
-        TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
-            conditions
-                .iter()
-                .any(|c| any_on_change_satisfied(c, context, protocol_name))
-        }
+        TriggerCondition::AllOf { conditions } => conditions
+            .iter()
+            .any(|c| any_on_change_satisfied(c, context, protocol_name)),
+        TriggerCondition::AnyOf { conditions } => conditions.iter().any(|c| {
+            matches!(
+                evaluate_trigger(c, context, protocol_name),
+                TriggerResult::Satisfied
+            ) && any_on_change_satisfied(c, context, protocol_name)
+        }),
         _ => false,
     }
 }
@@ -175,6 +179,13 @@ fn collect_work_units(
         for (_, state) in store.instances_of(type_name, None) {
             work_units.insert(state.work_unit.clone());
         }
+    }
+
+    // Drop the unscoped entry when scoped work units are present.
+    // Scoped queries already include unscoped instances, so the None
+    // entry would only create a redundant aggregate candidate.
+    if work_units.iter().any(|wu| wu.is_some()) {
+        work_units.remove(&None);
     }
 
     if work_units.is_empty() {
@@ -284,8 +295,24 @@ mod tests {
         let wus = collect_work_units(&store, &types);
         assert_eq!(
             wus,
-            BTreeSet::from([None, Some("wu-a".into()), Some("wu-b".into())])
+            BTreeSet::from([Some("wu-a".into()), Some("wu-b".into())])
         );
+    }
+
+    #[test]
+    fn collect_work_units_keeps_none_when_all_unscoped() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        store
+            .record("doc", "a1", Path::new("a1.json"), &json!({"title": "A"}))
+            .unwrap();
+        store
+            .record("doc", "b1", Path::new("b1.json"), &json!({"title": "B"}))
+            .unwrap();
+
+        let types = HashSet::from(["doc"]);
+        let wus = collect_work_units(&store, &types);
+        assert_eq!(wus, BTreeSet::from([None]));
     }
 
     #[test]
@@ -624,6 +651,73 @@ mod tests {
         );
 
         // Must be suppressed: on_change was NOT satisfied, prior outputs valid.
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn any_of_on_change_in_unsatisfied_branch_suppressed() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        // Constraints modified at timestamp 2000 (after activation at 1000).
+        store
+            .record_with_timestamp(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+        // Implementation still valid from prior run.
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let mut activations = ActivationStore::load(tmp.path()).unwrap();
+        activations.record_at("implement", Some("wu-a"), 1000);
+        // Signal "y" is active, signal "x" is not.
+        let signals = HashSet::from(["y".to_string()]);
+
+        // any_of(all_of(on_change(constraints), on_signal("x")), on_signal("y"))
+        // The all_of branch is NOT satisfied (x inactive), so on_change in it
+        // should not count. The trigger fires via on_signal("y") only.
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::AnyOf {
+                conditions: vec![
+                    TriggerCondition::AllOf {
+                        conditions: vec![
+                            TriggerCondition::OnChange {
+                                name: "constraints".into(),
+                            },
+                            TriggerCondition::OnSignal { name: "x".into() },
+                        ],
+                    },
+                    TriggerCondition::OnSignal { name: "y".into() },
+                ],
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &activations,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        // Must be suppressed: the on_change is in an unsatisfied branch,
+        // the trigger fires via on_signal("y"), and postconditions pass.
         assert!(candidates.is_empty());
     }
 

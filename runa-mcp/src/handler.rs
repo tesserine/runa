@@ -47,7 +47,20 @@ impl RunaHandler {
         let output_types: Vec<&String> = protocol
             .produces
             .iter()
-            .chain(protocol.may_produce.iter())
+            .chain(protocol.may_produce.iter().filter(|type_name| {
+                if work_unit.is_none()
+                    && let Some(at) = store.artifact_type(type_name)
+                    && schema_requires_work_unit(&at.schema)
+                {
+                    eprintln!(
+                        "runa-mcp: skipping may_produce type '{}': schema requires \
+                         'work_unit' but handler has no work_unit",
+                        type_name,
+                    );
+                    return false;
+                }
+                true
+            }))
             .collect();
 
         for type_name in &output_types {
@@ -121,14 +134,23 @@ fn has_composition_keywords(schema: &Value) -> bool {
         || schema.get("$ref").is_some()
 }
 
+/// True if a JSON Schema lists `"work_unit"` in its `required` array.
+fn schema_requires_work_unit(schema: &Value) -> bool {
+    schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some("work_unit")))
+}
+
 /// Check that all `produces` types can be served as MCP tools.
 ///
 /// Returns `Err` with a diagnostic message if any required output type has a
-/// schema that cannot be converted to an MCP tool (non-object root or
-/// composition keywords).
+/// schema that cannot be converted to an MCP tool (non-object root,
+/// composition keywords, or required work_unit without a scoped candidate).
 pub fn validate_output_types(
     protocol: &ProtocolDeclaration,
     store: &ArtifactStore,
+    work_unit: Option<&str>,
 ) -> Result<(), String> {
     for type_name in &protocol.produces {
         let Some(at) = store.artifact_type(type_name) else {
@@ -149,6 +171,12 @@ pub fn validate_output_types(
                 "required output type '{type_name}': schema uses composition keywords \
                  (allOf/anyOf/oneOf/$ref); composed schemas are not supported \
                  for MCP tool generation"
+            ));
+        }
+        if work_unit.is_none() && schema_requires_work_unit(&at.schema) {
+            return Err(format!(
+                "required output type '{type_name}': schema requires 'work_unit' but \
+                 candidate has no work_unit; tool calls would always fail validation"
             ));
         }
     }
@@ -675,7 +703,7 @@ mod tests {
             trigger: TriggerCondition::OnSignal { name: "go".into() },
         };
 
-        let result = validate_output_types(&protocol, &store);
+        let result = validate_output_types(&protocol, &store, Some("wu"));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("non-object schema root type"));
     }
@@ -702,7 +730,7 @@ mod tests {
             trigger: TriggerCondition::OnSignal { name: "go".into() },
         };
 
-        let result = validate_output_types(&protocol, &store);
+        let result = validate_output_types(&protocol, &store, Some("wu"));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("composition keywords"));
     }
@@ -733,6 +761,113 @@ mod tests {
             trigger: TriggerCondition::OnSignal { name: "go".into() },
         };
 
-        assert!(validate_output_types(&protocol, &store).is_ok());
+        assert!(validate_output_types(&protocol, &store, Some("wu")).is_ok());
+    }
+
+    #[test]
+    fn validate_output_types_rejects_required_work_unit_when_unscoped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let types = vec![ArtifactType {
+            name: "implementation".into(),
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "work_unit": { "type": "string" }
+                },
+                "required": ["title", "work_unit"]
+            }),
+        }];
+        let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
+        let protocol = ProtocolDeclaration {
+            name: "implement".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: vec!["implementation".into()],
+            may_produce: Vec::new(),
+            trigger: TriggerCondition::OnSignal { name: "go".into() },
+        };
+
+        let result = validate_output_types(&protocol, &store, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires 'work_unit'"));
+    }
+
+    #[test]
+    fn validate_output_types_accepts_required_work_unit_when_scoped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let types = vec![ArtifactType {
+            name: "implementation".into(),
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "work_unit": { "type": "string" }
+                },
+                "required": ["title", "work_unit"]
+            }),
+        }];
+        let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
+        let protocol = ProtocolDeclaration {
+            name: "implement".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: vec!["implementation".into()],
+            may_produce: Vec::new(),
+            trigger: TriggerCondition::OnSignal { name: "go".into() },
+        };
+
+        assert!(validate_output_types(&protocol, &store, Some("wu")).is_ok());
+    }
+
+    #[test]
+    fn handler_skips_may_produce_requiring_work_unit_when_unscoped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let types = vec![
+            ArtifactType {
+                name: "output".into(),
+                schema: json!({
+                    "type": "object",
+                    "properties": { "title": { "type": "string" } }
+                }),
+            },
+            ArtifactType {
+                name: "scoped_output".into(),
+                schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "work_unit": { "type": "string" }
+                    },
+                    "required": ["title", "work_unit"]
+                }),
+            },
+        ];
+        let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
+        let manifest = libagent::Manifest {
+            name: "test".into(),
+            artifact_types: types,
+            protocols: Vec::new(),
+        };
+        let protocol = ProtocolDeclaration {
+            name: "produce".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: vec!["output".into()],
+            may_produce: vec!["scoped_output".into()],
+            trigger: TriggerCondition::OnSignal { name: "go".into() },
+        };
+
+        let handler = RunaHandler::new(
+            protocol,
+            None, // unscoped
+            store,
+            manifest,
+            tmp.path().join("workspace"),
+        );
+
+        // Only "output" should be a tool; "scoped_output" filtered out.
+        assert_eq!(handler.tools.len(), 1);
+        assert_eq!(handler.tools[0].name.as_ref(), "output");
     }
 }
