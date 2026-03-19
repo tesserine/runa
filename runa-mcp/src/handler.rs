@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rmcp::Error as McpError;
@@ -25,8 +24,6 @@ pub struct RunaHandler {
     tools: Vec<Tool>,
     /// Maps artifact type name → full JSON Schema (with work_unit intact).
     tool_schemas: HashMap<String, Value>,
-    /// Set to true when any tool call successfully writes an artifact.
-    output_produced: Arc<AtomicBool>,
 }
 
 struct HandlerState {
@@ -112,16 +109,7 @@ impl RunaHandler {
             manifest,
             tools,
             tool_schemas,
-            output_produced: Arc::new(AtomicBool::new(false)),
         }
-    }
-
-    /// Returns a shared handle to the output-produced flag.
-    ///
-    /// The caller holds this across `serve()` to check whether any tool call
-    /// succeeded, since the handler is consumed by `serve()`.
-    pub fn output_produced(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.output_produced)
     }
 }
 
@@ -388,8 +376,6 @@ impl ServerHandler for RunaHandler {
             .store
             .record(tool_name, &instance_id, &artifact_path, &data)
             .map_err(|e| McpError::internal_error(format!("store error: {e}"), None))?;
-
-        self.output_produced.store(true, Ordering::Relaxed);
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Produced {tool_name}/{instance_id}.json"
