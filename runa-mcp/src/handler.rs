@@ -50,18 +50,6 @@ impl RunaHandler {
             .chain(protocol.may_produce.iter())
             .collect();
 
-        // Determine if any output type uses work_unit scoping (top-level
-        // properties.work_unit). Used to detect composed schemas that would
-        // hide work_unit from injection.
-        let methodology_uses_work_unit = output_types.iter().any(|type_name| {
-            store.artifact_type(type_name).is_some_and(|at| {
-                at.schema
-                    .get("properties")
-                    .and_then(|p| p.get("work_unit"))
-                    .is_some()
-            })
-        });
-
         for type_name in &output_types {
             let Some(at) = store.artifact_type(type_name) else {
                 continue;
@@ -80,24 +68,13 @@ impl RunaHandler {
                 continue;
             }
 
-            // Reject composed schemas that obscure work_unit: if the schema
-            // uses composition keywords without top-level properties.work_unit
-            // in a methodology that uses work_unit scoping, injection would
-            // silently skip and validation would fail.
-            let has_composition = at.schema.get("allOf").is_some()
-                || at.schema.get("anyOf").is_some()
-                || at.schema.get("oneOf").is_some()
-                || at.schema.get("$ref").is_some();
-            let has_top_level_work_unit = at
-                .schema
-                .get("properties")
-                .and_then(|p| p.get("work_unit"))
-                .is_some();
-            if has_composition && !has_top_level_work_unit && methodology_uses_work_unit {
+            // Reject composed schemas: composition keywords prevent reliable
+            // work_unit stripping and injection.
+            if has_composition_keywords(&at.schema) {
                 eprintln!(
                     "runa-mcp: skipping artifact type '{}': schema uses composition keywords \
-                     (allOf/anyOf/oneOf/$ref) without top-level properties.work_unit; composed \
-                     schemas are not supported for MCP tool generation",
+                     (allOf/anyOf/oneOf/$ref); composed schemas are not supported \
+                     for MCP tool generation",
                     type_name,
                 );
                 continue;
@@ -133,6 +110,49 @@ impl RunaHandler {
     pub fn output_produced(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.output_produced)
     }
+}
+
+/// Check whether a JSON Schema uses composition keywords that prevent
+/// reliable work_unit stripping and tool generation.
+fn has_composition_keywords(schema: &Value) -> bool {
+    schema.get("allOf").is_some()
+        || schema.get("anyOf").is_some()
+        || schema.get("oneOf").is_some()
+        || schema.get("$ref").is_some()
+}
+
+/// Check that all `produces` types can be served as MCP tools.
+///
+/// Returns `Err` with a diagnostic message if any required output type has a
+/// schema that cannot be converted to an MCP tool (non-object root or
+/// composition keywords).
+pub fn validate_output_types(
+    protocol: &ProtocolDeclaration,
+    store: &ArtifactStore,
+) -> Result<(), String> {
+    for type_name in &protocol.produces {
+        let Some(at) = store.artifact_type(type_name) else {
+            return Err(format!(
+                "required output type '{type_name}' not found in manifest"
+            ));
+        };
+        let root_type = at.schema.get("type").and_then(|t| t.as_str());
+        if root_type != Some("object") {
+            return Err(format!(
+                "required output type '{type_name}': non-object schema root type '{}' \
+                 is not supported for MCP tool generation",
+                root_type.unwrap_or("<missing>")
+            ));
+        }
+        if has_composition_keywords(&at.schema) {
+            return Err(format!(
+                "required output type '{type_name}': schema uses composition keywords \
+                 (allOf/anyOf/oneOf/$ref); composed schemas are not supported \
+                 for MCP tool generation"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Remove `work_unit` from a JSON Schema's `properties` and `required`.
@@ -506,8 +526,8 @@ mod tests {
             name: "implement".into(),
             requires: vec!["constraints".into()],
             accepts: Vec::new(),
-            produces: vec!["implementation".into(), "log_entries".into()],
-            may_produce: Vec::new(),
+            produces: vec!["implementation".into()],
+            may_produce: vec!["log_entries".into()],
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -521,24 +541,18 @@ mod tests {
             tmp.path().join("workspace"),
         );
 
-        // Non-object schema excluded; object schema included.
+        // Non-object may_produce schema silently excluded; object produces included.
         assert_eq!(handler.tools.len(), 1);
         assert_eq!(handler.tools[0].name.as_ref(), "implementation");
     }
 
     #[test]
-    fn composed_schema_without_top_level_work_unit_excluded() {
+    fn composed_schema_excluded_from_tools() {
         let tmp = tempfile::tempdir().unwrap();
         let types = vec![
             ArtifactType {
                 name: "constraints".into(),
-                schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "title": { "type": "string" },
-                        "work_unit": { "type": "string" }
-                    }
-                }),
+                schema: json!({ "type": "object" }),
             },
             ArtifactType {
                 name: "implementation".into(),
@@ -571,8 +585,8 @@ mod tests {
             name: "implement".into(),
             requires: vec!["constraints".into()],
             accepts: Vec::new(),
-            produces: vec!["implementation".into(), "composed".into()],
-            may_produce: Vec::new(),
+            produces: vec!["implementation".into()],
+            may_produce: vec!["composed".into()],
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -586,9 +600,139 @@ mod tests {
             tmp.path().join("workspace"),
         );
 
-        // implementation has top-level work_unit → included.
-        // composed has allOf without top-level properties.work_unit → excluded.
+        // implementation included; composed may_produce silently excluded.
         assert_eq!(handler.tools.len(), 1);
         assert_eq!(handler.tools[0].name.as_ref(), "implementation");
+    }
+
+    #[test]
+    fn all_composed_schemas_excluded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let types = vec![
+            ArtifactType {
+                name: "composed_a".into(),
+                schema: json!({
+                    "type": "object",
+                    "allOf": [
+                        { "properties": { "title": { "type": "string" } } }
+                    ]
+                }),
+            },
+            ArtifactType {
+                name: "composed_b".into(),
+                schema: json!({
+                    "type": "object",
+                    "oneOf": [
+                        { "properties": { "x": { "type": "integer" } } }
+                    ]
+                }),
+            },
+        ];
+        let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
+        let manifest = libagent::Manifest {
+            name: "test".into(),
+            artifact_types: types,
+            protocols: Vec::new(),
+        };
+        let protocol = ProtocolDeclaration {
+            name: "compose-all".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: Vec::new(),
+            may_produce: vec!["composed_a".into(), "composed_b".into()],
+            trigger: TriggerCondition::OnSignal { name: "go".into() },
+        };
+
+        let handler = RunaHandler::new(
+            protocol,
+            None,
+            store,
+            manifest,
+            tmp.path().join("workspace"),
+        );
+
+        // All output types use composition → all excluded.
+        assert!(handler.tools.is_empty());
+    }
+
+    #[test]
+    fn validate_output_types_rejects_non_object_produces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let types = vec![ArtifactType {
+            name: "log_entries".into(),
+            schema: json!({
+                "type": "array",
+                "items": { "type": "string" }
+            }),
+        }];
+        let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
+        let protocol = ProtocolDeclaration {
+            name: "log".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: vec!["log_entries".into()],
+            may_produce: Vec::new(),
+            trigger: TriggerCondition::OnSignal { name: "go".into() },
+        };
+
+        let result = validate_output_types(&protocol, &store);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("non-object schema root type"));
+    }
+
+    #[test]
+    fn validate_output_types_rejects_composed_produces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let types = vec![ArtifactType {
+            name: "composed".into(),
+            schema: json!({
+                "type": "object",
+                "allOf": [
+                    { "properties": { "title": { "type": "string" } } }
+                ]
+            }),
+        }];
+        let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
+        let protocol = ProtocolDeclaration {
+            name: "compose".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: vec!["composed".into()],
+            may_produce: Vec::new(),
+            trigger: TriggerCondition::OnSignal { name: "go".into() },
+        };
+
+        let result = validate_output_types(&protocol, &store);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("composition keywords"));
+    }
+
+    #[test]
+    fn validate_output_types_accepts_valid_produces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let types = vec![
+            ArtifactType {
+                name: "output_a".into(),
+                schema: json!({
+                    "type": "object",
+                    "properties": { "title": { "type": "string" } }
+                }),
+            },
+            ArtifactType {
+                name: "output_b".into(),
+                schema: json!({ "type": "object" }),
+            },
+        ];
+        let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
+        let protocol = ProtocolDeclaration {
+            name: "produce".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: vec!["output_a".into(), "output_b".into()],
+            may_produce: Vec::new(),
+            trigger: TriggerCondition::OnSignal { name: "go".into() },
+        };
+
+        assert!(validate_output_types(&protocol, &store).is_ok());
     }
 }

@@ -69,22 +69,36 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         &partially_scanned,
     );
 
-    // 8. Select first candidate.
-    let candidate = match candidates.first() {
-        Some(c) => c,
-        None => {
-            eprintln!("runa-mcp: no ready (protocol, work_unit) candidates found");
-            process::exit(1);
+    // 8. Select first viable candidate.
+    let (candidate, protocol) = {
+        let mut found = None;
+        for c in &candidates {
+            let p = loaded
+                .manifest
+                .protocols
+                .iter()
+                .find(|p| p.name == c.protocol_name)
+                .expect("candidate protocol exists in manifest")
+                .clone();
+
+            if let Err(e) = handler::validate_output_types(&p, &loaded.store) {
+                eprintln!(
+                    "runa-mcp: skipping protocol '{}' work_unit={:?}: {e}",
+                    p.name, c.work_unit
+                );
+                continue;
+            }
+            found = Some((c, p));
+            break;
+        }
+        match found {
+            Some(pair) => pair,
+            None => {
+                eprintln!("runa-mcp: no viable (protocol, work_unit) candidates found");
+                process::exit(1);
+            }
         }
     };
-
-    let protocol = loaded
-        .manifest
-        .protocols
-        .iter()
-        .find(|p| p.name == candidate.protocol_name)
-        .expect("candidate protocol exists in manifest")
-        .clone();
 
     eprintln!(
         "runa-mcp: serving protocol '{}' work_unit={:?}",
@@ -116,7 +130,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // 12. Check whether the session produced output and postconditions pass.
     let work_unit_ref = candidate.work_unit.as_deref();
-    if !output_produced.load(Ordering::Relaxed) {
+    let protocol_requires_output = !protocol.produces.is_empty();
+    if !output_produced.load(Ordering::Relaxed) && protocol_requires_output {
         eprintln!(
             "runa-mcp: no output produced for '{}' work_unit={:?}, no activation recorded",
             protocol.name, candidate.work_unit
