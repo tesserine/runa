@@ -4,6 +4,7 @@ mod handler;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process;
+use std::sync::atomic::Ordering;
 
 use libagent::project::{self, RUNA_DIR, STORE_DIRNAME};
 use libagent::{
@@ -100,6 +101,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 10. Serve via stdio transport.
+    let output_produced = handler.output_produced();
     let (stdin, stdout) = io::stdio();
     let service = handler
         .serve((stdin, stdout))
@@ -112,9 +114,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut store = ArtifactStore::new(loaded.manifest.artifact_types.clone(), store_dir)?;
     scan(&loaded.workspace_dir, &mut store)?;
 
-    // 12. Check postconditions.
+    // 12. Check whether the session produced output and postconditions pass.
     let work_unit_ref = candidate.work_unit.as_deref();
-    if enforce_postconditions(&protocol, &store, work_unit_ref).is_ok() {
+    if !output_produced.load(Ordering::Relaxed) {
+        eprintln!(
+            "runa-mcp: no output produced for '{}' work_unit={:?}, no activation recorded",
+            protocol.name, candidate.work_unit
+        );
+    } else if enforce_postconditions(&protocol, &store, work_unit_ref).is_ok() {
         // 13. Record activation.
         activations.record(&protocol.name, work_unit_ref);
         activations.save(&runa_dir)?;

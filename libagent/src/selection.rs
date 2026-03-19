@@ -89,7 +89,7 @@ pub fn discover_ready_candidates(
             // the protocol should re-run even if prior outputs are still valid.
             if activations.is_activated(&protocol.name, wu_ref)
                 && enforce_postconditions(protocol, store, wu_ref).is_ok()
-                && !has_on_change(&protocol.trigger)
+                && !any_on_change_satisfied(&protocol.trigger, &ctx, &protocol.name)
             {
                 continue;
             }
@@ -122,15 +122,28 @@ fn trigger_artifact_types<'a>(condition: &'a TriggerCondition, out: &mut HashSet
     }
 }
 
-/// True if the trigger tree contains any `OnChange` variant.
+/// True if any `OnChange` node in the trigger tree evaluates to Satisfied.
 ///
-/// Protocols with change-based triggers should not be suppressed by completed-work
-/// detection — if the trigger fired, the input changed after the last activation.
-fn has_on_change(condition: &TriggerCondition) -> bool {
+/// Walks the trigger tree and evaluates only `OnChange` conditions. Returns
+/// true as soon as any one is Satisfied. For composite triggers like
+/// `AnyOf(on_signal, on_change)`, this distinguishes whether the overall
+/// Satisfied result came from a change-based branch or a non-change branch.
+fn any_on_change_satisfied(
+    condition: &TriggerCondition,
+    context: &TriggerContext<'_>,
+    protocol_name: &str,
+) -> bool {
     match condition {
-        TriggerCondition::OnChange { .. } => true,
+        TriggerCondition::OnChange { .. } => {
+            matches!(
+                evaluate_trigger(condition, context, protocol_name),
+                TriggerResult::Satisfied
+            )
+        }
         TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
-            conditions.iter().any(has_on_change)
+            conditions
+                .iter()
+                .any(|c| any_on_change_satisfied(c, context, protocol_name))
         }
         _ => false,
     }
@@ -540,6 +553,67 @@ mod tests {
         );
 
         assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn any_of_with_on_change_suppressed_when_change_not_satisfied() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        // Constraints recorded BEFORE activation — on_change will not fire.
+        store
+            .record_with_timestamp(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                500,
+            )
+            .unwrap();
+        // Implementation still valid from prior run.
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let mut activations = ActivationStore::load(tmp.path()).unwrap();
+        activations.record_at("implement", Some("wu-a"), 1000);
+        let signals = HashSet::from(["go".to_string()]);
+
+        // AnyOf(on_signal("go"), on_change("constraints"))
+        // Signal fires, but constraints haven't changed since activation.
+        // The trigger is satisfied (via signal), but no on_change was satisfied,
+        // so suppression should apply.
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::AnyOf {
+                conditions: vec![
+                    TriggerCondition::OnSignal { name: "go".into() },
+                    TriggerCondition::OnChange {
+                        name: "constraints".into(),
+                    },
+                ],
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &activations,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        // Must be suppressed: on_change was NOT satisfied, prior outputs valid.
+        assert!(candidates.is_empty());
     }
 
     #[test]
