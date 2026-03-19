@@ -60,6 +60,25 @@ Builds an operator-facing execution plan after an implicit scan. The execution p
 
 If the graph contains a hard dependency cycle, `step` reports the cycle as a warning and excludes the cyclic protocols from `execution_plan`; non-cyclic READY protocols still appear when they are orderable. `on_signal` triggers use the same persisted active signal set as `runa status`, including the same warning-and-empty-set fallback when `signals.json` is unreadable or malformed. Text output prints the execution plan and the same grouped protocol status view used by `runa status`, so operators can still see blocked and waiting reasons when nothing is runnable. `--json` emits `{ "version": 2, "methodology": "...", "scan_warnings": [...], "cycle": ["..."] | null, "execution_plan": [...], "protocols": [...] }`, where `protocols` reuses the same status entries as `runa status --json`. `runa step` without `--dry-run` is not implemented yet; it prints a placeholder message and exits with code 1.
 
+## MCP Server
+
+`runa-mcp` is a single-session stdio MCP server that orchestrates one protocol execution per invocation. It is designed to be started by an outer orchestrator (e.g., an MCP client) for each protocol run.
+
+```bash
+runa-mcp
+```
+
+On startup, the server loads the project from the current directory (or `RUNA_WORKING_DIR`), scans the workspace, and selects the first ready (protocol, work_unit) candidate. It then serves an MCP session over stdio with:
+
+- **Tools** — One tool per output artifact type (`produces` + `may_produce`). The tool input schema is the artifact's JSON Schema with `work_unit` removed. The server injects `work_unit` automatically.
+- **Prompts** — A single `"context"` prompt that delivers the protocol's required and available inputs as prose, plus expected outputs.
+
+When the session ends, the server re-scans the workspace and checks postconditions. If all required outputs are present and valid, it records the activation timestamp in `.runa/activations.json`. The outer orchestrator can then restart `runa-mcp` for the next protocol.
+
+Environment variables:
+- `RUNA_WORKING_DIR` — Project directory (defaults to current directory)
+- `RUNA_CONFIG` — Config file override (same as `--config` in the CLI)
+
 ## Build
 
 Rust 2024 edition.
