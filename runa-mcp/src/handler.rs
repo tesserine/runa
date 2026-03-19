@@ -180,6 +180,36 @@ pub fn validate_output_types(
             ));
         }
     }
+
+    // For may_produce-only protocols, ensure at least one may_produce type
+    // can become a viable tool. If none can, the session is pointless.
+    if protocol.produces.is_empty() && !protocol.may_produce.is_empty() {
+        let has_viable = protocol.may_produce.iter().any(|type_name| {
+            let Some(at) = store.artifact_type(type_name) else {
+                return false;
+            };
+            let root_type = at.schema.get("type").and_then(|t| t.as_str());
+            if root_type != Some("object") {
+                return false;
+            }
+            if has_composition_keywords(&at.schema) {
+                return false;
+            }
+            if work_unit.is_none() && schema_requires_work_unit(&at.schema) {
+                return false;
+            }
+            true
+        });
+        if !has_viable {
+            let names: Vec<&str> = protocol.may_produce.iter().map(|s| s.as_str()).collect();
+            return Err(format!(
+                "may_produce-only protocol has no viable output types {:?}: \
+                 all schemas are unsupported for MCP tool generation",
+                names
+            ));
+        }
+    }
+
     Ok(())
 }
 

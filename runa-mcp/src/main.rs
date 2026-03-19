@@ -132,7 +132,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // 12. Check whether the session produced output and postconditions pass.
     let work_unit_ref = candidate.work_unit.as_deref();
-    let has_output_types = !protocol.produces.is_empty() || !protocol.may_produce.is_empty();
+    let has_required_output = !protocol.produces.is_empty();
     let output_type_names: HashSet<&str> = protocol
         .produces
         .iter()
@@ -145,7 +145,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|ps| output_type_names.contains(ps.artifact_type.as_str()))
         .map(|ps| ps.artifact_type.as_str())
         .collect();
-    if !output_produced.load(Ordering::Relaxed) && has_output_types {
+    if !output_produced.load(Ordering::Relaxed) && has_required_output {
         eprintln!(
             "runa-mcp: no output produced for '{}' work_unit={:?}, no activation recorded",
             protocol.name, candidate.work_unit
