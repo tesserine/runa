@@ -29,7 +29,7 @@ cargo run --bin runa -- --version  # Run CLI
 - `manifest.rs` — TOML parsing with validation (uniqueness checks at parse time, file path schema resolution)
 - `validation.rs` — JSON Schema validation for artifact instances, collects all violations before returning
 - `graph.rs` — Dependency graph from protocol declarations: topological ordering, cycle detection, blocked-protocol identification
-- `store.rs` — Artifact state tracking: validation status, content hashing, schema hashing, JSON persistence in `.runa/store/`
+- `store.rs` — Artifact state tracking: validation status, content hashing, schema hashing, work-unit-scoped queries, JSON persistence in `.runa/store/`
 - `scan.rs` — Workspace reconciliation: walk `artifacts_dir`, classify new/modified/revalidated/removed instances, record invalid and malformed artifacts in store state, collect unreadable file findings, and fail if a previously-populated workspace disappears
 - `context.rs` — Agent-facing context injection contract: stable `ContextInjection` payload, ordered input artifact refs with text paths/hashes/relationships, expected outputs, `build_context()`
 - `trigger.rs` — Trigger condition evaluation: recursive evaluator, six condition variants, pure function against TriggerContext

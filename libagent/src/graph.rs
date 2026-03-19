@@ -868,7 +868,10 @@ mod tests {
 
     #[test]
     fn blocked_with_reasons_some_missing() {
-        let protocols = vec![protocol("A", &[], &["X", "Y"]), protocol("B", &["X", "Y"], &[])];
+        let protocols = vec![
+            protocol("A", &[], &["X", "Y"]),
+            protocol("B", &["X", "Y"], &[]),
+        ];
         let graph = DependencyGraph::build(&protocols).unwrap();
         // Only X available; B needs Y too.
         let available: HashSet<String> = ["X".into()].into();

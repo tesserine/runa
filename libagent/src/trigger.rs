@@ -23,6 +23,7 @@ pub struct TriggerContext<'a> {
     pub store: &'a ArtifactStore,
     pub activation_timestamps: &'a HashMap<String, u64>,
     pub active_signals: &'a HashSet<String>,
+    pub work_unit: Option<&'a str>,
 }
 
 /// Evaluate whether a trigger condition is satisfied given current state.
@@ -36,10 +37,10 @@ pub fn evaluate(
 ) -> TriggerResult {
     match condition {
         TriggerCondition::OnArtifact { name } => {
-            if context.store.is_valid(name) {
+            if context.store.is_valid(name, context.work_unit) {
                 TriggerResult::Satisfied
             } else {
-                let instances = context.store.instances_of(name);
+                let instances = context.store.instances_of(name, context.work_unit);
                 if instances.is_empty() {
                     TriggerResult::NotSatisfied(format!(
                         "no valid instances of artifact type '{name}' exist"
@@ -62,7 +63,10 @@ pub fn evaluate(
         }
 
         TriggerCondition::OnChange { name } => {
-            match context.store.latest_modification_ms(name) {
+            match context
+                .store
+                .latest_modification_ms(name, context.work_unit)
+            {
                 None => TriggerResult::NotSatisfied(format!(
                     "no instances of artifact type '{name}' exist"
                 )),
@@ -87,7 +91,7 @@ pub fn evaluate(
         }
 
         TriggerCondition::OnInvalid { name } => {
-            if context.store.has_any_invalid(name) {
+            if context.store.has_any_invalid(name, context.work_unit) {
                 TriggerResult::Satisfied
             } else {
                 TriggerResult::NotSatisfied(format!(
@@ -146,6 +150,7 @@ mod tests {
             store,
             activation_timestamps: Box::leak(Box::default()),
             active_signals: Box::leak(Box::default()),
+            work_unit: None,
         }
     }
 
@@ -259,6 +264,7 @@ mod tests {
             store: &store,
             activation_timestamps: &timestamps,
             active_signals: &signals,
+            work_unit: None,
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
@@ -284,6 +290,7 @@ mod tests {
             store: &store,
             activation_timestamps: &timestamps,
             active_signals: &signals,
+            work_unit: None,
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
@@ -309,6 +316,7 @@ mod tests {
             store: &store,
             activation_timestamps: &timestamps,
             active_signals: &signals,
+            work_unit: None,
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         assert!(matches!(
@@ -350,6 +358,7 @@ mod tests {
             store: &store,
             activation_timestamps: &timestamps,
             active_signals: &signals,
+            work_unit: None,
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         assert!(matches!(
@@ -389,6 +398,7 @@ mod tests {
             store: &store,
             activation_timestamps: &timestamps,
             active_signals: &signals,
+            work_unit: None,
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         // Any single instance newer than activation → satisfied.
@@ -489,6 +499,7 @@ mod tests {
             store: &store,
             activation_timestamps: &timestamps,
             active_signals: &signals,
+            work_unit: None,
         };
         let cond = TriggerCondition::OnSignal {
             name: "deploy".into(),
@@ -527,6 +538,7 @@ mod tests {
             store: &store,
             activation_timestamps: &timestamps,
             active_signals: &signals,
+            work_unit: None,
         };
 
         let cond = TriggerCondition::AllOf {
@@ -585,6 +597,7 @@ mod tests {
             store: &store,
             activation_timestamps: &timestamps,
             active_signals: &signals,
+            work_unit: None,
         };
 
         let cond = TriggerCondition::AnyOf {
@@ -646,6 +659,7 @@ mod tests {
             store: &store,
             activation_timestamps: &timestamps,
             active_signals: &signals,
+            work_unit: None,
         };
 
         // AllOf(OnArtifact("doc"), AnyOf(OnSignal("approved"), OnArtifact("approval")))
@@ -699,5 +713,78 @@ mod tests {
             evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
+    }
+
+    // --- Work unit scoping ---
+
+    #[test]
+    fn on_artifact_scoped() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        store
+            .record(
+                "doc",
+                "a",
+                Path::new("a.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "doc",
+                "b",
+                Path::new("b.json"),
+                &json!({"bad": true, "work_unit": "wu-b"}),
+            )
+            .unwrap();
+
+        let timestamps = HashMap::new();
+        let signals = HashSet::new();
+
+        // Scoped to WU-A: only valid instance visible → satisfied.
+        let ctx_a = TriggerContext {
+            store: &store,
+            activation_timestamps: &timestamps,
+            active_signals: &signals,
+            work_unit: Some("wu-a"),
+        };
+        let cond = TriggerCondition::OnArtifact { name: "doc".into() };
+        assert_eq!(
+            evaluate(&cond, &ctx_a, "protocol"),
+            TriggerResult::Satisfied
+        );
+
+        // Scoped to WU-B: only invalid instance visible → not satisfied.
+        let ctx_b = TriggerContext {
+            store: &store,
+            activation_timestamps: &timestamps,
+            active_signals: &signals,
+            work_unit: Some("wu-b"),
+        };
+        assert!(matches!(
+            evaluate(&cond, &ctx_b, "protocol"),
+            TriggerResult::NotSatisfied(_)
+        ));
+    }
+
+    #[test]
+    fn unpartitioned_visible_to_scoped_trigger() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        // Unpartitioned valid instance.
+        store
+            .record("doc", "shared", Path::new("s.json"), &json!({"title": "S"}))
+            .unwrap();
+
+        let timestamps = HashMap::new();
+        let signals = HashSet::new();
+        let ctx = TriggerContext {
+            store: &store,
+            activation_timestamps: &timestamps,
+            active_signals: &signals,
+            work_unit: Some("wu-x"),
+        };
+        let cond = TriggerCondition::OnArtifact { name: "doc".into() };
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 }

@@ -369,7 +369,23 @@ fn handle_json_artifact(
             result.revalidated.push(artifact.as_ref());
         }
         ScanDisposition::Unchanged => {
-            if existing.is_some_and(|state| state.path != artifact.path) {
+            let existing_state = existing.expect("unchanged artifact must already exist");
+            let data_work_unit = data
+                .get("work_unit")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            if existing_state.work_unit.is_none() && data_work_unit.is_some() {
+                // Backfill: pre-upgrade state lacks work_unit that the artifact JSON provides.
+                store
+                    .record_with_timestamp(
+                        artifact.artifact_type,
+                        artifact.instance_id,
+                        artifact.path,
+                        data,
+                        existing_state.last_modified_ms,
+                    )
+                    .map_err(ScanError::Store)?;
+            } else if existing_state.path != artifact.path {
                 store
                     .update_path(artifact.artifact_type, artifact.instance_id, artifact.path)
                     .map_err(ScanError::Store)?;
@@ -408,6 +424,8 @@ fn handle_malformed_artifact(
         .map_err(ScanError::Store)?;
     let disposition = classify_disposition(existing, &new_hash, &current_schema_hash);
 
+    let previous_work_unit = existing.and_then(|s| s.work_unit.clone());
+
     match disposition {
         ScanDisposition::New => {
             store
@@ -418,6 +436,7 @@ fn handle_malformed_artifact(
                     bytes,
                     error.clone(),
                     scan_timestamp_ms,
+                    previous_work_unit,
                 )
                 .map_err(ScanError::Store)?;
             result.new.push(artifact.as_ref());
@@ -431,6 +450,7 @@ fn handle_malformed_artifact(
                     bytes,
                     error.clone(),
                     scan_timestamp_ms,
+                    previous_work_unit,
                 )
                 .map_err(ScanError::Store)?;
             result.modified.push(artifact.as_ref());
@@ -447,6 +467,7 @@ fn handle_malformed_artifact(
                     bytes,
                     error.clone(),
                     last_modified_ms,
+                    previous_work_unit,
                 )
                 .map_err(ScanError::Store)?;
             result.revalidated.push(artifact.as_ref());
@@ -856,5 +877,188 @@ mod tests {
         assert!(store_dir.join("report/gone.json").exists());
 
         std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    // --- Work unit backfill ---
+
+    #[test]
+    fn unchanged_artifact_backfills_work_unit() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let artifact_path = workspace.join("report/item.json");
+        write_file(&artifact_path, r#"{"title":"ok","work_unit":"wu-1"}"#);
+
+        let store_dir = tmp.path().join("store");
+        let mut store = make_store(&store_dir, vec!["report"]);
+        // Simulate pre-upgrade state: record with same content but state has no work_unit.
+        store
+            .record_with_timestamp(
+                "report",
+                "item",
+                &artifact_path,
+                &json!({"title": "ok", "work_unit": "wu-1"}),
+                1234,
+            )
+            .unwrap();
+        // Manually clear work_unit to simulate pre-upgrade persisted state.
+        // The easiest way: remove and re-insert with work_unit: None via a
+        // direct record_inner call. Instead, we use a fresh store that loads
+        // from disk, then patch the in-memory state + re-persist.
+        {
+            let state = store.get("report", "item").unwrap().clone();
+            assert_eq!(state.work_unit, Some("wu-1".to_string()));
+            // Overwrite the persisted file to strip work_unit.
+            let mut patched = state;
+            patched.work_unit = None;
+            let json = serde_json::to_string_pretty(&patched).unwrap();
+            std::fs::write(store_dir.join("report/item.json"), json).unwrap();
+        }
+        // Reload store from disk to pick up the patched state.
+        let types = vec![make_artifact_type(
+            "report",
+            crate::test_helpers::simple_schema(),
+        )];
+        let mut store = ArtifactStore::new(types, store_dir).unwrap();
+        assert_eq!(store.get("report", "item").unwrap().work_unit, None);
+
+        let _result = scan(&workspace, &mut store).unwrap();
+
+        assert_eq!(
+            store.get("report", "item").unwrap().work_unit,
+            Some("wu-1".to_string())
+        );
+    }
+
+    #[test]
+    fn unchanged_artifact_without_work_unit_stays_none() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let artifact_path = workspace.join("report/item.json");
+        write_file(&artifact_path, r#"{"title":"ok"}"#);
+
+        let mut store = make_store(&tmp.path().join("store"), vec!["report"]);
+        store
+            .record_with_timestamp(
+                "report",
+                "item",
+                &artifact_path,
+                &json!({"title": "ok"}),
+                1234,
+            )
+            .unwrap();
+        assert_eq!(store.get("report", "item").unwrap().work_unit, None);
+
+        let result = scan(&workspace, &mut store).unwrap();
+
+        // No backfill needed — should remain Unchanged with no re-record.
+        assert!(result.new.is_empty());
+        assert!(result.modified.is_empty());
+        assert!(result.revalidated.is_empty());
+        assert_eq!(store.get("report", "item").unwrap().work_unit, None);
+        assert_eq!(store.get("report", "item").unwrap().last_modified_ms, 1234);
+    }
+
+    #[test]
+    fn unchanged_artifact_with_work_unit_not_re_recorded() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let artifact_path = workspace.join("report/item.json");
+        write_file(&artifact_path, r#"{"title":"ok","work_unit":"wu-1"}"#);
+
+        let mut store = make_store(&tmp.path().join("store"), vec!["report"]);
+        store
+            .record_with_timestamp(
+                "report",
+                "item",
+                &artifact_path,
+                &json!({"title": "ok", "work_unit": "wu-1"}),
+                1234,
+            )
+            .unwrap();
+        assert_eq!(
+            store.get("report", "item").unwrap().work_unit,
+            Some("wu-1".to_string())
+        );
+
+        let result = scan(&workspace, &mut store).unwrap();
+
+        // Already has work_unit — no re-record needed.
+        assert!(result.new.is_empty());
+        assert!(result.modified.is_empty());
+        assert!(result.revalidated.is_empty());
+        assert_eq!(store.get("report", "item").unwrap().last_modified_ms, 1234);
+    }
+
+    // --- Malformed work_unit preservation ---
+
+    #[test]
+    fn malformed_preserves_previous_work_unit() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let artifact_path = workspace.join("report/item.json");
+
+        // First, record a valid artifact with work_unit.
+        write_file(&artifact_path, r#"{"title":"ok","work_unit":"wu-1"}"#);
+        let mut store = make_store(&tmp.path().join("store"), vec!["report"]);
+        scan(&workspace, &mut store).unwrap();
+        assert_eq!(
+            store.get("report", "item").unwrap().work_unit,
+            Some("wu-1".to_string())
+        );
+
+        // Now make it malformed.
+        write_file(&artifact_path, r#"{ nope }"#);
+        scan(&workspace, &mut store).unwrap();
+
+        let state = store.get("report", "item").unwrap();
+        assert!(matches!(state.status, ValidationStatus::Malformed(_)));
+        assert_eq!(state.work_unit, Some("wu-1".to_string()));
+    }
+
+    #[test]
+    fn malformed_without_prior_state_gets_none() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        write_file(&workspace.join("report/item.json"), r#"{ nope }"#);
+        let mut store = make_store(&tmp.path().join("store"), vec!["report"]);
+
+        scan(&workspace, &mut store).unwrap();
+
+        let state = store.get("report", "item").unwrap();
+        assert!(matches!(state.status, ValidationStatus::Malformed(_)));
+        assert_eq!(state.work_unit, None);
+    }
+
+    #[test]
+    fn has_any_invalid_scoped_with_malformed() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+
+        // Valid artifact in wu-a.
+        write_file(
+            &workspace.join("report/good.json"),
+            r#"{"title":"ok","work_unit":"wu-a"}"#,
+        );
+        // Malformed artifact — will become wu-b after first recording valid then corrupting.
+        write_file(
+            &workspace.join("report/bad.json"),
+            r#"{"title":"ok","work_unit":"wu-b"}"#,
+        );
+
+        let mut store = make_store(&tmp.path().join("store"), vec!["report"]);
+        scan(&workspace, &mut store).unwrap();
+        assert_eq!(
+            store.get("report", "bad").unwrap().work_unit,
+            Some("wu-b".to_string())
+        );
+
+        // Now corrupt the wu-b artifact.
+        write_file(&workspace.join("report/bad.json"), r#"{ nope }"#);
+        scan(&workspace, &mut store).unwrap();
+
+        // Malformed in wu-b is NOT visible to wu-a query.
+        assert!(!store.has_any_invalid("report", Some("wu-a")));
+        // But IS visible to wu-b query.
+        assert!(store.has_any_invalid("report", Some("wu-b")));
     }
 }

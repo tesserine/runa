@@ -32,6 +32,9 @@ pub struct ArtifactState {
     /// Schema hash in the format `"sha256:<hex>"`.
     #[serde(default)]
     pub schema_hash: String,
+    /// Work unit this artifact belongs to, extracted from artifact JSON at record time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_unit: Option<String>,
 }
 
 /// Validation status of an artifact instance.
@@ -136,6 +139,13 @@ pub(crate) fn raw_content_hash(bytes: &[u8]) -> String {
     format!("sha256:{result:x}")
 }
 
+fn matches_work_unit_filter(state_wu: &Option<String>, filter: Option<&str>) -> bool {
+    match filter {
+        None => true,
+        Some(wu) => state_wu.as_deref().is_none_or(|s| s == wu),
+    }
+}
+
 impl ArtifactStore {
     /// Create a store, loading existing state from disk if present.
     /// Creates `store_dir` if it doesn't exist.
@@ -216,6 +226,7 @@ impl ArtifactStore {
             raw_bytes,
             error,
             current_time_ms(),
+            None,
         )
     }
 
@@ -225,12 +236,16 @@ impl ArtifactStore {
             .get(&(artifact_type.to_string(), instance_id.to_string()))
     }
 
-    /// True only if ALL instances of this type exist and have Valid status.
-    /// Returns false if no instances are recorded for this type.
-    pub fn is_valid(&self, artifact_type: &str) -> bool {
+    /// True only if ALL matching instances of this type have Valid status.
+    /// Returns false if no matching instances are recorded.
+    ///
+    /// When `work_unit` is `None`, all instances are considered.
+    /// When `Some(wu)`, only instances belonging to that work unit
+    /// (or unpartitioned instances with no work unit) are considered.
+    pub fn is_valid(&self, artifact_type: &str, work_unit: Option<&str>) -> bool {
         let mut count = 0;
         for ((t, _), state) in &self.artifacts {
-            if t == artifact_type {
+            if t == artifact_type && matches_work_unit_filter(&state.work_unit, work_unit) {
                 if !matches!(state.status, ValidationStatus::Valid) {
                     return false;
                 }
@@ -295,10 +310,13 @@ impl ArtifactStore {
         Ok(())
     }
 
-    /// True if at least one instance of this type has `Invalid` or `Malformed` status.
-    pub fn has_any_invalid(&self, artifact_type: &str) -> bool {
+    /// True if at least one matching instance of this type has `Invalid` or `Malformed` status.
+    ///
+    /// Scoping follows the same rules as [`is_valid`](Self::is_valid).
+    pub fn has_any_invalid(&self, artifact_type: &str, work_unit: Option<&str>) -> bool {
         self.artifacts.iter().any(|((t, _), state)| {
             t == artifact_type
+                && matches_work_unit_filter(&state.work_unit, work_unit)
                 && matches!(
                     state.status,
                     ValidationStatus::Invalid(_) | ValidationStatus::Malformed(_)
@@ -314,13 +332,21 @@ impl ArtifactStore {
     }
 
     /// Returns `(instance_id, state)` pairs for a given artifact type,
-    /// sorted by instance_id. Returns an empty vec if the type has no
-    /// recorded instances.
-    pub fn instances_of(&self, artifact_type: &str) -> Vec<(&str, &ArtifactState)> {
+    /// sorted by instance_id. Returns an empty vec if no matching
+    /// instances exist.
+    ///
+    /// Scoping follows the same rules as [`is_valid`](Self::is_valid).
+    pub fn instances_of(
+        &self,
+        artifact_type: &str,
+        work_unit: Option<&str>,
+    ) -> Vec<(&str, &ArtifactState)> {
         let mut pairs: Vec<(&str, &ArtifactState)> = self
             .artifacts
             .iter()
-            .filter(|((t, _), _)| t == artifact_type)
+            .filter(|((t, _), state)| {
+                t == artifact_type && matches_work_unit_filter(&state.work_unit, work_unit)
+            })
             .map(|((_, id), state)| (id.as_str(), state))
             .collect();
         pairs.sort_by_key(|(id, _)| *id);
@@ -334,12 +360,20 @@ impl ArtifactStore {
         keys
     }
 
-    /// Returns the most recent `last_modified_ms` across all instances of this
-    /// type, or `None` if no instances are recorded.
-    pub fn latest_modification_ms(&self, artifact_type: &str) -> Option<u64> {
+    /// Returns the most recent `last_modified_ms` across matching instances of
+    /// this type, or `None` if no matching instances are recorded.
+    ///
+    /// Scoping follows the same rules as [`is_valid`](Self::is_valid).
+    pub fn latest_modification_ms(
+        &self,
+        artifact_type: &str,
+        work_unit: Option<&str>,
+    ) -> Option<u64> {
         self.artifacts
             .iter()
-            .filter(|((t, _), _)| t == artifact_type)
+            .filter(|((t, _), state)| {
+                t == artifact_type && matches_work_unit_filter(&state.work_unit, work_unit)
+            })
             .map(|(_, state)| state.last_modified_ms)
             .max()
     }
@@ -359,6 +393,7 @@ impl ArtifactStore {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_malformed_with_timestamp(
         &mut self,
         artifact_type: &str,
@@ -367,6 +402,7 @@ impl ArtifactStore {
         raw_bytes: &[u8],
         error: impl Into<String>,
         timestamp_ms: u64,
+        work_unit: Option<String>,
     ) -> Result<(), StoreError> {
         let schema_hash = self.schema_hash_for(artifact_type)?;
         let state = ArtifactState {
@@ -375,6 +411,7 @@ impl ArtifactStore {
             last_modified_ms: timestamp_ms,
             content_hash: raw_content_hash(raw_bytes),
             schema_hash,
+            work_unit,
         };
         self.record_inner(artifact_type, instance_id, state)
     }
@@ -416,6 +453,10 @@ impl ArtifactStore {
         };
 
         let hash = content_hash(data);
+        let work_unit = data
+            .get("work_unit")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         Ok(ArtifactState {
             path: path.to_path_buf(),
@@ -423,6 +464,7 @@ impl ArtifactStore {
             last_modified_ms: timestamp_ms,
             content_hash: hash,
             schema_hash: schema_hash(&at.schema),
+            work_unit,
         })
     }
 
@@ -549,7 +591,7 @@ mod tests {
         let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
         // No instances recorded — false.
-        assert!(!store.is_valid("report"));
+        assert!(!store.is_valid("report", None));
 
         // Record valid instance.
         store
@@ -560,7 +602,7 @@ mod tests {
                 &json!({"title": "ok"}),
             )
             .unwrap();
-        assert!(store.is_valid("report"));
+        assert!(store.is_valid("report", None));
 
         // Record invalid instance of a different type to avoid contamination.
         // Instead, create a second store with two types.
@@ -575,7 +617,7 @@ mod tests {
         store2
             .record("report", "bad", Path::new("b.json"), &json!({"score": 1}))
             .unwrap();
-        assert!(!store2.is_valid("report"));
+        assert!(!store2.is_valid("report", None));
 
         // Malformed.
         let tmp4 = TempDir::new().unwrap();
@@ -589,7 +631,7 @@ mod tests {
                 "expected value",
             )
             .unwrap();
-        assert!(!store4.is_valid("report"));
+        assert!(!store4.is_valid("report", None));
 
         // Stale.
         let tmp3 = TempDir::new().unwrap();
@@ -598,10 +640,10 @@ mod tests {
             .record("report", "s", Path::new("s.json"), &json!({"title": "ok"}))
             .unwrap();
         store3.invalidate("report", "s").unwrap();
-        assert!(!store3.is_valid("report"));
+        assert!(!store3.is_valid("report", None));
 
         // Missing type entirely.
-        assert!(!store.is_valid("nonexistent"));
+        assert!(!store.is_valid("nonexistent", None));
     }
 
     #[test]
@@ -791,13 +833,13 @@ mod tests {
                 &json!({"title": "ok"}),
             )
             .unwrap();
-        assert!(store.is_valid("report"));
+        assert!(store.is_valid("report", None));
 
         // Add one invalid instance — is_valid must now be false.
         store
             .record("report", "bad", Path::new("b.json"), &json!({"score": 1}))
             .unwrap();
-        assert!(!store.is_valid("report"));
+        assert!(!store.is_valid("report", None));
     }
 
     #[test]
@@ -808,7 +850,7 @@ mod tests {
         store
             .record("report", "bad", Path::new("b.json"), &json!({"score": 1}))
             .unwrap();
-        assert!(store.has_any_invalid("report"));
+        assert!(store.has_any_invalid("report", None));
     }
 
     #[test]
@@ -819,7 +861,7 @@ mod tests {
         store
             .record_malformed("report", "bad", Path::new("b.json"), b"not json", "oops")
             .unwrap();
-        assert!(store.has_any_invalid("report"));
+        assert!(store.has_any_invalid("report", None));
     }
 
     #[test]
@@ -835,7 +877,7 @@ mod tests {
                 &json!({"title": "ok"}),
             )
             .unwrap();
-        assert!(!store.has_any_invalid("report"));
+        assert!(!store.has_any_invalid("report", None));
     }
 
     #[test]
@@ -843,7 +885,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
-        assert!(!store.has_any_invalid("report"));
+        assert!(!store.has_any_invalid("report", None));
     }
 
     #[test]
@@ -869,7 +911,7 @@ mod tests {
                 2000,
             )
             .unwrap();
-        assert_eq!(store.latest_modification_ms("report"), Some(2000));
+        assert_eq!(store.latest_modification_ms("report", None), Some(2000));
     }
 
     #[test]
@@ -877,8 +919,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
-        assert_eq!(store.latest_modification_ms("report"), None);
-        assert_eq!(store.latest_modification_ms("nonexistent"), None);
+        assert_eq!(store.latest_modification_ms("report", None), None);
+        assert_eq!(store.latest_modification_ms("nonexistent", None), None);
     }
 
     #[test]
@@ -939,7 +981,7 @@ mod tests {
             )
             .unwrap();
 
-        let instances = store.instances_of("report");
+        let instances = store.instances_of("report", None);
         let ids: Vec<&str> = instances.iter().map(|(id, _)| *id).collect();
         assert_eq!(ids, vec!["alpha", "bravo", "charlie"]);
 
@@ -954,7 +996,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
 
-        assert!(store.instances_of("nonexistent").is_empty());
+        assert!(store.instances_of("nonexistent", None).is_empty());
     }
 
     #[test]
@@ -976,7 +1018,7 @@ mod tests {
             .record("report", "bad", Path::new("b.json"), &json!({"score": 1}))
             .unwrap();
 
-        let instances = store.instances_of("report");
+        let instances = store.instances_of("report", None);
         assert_eq!(instances.len(), 2);
 
         // Sorted: "bad" before "good".
@@ -1012,9 +1054,9 @@ mod tests {
 
         assert!(store.get("report", "gone").is_none());
         assert!(!persisted.exists());
-        assert!(!store.is_valid("report"));
-        assert!(!store.has_any_invalid("report"));
-        assert!(store.instances_of("report").is_empty());
+        assert!(!store.is_valid("report", None));
+        assert!(!store.has_any_invalid("report", None));
+        assert!(store.instances_of("report", None).is_empty());
     }
 
     #[test]
@@ -1070,5 +1112,307 @@ mod tests {
             reloaded.get("report", "item").unwrap().path,
             Path::new("new/item.json")
         );
+    }
+
+    // --- Work unit scoping ---
+
+    #[test]
+    fn record_extracts_work_unit_from_json() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        store
+            .record(
+                "report",
+                "r1",
+                Path::new("r1.json"),
+                &json!({"title": "ok", "work_unit": "wu-1"}),
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.get("report", "r1").unwrap().work_unit,
+            Some("wu-1".to_string())
+        );
+    }
+
+    #[test]
+    fn record_sets_none_when_work_unit_absent() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        store
+            .record(
+                "report",
+                "r1",
+                Path::new("r1.json"),
+                &json!({"title": "ok"}),
+            )
+            .unwrap();
+
+        assert_eq!(store.get("report", "r1").unwrap().work_unit, None);
+    }
+
+    #[test]
+    fn record_malformed_sets_none_work_unit() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        store
+            .record_malformed("report", "bad", Path::new("b.json"), b"not json", "oops")
+            .unwrap();
+
+        assert_eq!(store.get("report", "bad").unwrap().work_unit, None);
+    }
+
+    #[test]
+    fn work_unit_round_trips_through_persistence() {
+        let tmp = TempDir::new().unwrap();
+        let store_dir = tmp.path().join("s");
+        let types = vec![make_artifact_type("report", simple_schema())];
+
+        {
+            let mut store = ArtifactStore::new(types.clone(), store_dir.clone()).unwrap();
+            store
+                .record(
+                    "report",
+                    "r1",
+                    Path::new("r1.json"),
+                    &json!({"title": "ok", "work_unit": "wu-1"}),
+                )
+                .unwrap();
+        }
+
+        let store2 = ArtifactStore::new(types, store_dir).unwrap();
+        assert_eq!(
+            store2.get("report", "r1").unwrap().work_unit,
+            Some("wu-1".to_string())
+        );
+    }
+
+    #[test]
+    fn is_valid_scoped() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        // Valid in WU-A.
+        store
+            .record(
+                "report",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "ok", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        // Invalid in WU-B.
+        store
+            .record(
+                "report",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"score": 1, "work_unit": "wu-b"}),
+            )
+            .unwrap();
+
+        // Scoped to WU-A: only sees the valid instance.
+        assert!(store.is_valid("report", Some("wu-a")));
+        // Scoped to WU-B: only sees the invalid instance.
+        assert!(!store.is_valid("report", Some("wu-b")));
+        // Unscoped: sees both, invalid blocks.
+        assert!(!store.is_valid("report", None));
+    }
+
+    #[test]
+    fn instances_of_scoped_includes_unpartitioned() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        // Unpartitioned instance (no work_unit).
+        store
+            .record(
+                "report",
+                "shared",
+                Path::new("shared.json"),
+                &json!({"title": "shared"}),
+            )
+            .unwrap();
+        // WU-A instance.
+        store
+            .record(
+                "report",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let scoped = store.instances_of("report", Some("wu-a"));
+        let ids: Vec<&str> = scoped.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec!["a1", "shared"]);
+    }
+
+    #[test]
+    fn instances_of_scoped_excludes_other() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        store
+            .record(
+                "report",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "report",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"title": "B", "work_unit": "wu-b"}),
+            )
+            .unwrap();
+
+        let scoped = store.instances_of("report", Some("wu-b"));
+        let ids: Vec<&str> = scoped.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec!["b1"]);
+    }
+
+    #[test]
+    fn has_any_invalid_scoped() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        // Invalid in WU-A.
+        store
+            .record(
+                "report",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"score": 1, "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        // Valid in WU-B.
+        store
+            .record(
+                "report",
+                "good",
+                Path::new("good.json"),
+                &json!({"title": "ok", "work_unit": "wu-b"}),
+            )
+            .unwrap();
+
+        assert!(store.has_any_invalid("report", Some("wu-a")));
+        assert!(!store.has_any_invalid("report", Some("wu-b")));
+    }
+
+    #[test]
+    fn latest_modification_ms_scoped() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        store
+            .record_with_timestamp(
+                "report",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "report",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"title": "B", "work_unit": "wu-b"}),
+                2000,
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.latest_modification_ms("report", Some("wu-a")),
+            Some(1000)
+        );
+        assert_eq!(
+            store.latest_modification_ms("report", Some("wu-b")),
+            Some(2000)
+        );
+        assert_eq!(store.latest_modification_ms("report", None), Some(2000));
+    }
+
+    #[test]
+    fn malformed_preserves_previous_work_unit() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        // Record valid artifact with work_unit.
+        store
+            .record(
+                "report",
+                "r1",
+                Path::new("r1.json"),
+                &json!({"title": "ok", "work_unit": "wu-1"}),
+            )
+            .unwrap();
+        assert_eq!(
+            store.get("report", "r1").unwrap().work_unit,
+            Some("wu-1".to_string())
+        );
+
+        // Now record it as malformed, passing previous work_unit.
+        store
+            .record_malformed_with_timestamp(
+                "report",
+                "r1",
+                Path::new("r1.json"),
+                b"{ nope }",
+                "parse error",
+                2000,
+                Some("wu-1".to_string()),
+            )
+            .unwrap();
+
+        let state = store.get("report", "r1").unwrap();
+        assert!(matches!(state.status, ValidationStatus::Malformed(_)));
+        assert_eq!(state.work_unit, Some("wu-1".to_string()));
+    }
+
+    #[test]
+    fn malformed_without_prior_state_gets_none() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        store
+            .record_malformed("report", "r1", Path::new("r1.json"), b"{ nope }", "oops")
+            .unwrap();
+
+        assert_eq!(store.get("report", "r1").unwrap().work_unit, None);
+    }
+
+    #[test]
+    fn has_any_invalid_scoped_with_malformed() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        // Malformed artifact scoped to wu-b.
+        store
+            .record_malformed_with_timestamp(
+                "report",
+                "bad",
+                Path::new("bad.json"),
+                b"{ nope }",
+                "oops",
+                1000,
+                Some("wu-b".to_string()),
+            )
+            .unwrap();
+
+        // Not visible to wu-a.
+        assert!(!store.has_any_invalid("report", Some("wu-a")));
+        // Visible to wu-b.
+        assert!(store.has_any_invalid("report", Some("wu-b")));
+        // Visible unscoped.
+        assert!(store.has_any_invalid("report", None));
     }
 }
