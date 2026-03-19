@@ -128,15 +128,33 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // 11. Re-scan workspace with a fresh store.
     let store_dir = runa_dir.join(STORE_DIRNAME);
     let mut store = ArtifactStore::new(loaded.manifest.artifact_types.clone(), store_dir)?;
-    scan(&loaded.workspace_dir, &mut store)?;
+    let post_scan = scan(&loaded.workspace_dir, &mut store)?;
 
     // 12. Check whether the session produced output and postconditions pass.
     let work_unit_ref = candidate.work_unit.as_deref();
-    let protocol_requires_output = !protocol.produces.is_empty();
-    if !output_produced.load(Ordering::Relaxed) && protocol_requires_output {
+    let has_output_types = !protocol.produces.is_empty() || !protocol.may_produce.is_empty();
+    let output_type_names: HashSet<&str> = protocol
+        .produces
+        .iter()
+        .chain(protocol.may_produce.iter())
+        .map(|s| s.as_str())
+        .collect();
+    let partial_output_types: Vec<&str> = post_scan
+        .partially_scanned_types
+        .iter()
+        .filter(|ps| output_type_names.contains(ps.artifact_type.as_str()))
+        .map(|ps| ps.artifact_type.as_str())
+        .collect();
+    if !output_produced.load(Ordering::Relaxed) && has_output_types {
         eprintln!(
             "runa-mcp: no output produced for '{}' work_unit={:?}, no activation recorded",
             protocol.name, candidate.work_unit
+        );
+    } else if !partial_output_types.is_empty() {
+        eprintln!(
+            "runa-mcp: post-session scan incomplete for output types {:?} \
+             of '{}' work_unit={:?}, no activation recorded",
+            partial_output_types, protocol.name, candidate.work_unit
         );
     } else if enforce_postconditions(&protocol, &store, work_unit_ref).is_ok() {
         // 13. Record activation.
