@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashSet};
 
-use crate::activation::ActivationStore;
+use crate::completion::CompletionStore;
 use crate::enforcement::enforce_postconditions;
 use crate::model::{ProtocolDeclaration, TriggerCondition};
 use crate::store::ArtifactStore;
@@ -24,7 +24,7 @@ pub struct Candidate {
 pub fn discover_ready_candidates(
     protocols: &[ProtocolDeclaration],
     store: &ArtifactStore,
-    activations: &ActivationStore,
+    completions: &CompletionStore,
     active_signals: &HashSet<String>,
     topological_order: &[&str],
     partially_scanned_types: &HashSet<String>,
@@ -73,10 +73,10 @@ pub fn discover_ready_candidates(
             let wu_ref = wu.as_deref();
 
             // Build trigger context scoped to this work_unit.
-            let timestamps = activations.timestamps_for_trigger_context(wu_ref);
+            let timestamps = completions.timestamps_for_trigger_context(wu_ref);
             let ctx = TriggerContext {
                 store,
-                activation_timestamps: &timestamps,
+                completion_timestamps: &timestamps,
                 active_signals,
                 work_unit: wu_ref,
             };
@@ -94,9 +94,9 @@ pub fn discover_ready_candidates(
                 continue;
             }
 
-            // Completed suppression: already activated and postconditions still pass.
+            // Completed suppression: already completed and postconditions still pass.
             // Skip suppression when the trigger contains on_change — the trigger
-            // was satisfied because inputs changed after the last activation, so
+            // was satisfied because inputs changed after the last completion, so
             // the protocol should re-run even if prior outputs are still valid.
             // Also skip when output types are partially scanned — postconditions
             // against stale data are untrusted.
@@ -105,7 +105,7 @@ pub fn discover_ready_candidates(
                 .iter()
                 .chain(&protocol.may_produce)
                 .any(|t| partially_scanned_types.contains(t.as_str()));
-            if activations.is_activated(&protocol.name, wu_ref)
+            if completions.is_completed(&protocol.name, wu_ref)
                 && !outputs_partially_scanned
                 && enforce_postconditions(protocol, store, wu_ref).is_ok()
                 && !any_on_change_satisfied(&protocol.trigger, &ctx, &protocol.name)
@@ -364,7 +364,7 @@ mod tests {
     fn signal_only_protocol_evaluated_once_unscoped() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
-        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::from(["go".to_string()]);
 
         let protocol = make_protocol(
@@ -379,7 +379,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &activations,
+            &completions,
             &signals,
             &["ground"],
             &HashSet::new(),
@@ -411,7 +411,7 @@ mod tests {
             )
             .unwrap();
 
-        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
 
         let protocol = make_protocol(
@@ -428,7 +428,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &activations,
+            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -461,8 +461,8 @@ mod tests {
             )
             .unwrap();
 
-        let mut activations = ActivationStore::load(tmp.path()).unwrap();
-        activations.record_at("implement", Some("wu-a"), 1000);
+        let mut completions = CompletionStore::load(tmp.path()).unwrap();
+        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::new();
 
         let protocol = make_protocol(
@@ -479,7 +479,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &activations,
+            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -502,8 +502,8 @@ mod tests {
             .unwrap();
         // No implementation artifact → postconditions fail → not suppressed.
 
-        let mut activations = ActivationStore::load(tmp.path()).unwrap();
-        activations.record_at("implement", Some("wu-a"), 1000);
+        let mut completions = CompletionStore::load(tmp.path()).unwrap();
+        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::new();
 
         let protocol = make_protocol(
@@ -520,7 +520,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &activations,
+            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -533,7 +533,7 @@ mod tests {
     fn on_change_trigger_not_suppressed_even_when_postconditions_pass() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
-        // Constraints modified at timestamp 2000 (after activation at 1000).
+        // Constraints modified at timestamp 2000 (after completion at 1000).
         store
             .record_with_timestamp(
                 "constraints",
@@ -553,11 +553,11 @@ mod tests {
             )
             .unwrap();
 
-        let mut activations = ActivationStore::load(tmp.path()).unwrap();
-        activations.record_at("implement", Some("wu-a"), 1000);
+        let mut completions = CompletionStore::load(tmp.path()).unwrap();
+        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::new();
 
-        // on_change trigger: constraints changed at 2000, activation was at 1000.
+        // on_change trigger: constraints changed at 2000, completion was at 1000.
         let protocol = make_protocol(
             "implement",
             &["constraints"],
@@ -572,7 +572,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &activations,
+            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -605,8 +605,8 @@ mod tests {
             )
             .unwrap();
 
-        let mut activations = ActivationStore::load(tmp.path()).unwrap();
-        activations.record_at("implement", Some("wu-a"), 1000);
+        let mut completions = CompletionStore::load(tmp.path()).unwrap();
+        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::from(["go".to_string()]);
 
         // on_change nested inside all_of: still should not be suppressed.
@@ -629,7 +629,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &activations,
+            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -642,7 +642,7 @@ mod tests {
     fn any_of_with_on_change_suppressed_when_change_not_satisfied() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
-        // Constraints recorded BEFORE activation — on_change will not fire.
+        // Constraints recorded BEFORE completion — on_change will not fire.
         store
             .record_with_timestamp(
                 "constraints",
@@ -662,12 +662,12 @@ mod tests {
             )
             .unwrap();
 
-        let mut activations = ActivationStore::load(tmp.path()).unwrap();
-        activations.record_at("implement", Some("wu-a"), 1000);
+        let mut completions = CompletionStore::load(tmp.path()).unwrap();
+        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::from(["go".to_string()]);
 
         // AnyOf(on_signal("go"), on_change("constraints"))
-        // Signal fires, but constraints haven't changed since activation.
+        // Signal fires, but constraints haven't changed since completion.
         // The trigger is satisfied (via signal), but no on_change was satisfied,
         // so suppression should apply.
         let protocol = make_protocol(
@@ -689,7 +689,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &activations,
+            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -703,7 +703,7 @@ mod tests {
     fn any_of_on_change_in_unsatisfied_branch_suppressed() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
-        // Constraints modified at timestamp 2000 (after activation at 1000).
+        // Constraints modified at timestamp 2000 (after completion at 1000).
         store
             .record_with_timestamp(
                 "constraints",
@@ -723,8 +723,8 @@ mod tests {
             )
             .unwrap();
 
-        let mut activations = ActivationStore::load(tmp.path()).unwrap();
-        activations.record_at("implement", Some("wu-a"), 1000);
+        let mut completions = CompletionStore::load(tmp.path()).unwrap();
+        completions.record_at("implement", Some("wu-a"), 1000);
         // Signal "y" is active, signal "x" is not.
         let signals = HashSet::from(["y".to_string()]);
 
@@ -755,7 +755,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &activations,
+            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -779,7 +779,7 @@ mod tests {
             )
             .unwrap();
 
-        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
         let partial = HashSet::from(["constraints".to_string()]);
 
@@ -797,7 +797,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &activations,
+            &completions,
             &signals,
             &["implement"],
             &partial,
@@ -819,7 +819,7 @@ mod tests {
             )
             .unwrap();
 
-        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
         let partial = HashSet::from(["lint".to_string()]);
 
@@ -839,7 +839,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &activations,
+            &completions,
             &signals,
             &["fix-lint"],
             &partial,
@@ -870,8 +870,8 @@ mod tests {
             )
             .unwrap();
 
-        let mut activations = ActivationStore::load(tmp.path()).unwrap();
-        activations.record_at("implement", Some("wu-a"), 1000);
+        let mut completions = CompletionStore::load(tmp.path()).unwrap();
+        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::new();
         // implementation is partially scanned — postcondition data is stale.
         let partial = HashSet::from(["implementation".to_string()]);
@@ -890,7 +890,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &activations,
+            &completions,
             &signals,
             &["implement"],
             &partial,
@@ -907,7 +907,7 @@ mod tests {
     fn unsatisfied_trigger_not_candidate() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
-        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
 
         let protocol = make_protocol(
@@ -922,7 +922,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &activations,
+            &completions,
             &signals,
             &["ground"],
             &HashSet::new(),
@@ -936,7 +936,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
         // constraints is required but missing.
-        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::from(["go".to_string()]);
 
         let protocol = make_protocol(
@@ -951,7 +951,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &activations,
+            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -971,7 +971,7 @@ mod tests {
             .record("b", "x", Path::new("b.json"), &json!({"title": "B"}))
             .unwrap();
 
-        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
 
         let protocols = vec![
@@ -997,7 +997,7 @@ mod tests {
         let candidates = discover_ready_candidates(
             &protocols,
             &store,
-            &activations,
+            &completions,
             &signals,
             &["beta", "alpha"],
             &HashSet::new(),

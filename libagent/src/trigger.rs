@@ -17,11 +17,11 @@ pub enum TriggerResult {
 
 /// Read-only snapshot of the state needed to evaluate trigger conditions.
 ///
-/// Bundles the artifact store with per-protocol activation timestamps and
+/// Bundles the artifact store with per-protocol completion timestamps and
 /// currently active signals. Evaluation is pure — no side effects.
 pub struct TriggerContext<'a> {
     pub store: &'a ArtifactStore,
-    pub activation_timestamps: &'a HashMap<String, u64>,
+    pub completion_timestamps: &'a HashMap<String, u64>,
     pub active_signals: &'a HashSet<String>,
     pub work_unit: Option<&'a str>,
 }
@@ -29,7 +29,7 @@ pub struct TriggerContext<'a> {
 /// Evaluate whether a trigger condition is satisfied given current state.
 ///
 /// `protocol_name` identifies the protocol being evaluated, used to look up
-/// its last activation timestamp for `OnChange` conditions.
+/// its last completion timestamp for `OnChange` conditions.
 pub fn evaluate(
     condition: &TriggerCondition,
     context: &TriggerContext<'_>,
@@ -71,17 +71,17 @@ pub fn evaluate(
                     "no instances of artifact type '{name}' exist"
                 )),
                 Some(latest) => {
-                    match context.activation_timestamps.get(protocol_name) {
+                    match context.completion_timestamps.get(protocol_name) {
                         None => {
-                            // Never activated — any instance counts as changed.
+                            // Never completed — any instance counts as changed.
                             TriggerResult::Satisfied
                         }
-                        Some(&last_activation) => {
-                            if latest > last_activation {
+                        Some(&last_completion) => {
+                            if latest > last_completion {
                                 TriggerResult::Satisfied
                             } else {
                                 TriggerResult::NotSatisfied(format!(
-                                    "artifact type '{name}' has not changed since last activation"
+                                    "artifact type '{name}' has not changed since last completion"
                                 ))
                             }
                         }
@@ -148,7 +148,7 @@ mod tests {
         // Leaked to avoid lifetime issues in tests — fine for test code.
         TriggerContext {
             store,
-            activation_timestamps: Box::leak(Box::default()),
+            completion_timestamps: Box::leak(Box::default()),
             active_signals: Box::leak(Box::default()),
             work_unit: None,
         }
@@ -245,7 +245,7 @@ mod tests {
     // --- OnChange ---
 
     #[test]
-    fn on_change_satisfied_when_never_activated() {
+    fn on_change_satisfied_when_never_completed() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
         store
@@ -262,7 +262,7 @@ mod tests {
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            activation_timestamps: &timestamps,
+            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
         };
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn on_change_satisfied_when_modified_after_activation() {
+    fn on_change_satisfied_when_modified_after_completion() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
         store
@@ -288,7 +288,7 @@ mod tests {
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            activation_timestamps: &timestamps,
+            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
         };
@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn on_change_not_satisfied_when_not_modified_since_activation() {
+    fn on_change_not_satisfied_when_not_modified_since_completion() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
         store
@@ -314,7 +314,7 @@ mod tests {
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            activation_timestamps: &timestamps,
+            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
         };
@@ -356,7 +356,7 @@ mod tests {
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            activation_timestamps: &timestamps,
+            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
         };
@@ -371,7 +371,7 @@ mod tests {
     fn on_change_satisfied_when_one_of_multiple_instances_newer() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
-        // Old instance — before activation.
+        // Old instance — before completion.
         store
             .record_with_timestamp(
                 "doc",
@@ -381,7 +381,7 @@ mod tests {
                 500,
             )
             .unwrap();
-        // New instance — after activation.
+        // New instance — after completion.
         store
             .record_with_timestamp(
                 "doc",
@@ -396,12 +396,12 @@ mod tests {
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            activation_timestamps: &timestamps,
+            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
-        // Any single instance newer than activation → satisfied.
+        // Any single instance newer than completion → satisfied.
         assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
@@ -497,7 +497,7 @@ mod tests {
         let signals = HashSet::from(["deploy".to_string()]);
         let ctx = TriggerContext {
             store: &store,
-            activation_timestamps: &timestamps,
+            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
         };
@@ -536,7 +536,7 @@ mod tests {
         let signals = HashSet::from(["go".to_string()]);
         let ctx = TriggerContext {
             store: &store,
-            activation_timestamps: &timestamps,
+            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
         };
@@ -595,7 +595,7 @@ mod tests {
         let signals = HashSet::from(["go".to_string()]);
         let ctx = TriggerContext {
             store: &store,
-            activation_timestamps: &timestamps,
+            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
         };
@@ -657,7 +657,7 @@ mod tests {
         let signals = HashSet::from(["approved".to_string()]);
         let ctx = TriggerContext {
             store: &store,
-            activation_timestamps: &timestamps,
+            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
         };
@@ -744,7 +744,7 @@ mod tests {
         // Scoped to WU-A: only valid instance visible → satisfied.
         let ctx_a = TriggerContext {
             store: &store,
-            activation_timestamps: &timestamps,
+            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: Some("wu-a"),
         };
@@ -757,7 +757,7 @@ mod tests {
         // Scoped to WU-B: only invalid instance visible → not satisfied.
         let ctx_b = TriggerContext {
             store: &store,
-            activation_timestamps: &timestamps,
+            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: Some("wu-b"),
         };
@@ -780,7 +780,7 @@ mod tests {
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            activation_timestamps: &timestamps,
+            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: Some("wu-x"),
         };

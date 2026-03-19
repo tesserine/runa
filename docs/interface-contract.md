@@ -42,7 +42,7 @@ Topology is not declared. It emerges from the graph of requires/produces/may_pro
 A trigger condition defines when runa should activate a protocol. Triggers are composable from four primitive types:
 
 - **on_artifact(name)** — the named artifact exists and satisfies its schema
-- **on_change(name)** — the named artifact has been modified since runa last activated this protocol. runa tracks activation timestamps per protocol and compares against artifact modification timestamps.
+- **on_change(name)** — the named artifact has been modified since this protocol last completed successfully. runa tracks completion timestamps per protocol and compares against artifact modification timestamps.
 - **on_invalid(name)** — an instance of the named artifact type exists but fails validation against its declared schema
 - **on_signal(name)** — an external event (operator action, webhook, scheduler)
 

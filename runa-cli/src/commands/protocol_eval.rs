@@ -176,7 +176,7 @@ pub(crate) fn evaluate_protocols(
     let timestamps = HashMap::new();
     let context = TriggerContext {
         store: &loaded.store,
-        activation_timestamps: &timestamps,
+        completion_timestamps: &timestamps,
         active_signals,
         work_unit: None,
     };
