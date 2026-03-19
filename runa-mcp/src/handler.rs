@@ -51,10 +51,7 @@ impl RunaHandler {
         for type_name in output_types {
             if let Some(at) = store.artifact_type(type_name) {
                 let stripped = strip_work_unit(&at.schema);
-                let schema_obj = match stripped {
-                    Value::Object(map) => map,
-                    _ => serde_json::Map::new(),
-                };
+                let schema_obj = add_instance_id(stripped);
 
                 tools.push(Tool::new(
                     type_name.clone(),
@@ -92,6 +89,41 @@ fn strip_work_unit(schema: &Value) -> Value {
         }
     }
     schema
+}
+
+/// Add `instance_id` as a required string property in the tool input schema.
+///
+/// The agent supplies this to name each artifact instance. It is not part of
+/// the artifact's own schema — `call_tool` extracts it before validation.
+fn add_instance_id(schema: Value) -> serde_json::Map<String, Value> {
+    let mut map = match schema {
+        Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+
+    let props = map
+        .entry("properties")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Value::Object(props_map) = props {
+        props_map.insert(
+            "instance_id".to_string(),
+            serde_json::json!({
+                "type": "string",
+                "description": "Unique identifier for this artifact instance (becomes the filename)"
+            }),
+        );
+    }
+
+    let required = map
+        .entry("required")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Value::Array(arr) = required
+        && !arr.iter().any(|v| v.as_str() == Some("instance_id"))
+    {
+        arr.push(Value::String("instance_id".to_string()));
+    }
+
+    map
 }
 
 /// Reject instance IDs that would cause path traversal or ambiguity.
@@ -151,17 +183,26 @@ impl ServerHandler for RunaHandler {
             .get(tool_name)
             .ok_or_else(|| McpError::invalid_params(format!("unknown tool: {tool_name}"), None))?;
 
-        // Build the artifact data from arguments.
+        // Build the artifact data from arguments, extracting instance_id first.
         let mut data = match request.arguments {
             Some(args) => Value::Object(args),
             None => Value::Object(serde_json::Map::new()),
         };
 
-        // Determine instance_id: work_unit when scoped, type name when unscoped.
-        let instance_id = match &self.work_unit {
-            Some(wu) => wu.clone(),
-            None => tool_name.to_string(),
+        // Extract instance_id (tool parameter, not part of artifact schema).
+        let explicit_id = if let Value::Object(data_map) = &mut data {
+            data_map.remove("instance_id").and_then(|v| match v {
+                Value::String(s) => Some(s),
+                _ => None,
+            })
+        } else {
+            None
         };
+
+        // Use explicit instance_id, fall back to work_unit, then type name.
+        let instance_id = explicit_id
+            .or_else(|| self.work_unit.clone())
+            .unwrap_or_else(|| tool_name.to_string());
 
         validate_instance_id(&instance_id).map_err(|e| McpError::invalid_params(e, None))?;
 
@@ -358,13 +399,22 @@ mod tests {
         assert_eq!(handler.tools.len(), 1);
         assert_eq!(handler.tools[0].name.as_ref(), "implementation");
 
-        // The tool schema should not have work_unit in properties.
+        // The tool schema should not have work_unit but should have instance_id.
         let tool_props = handler.tools[0]
             .input_schema
             .get("properties")
-            .and_then(|v| v.as_object());
-        if let Some(props) = tool_props {
-            assert!(!props.contains_key("work_unit"));
-        }
+            .and_then(|v| v.as_object())
+            .expect("tool should have properties");
+        assert!(!tool_props.contains_key("work_unit"));
+        assert!(tool_props.contains_key("instance_id"));
+        assert!(tool_props.contains_key("title"));
+
+        // instance_id should be required.
+        let required = handler.tools[0]
+            .input_schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .expect("tool should have required");
+        assert!(required.iter().any(|v| v.as_str() == Some("instance_id")));
     }
 }

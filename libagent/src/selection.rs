@@ -84,8 +84,12 @@ pub fn discover_ready_candidates(
             }
 
             // Completed suppression: already activated and postconditions still pass.
+            // Skip suppression when the trigger contains on_change — the trigger
+            // was satisfied because inputs changed after the last activation, so
+            // the protocol should re-run even if prior outputs are still valid.
             if activations.is_activated(&protocol.name, wu_ref)
                 && enforce_postconditions(protocol, store, wu_ref).is_ok()
+                && !has_on_change(&protocol.trigger)
             {
                 continue;
             }
@@ -115,6 +119,20 @@ fn trigger_artifact_types<'a>(condition: &'a TriggerCondition, out: &mut HashSet
                 trigger_artifact_types(child, out);
             }
         }
+    }
+}
+
+/// True if the trigger tree contains any `OnChange` variant.
+///
+/// Protocols with change-based triggers should not be suppressed by completed-work
+/// detection — if the trigger fired, the input changed after the last activation.
+fn has_on_change(condition: &TriggerCondition) -> bool {
+    match condition {
+        TriggerCondition::OnChange { .. } => true,
+        TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
+            conditions.iter().any(has_on_change)
+        }
+        _ => false,
     }
 }
 
@@ -400,6 +418,115 @@ mod tests {
             &[],
             TriggerCondition::OnArtifact {
                 name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &activations,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn on_change_trigger_not_suppressed_even_when_postconditions_pass() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        // Constraints modified at timestamp 2000 (after activation at 1000).
+        store
+            .record_with_timestamp(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+        // Implementation still valid from prior run.
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let mut activations = ActivationStore::load(tmp.path()).unwrap();
+        activations.record_at("implement", Some("wu-a"), 1000);
+        let signals = HashSet::new();
+
+        // on_change trigger: constraints changed at 2000, activation was at 1000.
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnChange {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &activations,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        // Must NOT be suppressed: on_change was satisfied because input changed.
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "implement");
+    }
+
+    #[test]
+    fn on_change_in_all_of_not_suppressed() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        store
+            .record_with_timestamp(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let mut activations = ActivationStore::load(tmp.path()).unwrap();
+        activations.record_at("implement", Some("wu-a"), 1000);
+        let signals = HashSet::from(["go".to_string()]);
+
+        // on_change nested inside all_of: still should not be suppressed.
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::AllOf {
+                conditions: vec![
+                    TriggerCondition::OnChange {
+                        name: "constraints".into(),
+                    },
+                    TriggerCondition::OnSignal { name: "go".into() },
+                ],
             },
         );
 
