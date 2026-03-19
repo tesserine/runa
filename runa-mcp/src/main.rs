@@ -3,7 +3,7 @@ mod handler;
 
 use libagent::project::{self, RUNA_DIR, STORE_DIRNAME};
 use libagent::{
-    ActivationStore, ArtifactStore, discover_ready_candidates, enforce_postconditions, scan,
+    ArtifactStore, CompletionStore, discover_ready_candidates, enforce_postconditions, scan,
 };
 use rmcp::service::ServiceExt;
 use rmcp::transport::io;
@@ -44,8 +44,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("warning: {warning}");
     }
 
-    // 5. Load activation timestamps.
-    let mut activations = ActivationStore::load(&runa_dir)?;
+    // 5. Load completion timestamps.
+    let mut completions = CompletionStore::load(&runa_dir)?;
 
     // 6. Collect partially scanned types.
     let partially_scanned: HashSet<String> = scan_result
@@ -68,7 +68,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let candidates = discover_ready_candidates(
         &loaded.manifest.protocols,
         &loaded.store,
-        &activations,
+        &completions,
         &active_signals,
         &topo_refs,
         &partially_scanned,
@@ -153,20 +153,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !partial_output_types.is_empty() {
         eprintln!(
             "runa-mcp: post-session scan incomplete for output types {:?} \
-             of '{}' work_unit={:?}, no activation recorded",
+             of '{}' work_unit={:?}, no completion recorded",
             partial_output_types, protocol.name, candidate.work_unit
         );
     } else if enforce_postconditions(&protocol, &store, work_unit_ref).is_ok() {
-        // 13. Record activation.
-        activations.record(&protocol.name, work_unit_ref);
-        activations.save(&runa_dir)?;
+        // 13. Record completion.
+        completions.record(&protocol.name, work_unit_ref);
+        completions.save(&runa_dir)?;
         eprintln!(
-            "runa-mcp: postconditions met, activation recorded for '{}' work_unit={:?}",
+            "runa-mcp: postconditions met, completion recorded for '{}' work_unit={:?}",
             protocol.name, candidate.work_unit
         );
     } else {
         eprintln!(
-            "runa-mcp: postconditions not met for '{}' work_unit={:?}, no activation recorded",
+            "runa-mcp: postconditions not met for '{}' work_unit={:?}, no completion recorded",
             protocol.name, candidate.work_unit
         );
     }

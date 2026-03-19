@@ -65,7 +65,7 @@ pub struct ProtocolDeclaration {
 pub enum TriggerCondition {
     /// The named artifact exists and satisfies its schema.
     OnArtifact { name: String },
-    /// The named artifact has been modified since the protocol's last activation.
+    /// The named artifact has been modified since the protocol's last completion.
     OnChange { name: String },
     /// The named artifact exists but fails schema validation.
     OnInvalid { name: String },

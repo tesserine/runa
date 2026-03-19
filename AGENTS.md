@@ -23,9 +23,9 @@ cargo run --bin runa-mcp           # Run MCP server (stdio)
 ## Architecture
 
 **Workspace crates:**
-- `libagent` — Core library: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, pre/post-execution enforcement, project loading, activation timestamps, protocol selection
+- `libagent` — Core library: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, pre/post-execution enforcement, project loading, completion timestamps, protocol selection
 - `runa-cli` — CLI binary (minimal, depends on libagent). Commands in `commands/`, re-exports project loading from libagent
-- `runa-mcp` — MCP server binary. Single-session stdio process: loads project, selects a ready (protocol, work_unit) pair, serves MCP tools and prompts, records activation on success
+- `runa-mcp` — MCP server binary. Single-session stdio process: loads project, selects a ready (protocol, work_unit) pair, serves MCP tools and prompts, records completion on success
 
 **libagent modules:**
 - `model.rs` — Core types: `Manifest`, `ArtifactType`, `ProtocolDeclaration`, `TriggerCondition`
@@ -38,7 +38,7 @@ cargo run --bin runa-mcp           # Run MCP server (stdio)
 - `trigger.rs` — Trigger condition evaluation: recursive evaluator, six condition variants, pure function against TriggerContext
 - `enforcement.rs` — Pre/post-execution enforcement: `enforce_preconditions` checks `requires`, `enforce_postconditions` checks `produces`/`may_produce`, three failure variants (Missing, Invalid, Stale)
 - `project.rs` — Shared project loading: `Config` and `State` structs, config resolution chain (`--config` / `RUNA_CONFIG` / `.runa/config.toml` / XDG), `load_signals()` for optional `.runa/signals.json` with warning-based fallback, `load()` function: resolves workspace and store paths, reads state, parses manifest, builds graph, opens store
-- `activation.rs` — Per-(protocol, work_unit) activation timestamp persistence in `.runa/activations.json`, atomic write, scoped timestamp queries for TriggerContext
+- `completion.rs` — Per-(protocol, work_unit) completion timestamp persistence in `.runa/completions.json`, atomic write, scoped timestamp queries for TriggerContext
 - `selection.rs` — Work-unit discovery and protocol selection: `discover_ready_candidates` evaluates protocols in topological order, discovers work_units from artifact instances, checks trigger/preconditions/scan-trust, suppresses completed work
 
 **runa-cli modules:**
@@ -48,11 +48,11 @@ cargo run --bin runa-mcp           # Run MCP server (stdio)
 - `commands/list.rs` — `runa list`: implicitly scan, then display protocols in execution order with dependencies and blocked status
 - `commands/doctor.rs` — `runa doctor`: implicitly scan, then check artifact health, protocol readiness, cycle detection; exit 1 on problems
 - `commands/scan.rs` — `runa scan`: reconcile the artifact workspace into the internal store and report findings
-- `commands/status.rs` — `runa status`: implicitly scan, then classify protocols as READY / BLOCKED / WAITING using persisted active signals plus an empty activation timestamp map; optional `--json` output with versioned machine-readable status and detailed unsatisfied trigger reasons
+- `commands/status.rs` — `runa status`: implicitly scan, then classify protocols as READY / BLOCKED / WAITING using persisted active signals plus an empty completion timestamp map; optional `--json` output with versioned machine-readable status and detailed unsatisfied trigger reasons
 - `commands/step.rs` — `runa step`: implicitly scan, then build dry-run execution plans for READY protocols using shared status evaluation, persisted active signals, and `libagent::context::build_context`; optional `--json` output with plan + full protocol status
 
 **runa-mcp modules:**
-- `main.rs` — Runtime loop: load project, scan, select first ready candidate, build handler, serve stdio, re-scan, check postconditions, record activation
+- `main.rs` — Runtime loop: load project, scan, select first ready candidate, build handler, serve stdio, re-scan, check postconditions, record completion
 - `handler.rs` — `ServerHandler` impl: derives MCP tools from output artifact type schemas (with `work_unit` stripped), validates and writes artifacts on `call_tool`, serves protocol context on `get_prompt`
 - `context.rs` — Natural language context prompt renderer: transforms `ContextInjection` into prose with humanized keys, numbered lists, indented nesting
 

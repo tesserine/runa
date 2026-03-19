@@ -297,7 +297,7 @@ schema = { type = "object" }
 name = "y"
 trigger = { type = "on_signal", name = "go" }
 "#;
-        let err = from_str(&toml).unwrap_err();
+        let err = from_str(toml).unwrap_err();
         assert!(
             matches!(err, ManifestError::Parse(_)),
             "expected Parse error, got: {err}"
