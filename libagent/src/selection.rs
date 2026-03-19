@@ -1,0 +1,562 @@
+use std::collections::{BTreeSet, HashSet};
+
+use crate::activation::ActivationStore;
+use crate::enforcement::enforce_postconditions;
+use crate::model::{ProtocolDeclaration, TriggerCondition};
+use crate::store::ArtifactStore;
+use crate::trigger::{TriggerContext, TriggerResult, evaluate as evaluate_trigger};
+
+/// A (protocol, work_unit) pair that is ready for execution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Candidate {
+    pub protocol_name: String,
+    pub work_unit: Option<String>,
+}
+
+/// Discover all (protocol, work_unit) pairs that are ready for execution.
+///
+/// Evaluates protocols in topological order. For each protocol, discovers
+/// candidate work_units from artifact instances referenced by the protocol's
+/// edges and trigger tree, then evaluates readiness for each candidate.
+///
+/// Candidates are emitted in topological protocol order, with work_units
+/// in deterministic lexicographic order within each protocol.
+pub fn discover_ready_candidates(
+    protocols: &[ProtocolDeclaration],
+    store: &ArtifactStore,
+    activations: &ActivationStore,
+    active_signals: &HashSet<String>,
+    topological_order: &[&str],
+    partially_scanned_types: &HashSet<String>,
+) -> Vec<Candidate> {
+    let mut candidates = Vec::new();
+
+    for &protocol_name in topological_order {
+        let Some(protocol) = protocols.iter().find(|p| p.name == protocol_name) else {
+            continue;
+        };
+
+        // Collect artifact type names from requires, accepts, and trigger tree.
+        let mut referenced_types = HashSet::new();
+        for name in &protocol.requires {
+            referenced_types.insert(name.as_str());
+        }
+        for name in &protocol.accepts {
+            referenced_types.insert(name.as_str());
+        }
+        trigger_artifact_types(&protocol.trigger, &mut referenced_types);
+
+        // Collect distinct work_unit values from referenced artifact instances.
+        let work_units = collect_work_units(store, &referenced_types);
+
+        for wu in &work_units {
+            let wu_ref = wu.as_deref();
+
+            // Scan trust: skip if any requires type is partially scanned.
+            if protocol
+                .requires
+                .iter()
+                .any(|t| partially_scanned_types.contains(t.as_str()))
+            {
+                continue;
+            }
+
+            // Build trigger context scoped to this work_unit.
+            let timestamps = activations.timestamps_for_trigger_context(wu_ref);
+            let ctx = TriggerContext {
+                store,
+                activation_timestamps: &timestamps,
+                active_signals,
+                work_unit: wu_ref,
+            };
+
+            // Evaluate trigger.
+            if !matches!(
+                evaluate_trigger(&protocol.trigger, &ctx, &protocol.name),
+                TriggerResult::Satisfied
+            ) {
+                continue;
+            }
+
+            // Check preconditions.
+            if crate::enforce_preconditions(protocol, store, wu_ref).is_err() {
+                continue;
+            }
+
+            // Completed suppression: already activated and postconditions still pass.
+            if activations.is_activated(&protocol.name, wu_ref)
+                && enforce_postconditions(protocol, store, wu_ref).is_ok()
+            {
+                continue;
+            }
+
+            candidates.push(Candidate {
+                protocol_name: protocol.name.clone(),
+                work_unit: wu.clone(),
+            });
+        }
+    }
+
+    candidates
+}
+
+/// Walk a trigger condition tree and collect artifact type names
+/// from `OnArtifact`, `OnChange`, and `OnInvalid` variants.
+fn trigger_artifact_types<'a>(condition: &'a TriggerCondition, out: &mut HashSet<&'a str>) {
+    match condition {
+        TriggerCondition::OnArtifact { name }
+        | TriggerCondition::OnChange { name }
+        | TriggerCondition::OnInvalid { name } => {
+            out.insert(name.as_str());
+        }
+        TriggerCondition::OnSignal { .. } => {}
+        TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
+            for child in conditions {
+                trigger_artifact_types(child, out);
+            }
+        }
+    }
+}
+
+/// Collect distinct work_unit values from artifact instances across multiple types.
+///
+/// Returns `BTreeSet` for deterministic lexicographic ordering. If no instances
+/// reference any work_unit, returns `{None}` so the protocol is evaluated once
+/// unscoped.
+fn collect_work_units(
+    store: &ArtifactStore,
+    artifact_types: &HashSet<&str>,
+) -> BTreeSet<Option<String>> {
+    let mut work_units = BTreeSet::new();
+
+    for &type_name in artifact_types {
+        for (_, state) in store.instances_of(type_name, None) {
+            work_units.insert(state.work_unit.clone());
+        }
+    }
+
+    if work_units.is_empty() {
+        work_units.insert(None);
+    }
+
+    work_units
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::make_store;
+    use serde_json::json;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    fn make_protocol(
+        name: &str,
+        requires: &[&str],
+        accepts: &[&str],
+        produces: &[&str],
+        may_produce: &[&str],
+        trigger: TriggerCondition,
+    ) -> ProtocolDeclaration {
+        ProtocolDeclaration {
+            name: name.into(),
+            requires: requires.iter().map(|s| s.to_string()).collect(),
+            accepts: accepts.iter().map(|s| s.to_string()).collect(),
+            produces: produces.iter().map(|s| s.to_string()).collect(),
+            may_produce: may_produce.iter().map(|s| s.to_string()).collect(),
+            trigger,
+        }
+    }
+
+    #[test]
+    fn trigger_artifact_types_collects_from_tree() {
+        let trigger = TriggerCondition::AllOf {
+            conditions: vec![
+                TriggerCondition::OnArtifact {
+                    name: "constraints".into(),
+                },
+                TriggerCondition::AnyOf {
+                    conditions: vec![
+                        TriggerCondition::OnChange {
+                            name: "spec".into(),
+                        },
+                        TriggerCondition::OnInvalid {
+                            name: "report".into(),
+                        },
+                        TriggerCondition::OnSignal {
+                            name: "deploy".into(),
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let mut types = HashSet::new();
+        trigger_artifact_types(&trigger, &mut types);
+        assert_eq!(types.len(), 3);
+        assert!(types.contains("constraints"));
+        assert!(types.contains("spec"));
+        assert!(types.contains("report"));
+    }
+
+    #[test]
+    fn collect_work_units_returns_none_when_no_instances() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp.path().join("s"), vec!["doc"]);
+
+        let types = HashSet::from(["doc"]);
+        let wus = collect_work_units(&store, &types);
+        assert_eq!(wus, BTreeSet::from([None]));
+    }
+
+    #[test]
+    fn collect_work_units_returns_distinct_values() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        store
+            .record(
+                "doc",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "doc",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"title": "B", "work_unit": "wu-b"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "doc",
+                "shared",
+                Path::new("shared.json"),
+                &json!({"title": "S"}),
+            )
+            .unwrap();
+
+        let types = HashSet::from(["doc"]);
+        let wus = collect_work_units(&store, &types);
+        assert_eq!(
+            wus,
+            BTreeSet::from([None, Some("wu-a".into()), Some("wu-b".into())])
+        );
+    }
+
+    #[test]
+    fn signal_only_protocol_evaluated_once_unscoped() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let signals = HashSet::from(["go".to_string()]);
+
+        let protocol = make_protocol(
+            "ground",
+            &[],
+            &[],
+            &["doc"],
+            &[],
+            TriggerCondition::OnSignal { name: "go".into() },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &activations,
+            &signals,
+            &["ground"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "ground");
+        assert_eq!(candidates[0].work_unit, None);
+    }
+
+    #[test]
+    fn artifact_trigger_discovers_work_units() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "constraints",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"title": "B", "work_unit": "wu-b"}),
+            )
+            .unwrap();
+
+        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let signals = HashSet::new();
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &activations,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].protocol_name, "implement");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+        assert_eq!(candidates[1].work_unit, Some("wu-b".into()));
+    }
+
+    #[test]
+    fn completed_suppression_skips_activated_with_passing_postconditions() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let mut activations = ActivationStore::load(tmp.path()).unwrap();
+        activations.record_at("implement", Some("wu-a"), 1000);
+        let signals = HashSet::new();
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &activations,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn activated_but_postconditions_fail_still_candidate() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        // No implementation artifact → postconditions fail → not suppressed.
+
+        let mut activations = ActivationStore::load(tmp.path()).unwrap();
+        activations.record_at("implement", Some("wu-a"), 1000);
+        let signals = HashSet::new();
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &activations,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn partially_scanned_type_in_requires_skips() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints"]);
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let signals = HashSet::new();
+        let partial = HashSet::from(["constraints".to_string()]);
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &[],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &activations,
+            &signals,
+            &["implement"],
+            &partial,
+        );
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn unsatisfied_trigger_not_candidate() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let signals = HashSet::new();
+
+        let protocol = make_protocol(
+            "ground",
+            &[],
+            &[],
+            &["doc"],
+            &[],
+            TriggerCondition::OnSignal { name: "go".into() },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &activations,
+            &signals,
+            &["ground"],
+            &HashSet::new(),
+        );
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn preconditions_fail_not_candidate() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        // constraints is required but missing.
+        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let signals = HashSet::from(["go".to_string()]);
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnSignal { name: "go".into() },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &activations,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn topological_order_determines_candidate_order() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["a", "b"]);
+        store
+            .record("a", "x", Path::new("a.json"), &json!({"title": "A"}))
+            .unwrap();
+        store
+            .record("b", "x", Path::new("b.json"), &json!({"title": "B"}))
+            .unwrap();
+
+        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let signals = HashSet::new();
+
+        let protocols = vec![
+            make_protocol(
+                "alpha",
+                &["a"],
+                &[],
+                &[],
+                &[],
+                TriggerCondition::OnArtifact { name: "a".into() },
+            ),
+            make_protocol(
+                "beta",
+                &["b"],
+                &[],
+                &[],
+                &[],
+                TriggerCondition::OnArtifact { name: "b".into() },
+            ),
+        ];
+
+        // beta first in topological order.
+        let candidates = discover_ready_candidates(
+            &protocols,
+            &store,
+            &activations,
+            &signals,
+            &["beta", "alpha"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].protocol_name, "beta");
+        assert_eq!(candidates[1].protocol_name, "alpha");
+    }
+}
