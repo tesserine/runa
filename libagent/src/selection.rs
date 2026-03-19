@@ -196,15 +196,12 @@ fn collect_work_units(
     // Drop the unscoped entry when scoped work units are present.
     // Scoped queries already include unscoped instances (via
     // matches_work_unit_filter), so the None entry would create a
-    // redundant aggregate candidate that duplicates per-work-unit
-    // executions.
+    // redundant candidate that duplicates per-work-unit runs.
     //
-    // Design constraint: protocols that must run once as an
-    // aggregate (e.g., producing unpartitioned summary outputs)
-    // should reference only unscoped input types. When all
-    // referenced types are unscoped, collect_work_units returns
-    // {None} and the protocol evaluates once. Mixing scoped and
-    // unscoped inputs routes through per-work-unit evaluation.
+    // None candidates appear naturally for planning-phase protocols
+    // (survey, decompose) and the phase bridge (begin), whose
+    // inputs predate work-unit identity. Execution-phase protocols
+    // always have scoped inputs, so None is always removed for them.
     if work_units.iter().any(|wu| wu.is_some()) {
         work_units.remove(&None);
     }
