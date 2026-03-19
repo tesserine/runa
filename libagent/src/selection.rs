@@ -53,7 +53,7 @@ pub fn discover_ready_candidates(
         }
 
         // Collect distinct work_unit values from referenced artifact instances.
-        let work_units = collect_work_units(store, &referenced_types);
+        let work_units = collect_work_units(store, &referenced_types, partially_scanned_types);
 
         for wu in &work_units {
             let wu_ref = wu.as_deref();
@@ -180,10 +180,14 @@ fn any_on_change_satisfied(
 fn collect_work_units(
     store: &ArtifactStore,
     artifact_types: &HashSet<&str>,
+    partially_scanned_types: &HashSet<String>,
 ) -> BTreeSet<Option<String>> {
     let mut work_units = BTreeSet::new();
 
     for &type_name in artifact_types {
+        if partially_scanned_types.contains(type_name) {
+            continue;
+        }
         for (_, state) in store.instances_of(type_name, None) {
             work_units.insert(state.work_unit.clone());
         }
@@ -266,7 +270,7 @@ mod tests {
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
         let types = HashSet::from(["doc"]);
-        let wus = collect_work_units(&store, &types);
+        let wus = collect_work_units(&store, &types, &HashSet::new());
         assert_eq!(wus, BTreeSet::from([None]));
     }
 
@@ -300,7 +304,7 @@ mod tests {
             .unwrap();
 
         let types = HashSet::from(["doc"]);
-        let wus = collect_work_units(&store, &types);
+        let wus = collect_work_units(&store, &types, &HashSet::new());
         assert_eq!(
             wus,
             BTreeSet::from([Some("wu-a".into()), Some("wu-b".into())])
@@ -319,8 +323,35 @@ mod tests {
             .unwrap();
 
         let types = HashSet::from(["doc"]);
-        let wus = collect_work_units(&store, &types);
+        let wus = collect_work_units(&store, &types, &HashSet::new());
         assert_eq!(wus, BTreeSet::from([None]));
+    }
+
+    #[test]
+    fn collect_work_units_excludes_partially_scanned_types() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["notes", "constraints"]);
+        store
+            .record(
+                "notes",
+                "wu-stale",
+                Path::new("notes-stale.json"),
+                &json!({"title": "Stale", "work_unit": "wu-stale"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "constraints",
+                "wu-good",
+                Path::new("constraints-good.json"),
+                &json!({"title": "Good", "work_unit": "wu-good"}),
+            )
+            .unwrap();
+
+        let types = HashSet::from(["notes", "constraints"]);
+        let partial = HashSet::from(["notes".to_string()]);
+        let wus = collect_work_units(&store, &types, &partial);
+        assert_eq!(wus, BTreeSet::from([Some("wu-good".into())]));
     }
 
     #[test]
