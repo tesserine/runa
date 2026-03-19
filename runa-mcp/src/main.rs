@@ -3,7 +3,8 @@ mod handler;
 
 use libagent::project::{self, RUNA_DIR, STORE_DIRNAME};
 use libagent::{
-    ActivationStore, ArtifactStore, discover_ready_candidates, enforce_postconditions, scan,
+    ActivationStore, ArtifactStore, TriggerCondition, discover_ready_candidates,
+    enforce_postconditions, scan,
 };
 use rmcp::service::ServiceExt;
 use rmcp::transport::io;
@@ -114,6 +115,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         loaded.workspace_dir.clone(),
     );
 
+    let session_start_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before UNIX epoch")
+        .as_millis() as u64;
+
     // 10. Serve via stdio transport.
     let (stdin, stdout) = io::stdio();
     let service = handler
@@ -147,6 +153,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
              of '{}' work_unit={:?}, no activation recorded",
             partial_output_types, protocol.name, candidate.work_unit
         );
+    } else if trigger_contains_on_change(&protocol.trigger)
+        && !protocol
+            .produces
+            .iter()
+            .chain(&protocol.may_produce)
+            .any(|type_name| {
+                store
+                    .latest_modification_ms(type_name, work_unit_ref)
+                    .is_some_and(|ts| ts >= session_start_ms)
+            })
+    {
+        eprintln!(
+            "runa-mcp: on_change protocol '{}' work_unit={:?}: \
+             session produced no output, change remains pending",
+            protocol.name, candidate.work_unit
+        );
     } else if enforce_postconditions(&protocol, &store, work_unit_ref).is_ok() {
         // 13. Record activation.
         activations.record(&protocol.name, work_unit_ref);
@@ -164,4 +186,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // 14. Exit 0.
     Ok(())
+}
+
+fn trigger_contains_on_change(condition: &TriggerCondition) -> bool {
+    match condition {
+        TriggerCondition::OnChange { .. } => true,
+        TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
+            conditions.iter().any(trigger_contains_on_change)
+        }
+        _ => false,
+    }
 }

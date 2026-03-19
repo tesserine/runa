@@ -314,19 +314,22 @@ impl ServerHandler for RunaHandler {
         };
 
         // Extract instance_id (tool parameter, not part of artifact schema).
-        let explicit_id = if let Value::Object(data_map) = &mut data {
-            data_map.remove("instance_id").and_then(|v| match v {
-                Value::String(s) => Some(s),
-                _ => None,
-            })
+        let instance_id = if let Value::Object(data_map) = &mut data {
+            match data_map.remove("instance_id") {
+                Some(Value::String(s)) => s,
+                Some(_) => {
+                    return Err(McpError::invalid_params(
+                        "instance_id must be a string",
+                        None,
+                    ));
+                }
+                None => {
+                    return Err(McpError::invalid_params("instance_id is required", None));
+                }
+            }
         } else {
-            None
+            return Err(McpError::invalid_params("instance_id is required", None));
         };
-
-        // Use explicit instance_id, fall back to work_unit, then type name.
-        let instance_id = explicit_id
-            .or_else(|| self.work_unit.clone())
-            .unwrap_or_else(|| tool_name.to_string());
 
         validate_instance_id(&instance_id).map_err(|e| McpError::invalid_params(e, None))?;
 
