@@ -36,7 +36,11 @@ pub fn discover_ready_candidates(
             continue;
         };
 
-        // Collect artifact type names from requires, accepts, and trigger tree.
+        // Collect artifact type names from trigger tree (kept separate for
+        // scan trust checks), then merge with requires and accepts.
+        let mut trigger_types = HashSet::new();
+        trigger_artifact_types(&protocol.trigger, &mut trigger_types);
+
         let mut referenced_types = HashSet::new();
         for name in &protocol.requires {
             referenced_types.insert(name.as_str());
@@ -44,7 +48,9 @@ pub fn discover_ready_candidates(
         for name in &protocol.accepts {
             referenced_types.insert(name.as_str());
         }
-        trigger_artifact_types(&protocol.trigger, &mut referenced_types);
+        for &t in &trigger_types {
+            referenced_types.insert(t);
+        }
 
         // Collect distinct work_unit values from referenced artifact instances.
         let work_units = collect_work_units(store, &referenced_types);
@@ -52,11 +58,16 @@ pub fn discover_ready_candidates(
         for wu in &work_units {
             let wu_ref = wu.as_deref();
 
-            // Scan trust: skip if any requires type is partially scanned.
+            // Scan trust: skip if any requires or trigger-referenced type
+            // is partially scanned. Evaluating triggers or preconditions
+            // against incomplete data could lead to false activation.
             if protocol
                 .requires
                 .iter()
                 .any(|t| partially_scanned_types.contains(t.as_str()))
+                || trigger_types
+                    .iter()
+                    .any(|t| partially_scanned_types.contains(*t))
             {
                 continue;
             }
@@ -650,6 +661,48 @@ mod tests {
             &activations,
             &signals,
             &["implement"],
+            &partial,
+        );
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn partially_scanned_trigger_type_not_in_requires_skips() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["lint"]);
+        store
+            .record(
+                "lint",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let activations = ActivationStore::load(tmp.path()).unwrap();
+        let signals = HashSet::new();
+        let partial = HashSet::from(["lint".to_string()]);
+
+        // lint is only referenced by the trigger, not in requires.
+        // Partially scanned trigger type → untrusted data → skip.
+        let protocol = make_protocol(
+            "fix-lint",
+            &[],
+            &[],
+            &[],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "lint".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &activations,
+            &signals,
+            &["fix-lint"],
             &partial,
         );
 

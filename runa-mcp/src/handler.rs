@@ -50,18 +50,68 @@ impl RunaHandler {
             .chain(protocol.may_produce.iter())
             .collect();
 
-        for type_name in output_types {
-            if let Some(at) = store.artifact_type(type_name) {
-                let stripped = strip_work_unit(&at.schema);
-                let schema_obj = add_instance_id(stripped);
+        // Determine if any output type uses work_unit scoping (top-level
+        // properties.work_unit). Used to detect composed schemas that would
+        // hide work_unit from injection.
+        let methodology_uses_work_unit = output_types.iter().any(|type_name| {
+            store.artifact_type(type_name).is_some_and(|at| {
+                at.schema
+                    .get("properties")
+                    .and_then(|p| p.get("work_unit"))
+                    .is_some()
+            })
+        });
 
-                tools.push(Tool::new(
-                    type_name.clone(),
-                    format!("Produce a {type_name} artifact"),
-                    Arc::new(schema_obj),
-                ));
-                tool_schemas.insert(type_name.clone(), at.schema.clone());
+        for type_name in &output_types {
+            let Some(at) = store.artifact_type(type_name) else {
+                continue;
+            };
+
+            // Reject non-object schemas: strip_work_unit and add_instance_id
+            // assume object root with properties/required.
+            let root_type = at.schema.get("type").and_then(|t| t.as_str());
+            if root_type != Some("object") {
+                eprintln!(
+                    "runa-mcp: skipping artifact type '{}': non-object schema root type '{}' \
+                     is not supported for MCP tool generation",
+                    type_name,
+                    root_type.unwrap_or("<missing>"),
+                );
+                continue;
             }
+
+            // Reject composed schemas that obscure work_unit: if the schema
+            // uses composition keywords without top-level properties.work_unit
+            // in a methodology that uses work_unit scoping, injection would
+            // silently skip and validation would fail.
+            let has_composition = at.schema.get("allOf").is_some()
+                || at.schema.get("anyOf").is_some()
+                || at.schema.get("oneOf").is_some()
+                || at.schema.get("$ref").is_some();
+            let has_top_level_work_unit = at
+                .schema
+                .get("properties")
+                .and_then(|p| p.get("work_unit"))
+                .is_some();
+            if has_composition && !has_top_level_work_unit && methodology_uses_work_unit {
+                eprintln!(
+                    "runa-mcp: skipping artifact type '{}': schema uses composition keywords \
+                     (allOf/anyOf/oneOf/$ref) without top-level properties.work_unit; composed \
+                     schemas are not supported for MCP tool generation",
+                    type_name,
+                );
+                continue;
+            }
+
+            let stripped = strip_work_unit(&at.schema);
+            let schema_obj = add_instance_id(stripped);
+
+            tools.push(Tool::new(
+                (*type_name).clone(),
+                format!("Produce a {type_name} artifact"),
+                Arc::new(schema_obj),
+            ));
+            tool_schemas.insert((*type_name).clone(), at.schema.clone());
         }
 
         Self {
@@ -421,5 +471,124 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("tool should have required");
         assert!(required.iter().any(|v| v.as_str() == Some("instance_id")));
+    }
+
+    #[test]
+    fn non_object_schema_excluded_from_tools() {
+        let tmp = tempfile::tempdir().unwrap();
+        let types = vec![
+            ArtifactType {
+                name: "constraints".into(),
+                schema: json!({ "type": "object" }),
+            },
+            ArtifactType {
+                name: "implementation".into(),
+                schema: json!({
+                    "type": "object",
+                    "properties": { "title": { "type": "string" } }
+                }),
+            },
+            ArtifactType {
+                name: "log_entries".into(),
+                schema: json!({
+                    "type": "array",
+                    "items": { "type": "string" }
+                }),
+            },
+        ];
+        let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
+        let manifest = libagent::Manifest {
+            name: "test".into(),
+            artifact_types: types,
+            protocols: Vec::new(),
+        };
+        let protocol = ProtocolDeclaration {
+            name: "implement".into(),
+            requires: vec!["constraints".into()],
+            accepts: Vec::new(),
+            produces: vec!["implementation".into(), "log_entries".into()],
+            may_produce: Vec::new(),
+            trigger: TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        };
+
+        let handler = RunaHandler::new(
+            protocol,
+            None,
+            store,
+            manifest,
+            tmp.path().join("workspace"),
+        );
+
+        // Non-object schema excluded; object schema included.
+        assert_eq!(handler.tools.len(), 1);
+        assert_eq!(handler.tools[0].name.as_ref(), "implementation");
+    }
+
+    #[test]
+    fn composed_schema_without_top_level_work_unit_excluded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let types = vec![
+            ArtifactType {
+                name: "constraints".into(),
+                schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "work_unit": { "type": "string" }
+                    }
+                }),
+            },
+            ArtifactType {
+                name: "implementation".into(),
+                schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "work_unit": { "type": "string" }
+                    }
+                }),
+            },
+            ArtifactType {
+                name: "composed".into(),
+                schema: json!({
+                    "type": "object",
+                    "allOf": [
+                        { "properties": { "title": { "type": "string" } } },
+                        { "properties": { "work_unit": { "type": "string" } } }
+                    ]
+                }),
+            },
+        ];
+        let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
+        let manifest = libagent::Manifest {
+            name: "test".into(),
+            artifact_types: types,
+            protocols: Vec::new(),
+        };
+        let protocol = ProtocolDeclaration {
+            name: "implement".into(),
+            requires: vec!["constraints".into()],
+            accepts: Vec::new(),
+            produces: vec!["implementation".into(), "composed".into()],
+            may_produce: Vec::new(),
+            trigger: TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        };
+
+        let handler = RunaHandler::new(
+            protocol,
+            Some("wu-1".into()),
+            store,
+            manifest,
+            tmp.path().join("workspace"),
+        );
+
+        // implementation has top-level work_unit → included.
+        // composed has allOf without top-level properties.work_unit → excluded.
+        assert_eq!(handler.tools.len(), 1);
+        assert_eq!(handler.tools[0].name.as_ref(), "implementation");
     }
 }
