@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use libagent::context::build_context;
 use libagent::validation::validate_artifact;
-use libagent::{ArtifactStore, ArtifactType, Manifest, ProtocolDeclaration};
+use libagent::{ArtifactStore, ArtifactType, ProtocolDeclaration};
 
 use crate::context::render_context_prompt;
 
@@ -19,8 +19,6 @@ pub struct RunaHandler {
     work_unit: Option<String>,
     state: Mutex<HandlerState>,
     workspace_dir: PathBuf,
-    #[allow(dead_code)]
-    manifest: Manifest,
     tools: Vec<Tool>,
     /// Maps artifact type name → full JSON Schema (with work_unit intact).
     tool_schemas: HashMap<String, Value>,
@@ -35,7 +33,6 @@ impl RunaHandler {
         protocol: ProtocolDeclaration,
         work_unit: Option<String>,
         store: ArtifactStore,
-        manifest: Manifest,
         workspace_dir: PathBuf,
     ) -> Self {
         let mut tools = Vec::new();
@@ -106,7 +103,6 @@ impl RunaHandler {
             work_unit,
             state: Mutex::new(HandlerState { store }),
             workspace_dir,
-            manifest,
             tools,
             tool_schemas,
         }
@@ -414,11 +410,7 @@ impl ServerHandler for RunaHandler {
 
         let state = self.state.lock().unwrap();
         let injection = build_context(&self.protocol, &state.store, self.work_unit.as_deref());
-        Ok(render_context_prompt(
-            &injection,
-            &state.store,
-            &self.workspace_dir,
-        ))
+        Ok(render_context_prompt(&injection))
     }
 }
 
@@ -493,11 +485,6 @@ mod tests {
             },
         ];
         let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
-        let manifest = libagent::Manifest {
-            name: "test".into(),
-            artifact_types: types,
-            protocols: Vec::new(),
-        };
         let protocol = ProtocolDeclaration {
             name: "implement".into(),
             requires: vec!["constraints".into()],
@@ -513,7 +500,6 @@ mod tests {
             protocol,
             Some("wu-1".into()),
             store,
-            manifest,
             tmp.path().join("workspace"),
         );
 
@@ -564,11 +550,6 @@ mod tests {
             },
         ];
         let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
-        let manifest = libagent::Manifest {
-            name: "test".into(),
-            artifact_types: types,
-            protocols: Vec::new(),
-        };
         let protocol = ProtocolDeclaration {
             name: "implement".into(),
             requires: vec!["constraints".into()],
@@ -580,13 +561,7 @@ mod tests {
             },
         };
 
-        let handler = RunaHandler::new(
-            protocol,
-            None,
-            store,
-            manifest,
-            tmp.path().join("workspace"),
-        );
+        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
 
         // Non-object may_produce schema silently excluded; object produces included.
         assert_eq!(handler.tools.len(), 1);
@@ -623,11 +598,6 @@ mod tests {
             },
         ];
         let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
-        let manifest = libagent::Manifest {
-            name: "test".into(),
-            artifact_types: types,
-            protocols: Vec::new(),
-        };
         let protocol = ProtocolDeclaration {
             name: "implement".into(),
             requires: vec!["constraints".into()],
@@ -643,7 +613,6 @@ mod tests {
             protocol,
             Some("wu-1".into()),
             store,
-            manifest,
             tmp.path().join("workspace"),
         );
 
@@ -676,11 +645,6 @@ mod tests {
             },
         ];
         let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
-        let manifest = libagent::Manifest {
-            name: "test".into(),
-            artifact_types: types,
-            protocols: Vec::new(),
-        };
         let protocol = ProtocolDeclaration {
             name: "compose-all".into(),
             requires: Vec::new(),
@@ -690,13 +654,7 @@ mod tests {
             trigger: TriggerCondition::OnSignal { name: "go".into() },
         };
 
-        let handler = RunaHandler::new(
-            protocol,
-            None,
-            store,
-            manifest,
-            tmp.path().join("workspace"),
-        );
+        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
 
         // All output types use composition → all excluded.
         assert!(handler.tools.is_empty());
@@ -863,11 +821,6 @@ mod tests {
             },
         ];
         let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
-        let manifest = libagent::Manifest {
-            name: "test".into(),
-            artifact_types: types,
-            protocols: Vec::new(),
-        };
         let protocol = ProtocolDeclaration {
             name: "produce".into(),
             requires: Vec::new(),
@@ -881,7 +834,6 @@ mod tests {
             protocol,
             None, // unscoped
             store,
-            manifest,
             tmp.path().join("workspace"),
         );
 

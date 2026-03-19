@@ -1,9 +1,6 @@
-use std::path::Path;
-
 use rmcp::model::{GetPromptResult, PromptMessage, PromptMessageRole};
 use serde_json::Value;
 
-use libagent::ArtifactStore;
 use libagent::context::{ArtifactRelationship, ContextInjection};
 
 /// Render the agent-facing context prompt as natural language prose.
@@ -11,11 +8,7 @@ use libagent::context::{ArtifactRelationship, ContextInjection};
 /// Reads artifact files from the paths in `ContextInjection`, parses as JSON,
 /// and transforms to readable prose. Errors reading or parsing individual
 /// artifacts are rendered inline rather than failing the prompt.
-pub fn render_context_prompt(
-    context: &ContextInjection,
-    _store: &ArtifactStore,
-    _workspace_dir: &Path,
-) -> GetPromptResult {
+pub fn render_context_prompt(context: &ContextInjection) -> GetPromptResult {
     let mut sections = Vec::new();
     sections.push(format!("# Protocol: {}", context.protocol));
 

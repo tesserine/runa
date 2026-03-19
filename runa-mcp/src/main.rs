@@ -78,13 +78,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (candidate, protocol) = {
         let mut found = None;
         for c in &candidates {
-            let p = loaded
+            let Some(p) = loaded
                 .manifest
                 .protocols
                 .iter()
                 .find(|p| p.name == c.protocol_name)
-                .expect("candidate protocol exists in manifest")
-                .clone();
+            else {
+                eprintln!("runa-mcp: skipping unknown protocol '{}'", c.protocol_name);
+                continue;
+            };
+            let p = p.clone();
 
             if let Err(e) =
                 handler::validate_output_types(&p, &loaded.store, c.work_unit.as_deref())
@@ -117,7 +120,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         protocol.clone(),
         candidate.work_unit.clone(),
         loaded.store,
-        loaded.manifest.clone(),
         loaded.workspace_dir.clone(),
     );
 

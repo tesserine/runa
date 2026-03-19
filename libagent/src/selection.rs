@@ -52,25 +52,25 @@ pub fn discover_ready_candidates(
             referenced_types.insert(t);
         }
 
+        // Scan trust: skip protocol entirely if any requires or trigger-
+        // referenced type is partially scanned. Evaluating triggers or
+        // preconditions against incomplete data could lead to false activation.
+        if protocol
+            .requires
+            .iter()
+            .any(|t| partially_scanned_types.contains(t.as_str()))
+            || trigger_types
+                .iter()
+                .any(|t| partially_scanned_types.contains(*t))
+        {
+            continue;
+        }
+
         // Collect distinct work_unit values from referenced artifact instances.
         let work_units = collect_work_units(store, &referenced_types, partially_scanned_types);
 
         for wu in &work_units {
             let wu_ref = wu.as_deref();
-
-            // Scan trust: skip if any requires or trigger-referenced type
-            // is partially scanned. Evaluating triggers or preconditions
-            // against incomplete data could lead to false activation.
-            if protocol
-                .requires
-                .iter()
-                .any(|t| partially_scanned_types.contains(t.as_str()))
-                || trigger_types
-                    .iter()
-                    .any(|t| partially_scanned_types.contains(*t))
-            {
-                continue;
-            }
 
             // Build trigger context scoped to this work_unit.
             let timestamps = activations.timestamps_for_trigger_context(wu_ref);
