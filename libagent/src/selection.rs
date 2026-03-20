@@ -557,6 +557,56 @@ mod tests {
     }
 
     #[test]
+    fn may_produce_only_protocols_are_not_suppressed() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "notes"]);
+        store
+            .record_with_timestamp(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "notes",
+                "old-note",
+                Path::new("note.json"),
+                &json!({"title": "old", "work_unit": "wu-a"}),
+                500,
+            )
+            .unwrap();
+
+        let completions = CompletionStore::load(tmp.path()).unwrap();
+        let signals = HashSet::new();
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &[],
+            &["notes"],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &completions,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "implement");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+    }
+
+    #[test]
     fn activated_but_postconditions_fail_still_candidate() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);

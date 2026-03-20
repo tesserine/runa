@@ -138,7 +138,7 @@ pub(crate) fn derived_completion_timestamp(
     store: &ArtifactStore,
     work_unit: Option<&str>,
 ) -> Option<u64> {
-    if protocol.produces.is_empty() && protocol.may_produce.is_empty() {
+    if protocol.produces.is_empty() {
         return None;
     }
 
@@ -149,7 +149,6 @@ pub(crate) fn derived_completion_timestamp(
     protocol
         .produces
         .iter()
-        .chain(protocol.may_produce.iter())
         .flat_map(|artifact_type| store.instances_of(artifact_type, work_unit))
         .map(|(_, state)| state.last_modified_ms)
         .min()
@@ -483,6 +482,79 @@ mod tests {
             super::evaluate(&cond, &protocol, &ctx),
             TriggerResult::Satisfied
         );
+    }
+
+    #[test]
+    fn on_change_ignores_stale_may_produce_timestamps() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["doc", "implementation", "notes"],
+        );
+        store
+            .record_with_timestamp(
+                "doc",
+                "a",
+                Path::new("a.json"),
+                &json!({"title": "current"}),
+                1500,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "impl",
+                Path::new("impl.json"),
+                &json!({"title": "done"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "notes",
+                "old-note",
+                Path::new("notes.json"),
+                &json!({"title": "old"}),
+                500,
+            )
+            .unwrap();
+
+        let signals = HashSet::new();
+        let ctx = TriggerContext {
+            store: &store,
+            active_signals: &signals,
+            work_unit: None,
+        };
+        let cond = TriggerCondition::OnChange { name: "doc".into() };
+        let protocol = make_protocol(cond.clone(), &["implementation"], &["notes"]);
+        assert!(matches!(
+            super::evaluate(&cond, &protocol, &ctx),
+            TriggerResult::NotSatisfied(_)
+        ));
+    }
+
+    #[test]
+    fn derived_completion_timestamp_is_none_for_may_produce_only_protocols() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["notes"]);
+        store
+            .record_with_timestamp(
+                "notes",
+                "note",
+                Path::new("note.json"),
+                &json!({"title": "optional"}),
+                1000,
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            TriggerCondition::OnSignal {
+                name: "manual".into(),
+            },
+            &[],
+            &["notes"],
+        );
+        assert_eq!(derived_completion_timestamp(&protocol, &store, None), None);
     }
 
     // --- OnInvalid ---
