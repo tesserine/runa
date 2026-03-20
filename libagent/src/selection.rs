@@ -208,21 +208,9 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
-    #[derive(Default)]
-    struct CompletionStore;
-
-    impl CompletionStore {
-        fn load(_path: &Path) -> Result<Self, std::io::Error> {
-            Ok(Self)
-        }
-
-        fn record_at(&mut self, _protocol: &str, _work_unit: Option<&str>, _timestamp_ms: u64) {}
-    }
-
     fn discover_ready_candidates(
         protocols: &[ProtocolDeclaration],
         store: &ArtifactStore,
-        _completions: &CompletionStore,
         active_signals: &HashSet<String>,
         topological_order: &[&str],
         partially_scanned_types: &HashSet<String>,
@@ -379,7 +367,6 @@ mod tests {
     fn signal_only_protocol_evaluated_once_unscoped() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::from(["go".to_string()]);
 
         let protocol = make_protocol(
@@ -391,14 +378,8 @@ mod tests {
             TriggerCondition::OnSignal { name: "go".into() },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &completions,
-            &signals,
-            &["ground"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["ground"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "ground");
@@ -426,7 +407,6 @@ mod tests {
             )
             .unwrap();
 
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
 
         let protocol = make_protocol(
@@ -443,7 +423,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -476,8 +455,6 @@ mod tests {
             )
             .unwrap();
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::new();
 
         let protocol = make_protocol(
@@ -494,7 +471,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -526,8 +502,6 @@ mod tests {
             )
             .unwrap();
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 3000);
         let signals = HashSet::new();
 
         let protocol = make_protocol(
@@ -544,7 +518,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -578,7 +551,6 @@ mod tests {
             )
             .unwrap();
 
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
         let protocol = make_protocol(
             "implement",
@@ -594,7 +566,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -619,8 +590,6 @@ mod tests {
             .unwrap();
         // No implementation artifact → postconditions fail → not suppressed.
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::new();
 
         let protocol = make_protocol(
@@ -637,7 +606,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -671,8 +639,6 @@ mod tests {
             )
             .unwrap();
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::new();
 
         // on_change trigger: constraints changed at 2000, completion was at 1000.
@@ -690,7 +656,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -724,8 +689,6 @@ mod tests {
             )
             .unwrap();
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::from(["go".to_string()]);
 
         // on_change nested inside all_of: still should not be suppressed.
@@ -748,7 +711,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -781,8 +743,6 @@ mod tests {
             )
             .unwrap();
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::from(["go".to_string()]);
 
         // AnyOf(on_signal("go"), on_change("constraints"))
@@ -808,7 +768,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -842,8 +801,6 @@ mod tests {
             )
             .unwrap();
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         // Signal "y" is active, signal "x" is not.
         let signals = HashSet::from(["y".to_string()]);
 
@@ -874,7 +831,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -898,7 +854,6 @@ mod tests {
             )
             .unwrap();
 
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
         let partial = HashSet::from(["constraints".to_string()]);
 
@@ -913,14 +868,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &completions,
-            &signals,
-            &["implement"],
-            &partial,
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
 
         assert!(candidates.is_empty());
     }
@@ -938,7 +887,6 @@ mod tests {
             )
             .unwrap();
 
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
         let partial = HashSet::from(["lint".to_string()]);
 
@@ -955,14 +903,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &completions,
-            &signals,
-            &["fix-lint"],
-            &partial,
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["fix-lint"], &partial);
 
         assert!(candidates.is_empty());
     }
@@ -989,8 +931,6 @@ mod tests {
             )
             .unwrap();
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::new();
         // implementation is partially scanned — postcondition data is stale.
         let partial = HashSet::from(["implementation".to_string()]);
@@ -1006,14 +946,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &completions,
-            &signals,
-            &["implement"],
-            &partial,
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
 
         // Must NOT be suppressed: output type was partially scanned,
         // so postcondition check against stale data is untrusted.
@@ -1046,7 +980,6 @@ mod tests {
             )
             .unwrap();
 
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
         let partial = HashSet::from(["notes".to_string()]);
 
@@ -1061,14 +994,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &completions,
-            &signals,
-            &["implement"],
-            &partial,
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
 
         assert!(candidates.is_empty());
     }
@@ -1077,7 +1004,6 @@ mod tests {
     fn unsatisfied_trigger_not_candidate() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
 
         let protocol = make_protocol(
@@ -1089,14 +1015,8 @@ mod tests {
             TriggerCondition::OnSignal { name: "go".into() },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &completions,
-            &signals,
-            &["ground"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["ground"], &HashSet::new());
 
         assert!(candidates.is_empty());
     }
@@ -1106,7 +1026,6 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
         // constraints is required but missing.
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::from(["go".to_string()]);
 
         let protocol = make_protocol(
@@ -1121,7 +1040,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -1141,7 +1059,6 @@ mod tests {
             .record("b", "x", Path::new("b.json"), &json!({"title": "B"}))
             .unwrap();
 
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
 
         let protocols = vec![
@@ -1167,7 +1084,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &protocols,
             &store,
-            &completions,
             &signals,
             &["beta", "alpha"],
             &HashSet::new(),
@@ -1176,5 +1092,63 @@ mod tests {
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].protocol_name, "beta");
         assert_eq!(candidates[1].protocol_name, "alpha");
+    }
+
+    #[test]
+    fn shared_outputs_do_not_pin_scoped_freshness() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["constraints", "implementation", "summary"],
+        );
+        store
+            .record_with_timestamp(
+                "constraints",
+                "a1",
+                Path::new("constraints-a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                1500,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "summary",
+                "shared",
+                Path::new("summary.json"),
+                &json!({"title": "summary"}),
+                1000,
+            )
+            .unwrap();
+
+        let signals = HashSet::new();
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation", "summary"],
+            &[],
+            TriggerCondition::OnChange {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert!(candidates.is_empty());
     }
 }

@@ -149,7 +149,12 @@ pub(crate) fn derived_completion_timestamp(
     protocol
         .produces
         .iter()
-        .flat_map(|artifact_type| store.instances_of(artifact_type, work_unit))
+        .flat_map(|artifact_type| {
+            store
+                .instances_of(artifact_type, work_unit)
+                .into_iter()
+                .filter(|(_, state)| state.work_unit.as_deref() == work_unit)
+        })
         .map(|(_, state)| state.last_modified_ms)
         .min()
 }
@@ -555,6 +560,89 @@ mod tests {
             &["notes"],
         );
         assert_eq!(derived_completion_timestamp(&protocol, &store, None), None);
+    }
+
+    #[test]
+    fn derived_completion_timestamp_excludes_unscoped_outputs_for_scoped_work_unit() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["implementation"]);
+        store
+            .record_with_timestamp(
+                "implementation",
+                "shared",
+                Path::new("shared.json"),
+                &json!({"title": "shared"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "wu-a",
+                Path::new("wu-a.json"),
+                &json!({"title": "scoped", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            TriggerCondition::OnSignal {
+                name: "manual".into(),
+            },
+            &["implementation"],
+            &[],
+        );
+
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, Some("wu-a")),
+            Some(2000)
+        );
+    }
+
+    #[test]
+    fn derived_completion_timestamp_uses_unscoped_outputs_for_unscoped_work() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["implementation"]);
+        store
+            .record_with_timestamp(
+                "implementation",
+                "shared-old",
+                Path::new("shared-old.json"),
+                &json!({"title": "old"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "shared-new",
+                Path::new("shared-new.json"),
+                &json!({"title": "new"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "wu-a",
+                Path::new("wu-a.json"),
+                &json!({"title": "scoped", "work_unit": "wu-a"}),
+                500,
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            TriggerCondition::OnSignal {
+                name: "manual".into(),
+            },
+            &["implementation"],
+            &[],
+        );
+
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, None),
+            Some(1000)
+        );
     }
 
     // --- OnInvalid ---
