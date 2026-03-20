@@ -32,7 +32,7 @@ A protocol declaration:
 - **requires** — zero or more artifact type names
 - **accepts** — zero or more artifact type names
 - **produces** — zero or more artifact type names
-- **may_produce** — zero or more artifact type names. A protocol whose only outputs are `may_produce` types completes successfully when the agent produces nothing — the contract does not require optional outputs. If output should always be produced, the artifact type belongs in `produces`.
+- **may_produce** — zero or more artifact type names. Absent optional outputs do not fail postconditions, but they also do not create completion evidence. If output should always be produced, the artifact type belongs in `produces`.
 - **trigger** — one trigger condition (see below)
 
 Topology is not declared. It emerges from the graph of requires/produces/may_produce relationships across protocols. A pipeline emerges when protocols chain linearly. A graph emerges when protocols fan in or fan out. A cycle emerges when a protocol produces an artifact type that another protocol's trigger monitors for change. The methodology does not tell runa what shape it is. runa computes the shape from declarations.
@@ -42,7 +42,7 @@ Topology is not declared. It emerges from the graph of requires/produces/may_pro
 A trigger condition defines when runa should activate a protocol. Triggers are composable from four primitive types:
 
 - **on_artifact(name)** — the named artifact exists and satisfies its schema
-- **on_change(name)** — the named artifact has been modified since this protocol last completed successfully. runa tracks completion timestamps per protocol and compares against artifact modification timestamps.
+- **on_change(name)** — the named artifact is newer than this protocol's current output artifacts for the same work unit. runa derives freshness from artifact timestamps in the store rather than persisting separate completion records.
 - **on_invalid(name)** — an instance of the named artifact type exists but fails validation against its declared schema
 - **on_signal(name)** — an external event (operator action, webhook, scheduler)
 

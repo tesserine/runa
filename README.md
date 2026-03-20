@@ -73,7 +73,7 @@ On startup, the server loads the project from the current directory (or `RUNA_WO
 - **Tools** — One tool per output artifact type (`produces` + `may_produce`). The tool input schema is the artifact's JSON Schema with `work_unit` removed. The server injects `work_unit` automatically.
 - **Prompts** — A single `"context"` prompt that delivers the protocol's required and available inputs as prose, plus expected outputs.
 
-When the session ends, the server re-scans the workspace and checks postconditions. If all required outputs are present and valid, it records the completion timestamp in `.runa/completions.json`. The outer orchestrator can then restart `runa-mcp` for the next protocol.
+When the session ends, the server re-scans the workspace and checks postconditions. Valid output artifacts in the workspace are the completion evidence; the next run derives freshness directly from their timestamps. The outer orchestrator can then restart `runa-mcp` for the next protocol.
 
 Environment variables:
 - `RUNA_WORKING_DIR` — Project directory (defaults to current directory)

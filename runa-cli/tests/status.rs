@@ -1143,6 +1143,82 @@ trigger = { type = "on_change", name = "doc" }
 
 #[cfg(unix)]
 #[test]
+fn status_blocks_on_change_when_output_freshness_is_untrustworthy() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "doc"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[artifact_types]]
+name = "reviewed"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[protocols]]
+name = "review"
+produces = ["reviewed"]
+trigger = { type = "on_change", name = "doc" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("doc")).unwrap();
+    fs::create_dir_all(workspace.join("reviewed")).unwrap();
+    fs::write(workspace.join("doc/input.json"), r#"{"title":"draft"}"#).unwrap();
+    let unreadable_output = workspace.join("reviewed/hidden.json");
+    fs::write(&unreadable_output, r#"{"title":"done"}"#).unwrap();
+    fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let review = value["protocols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|protocol| protocol["name"] == "review")
+        .unwrap();
+
+    assert_eq!(review["status"], "blocked");
+    assert_eq!(review["trigger"], "satisfied");
+    assert_eq!(
+        review["precondition_failures"],
+        serde_json::json!([
+            {
+                "artifact_type": "reviewed",
+                "reason": "scan_incomplete"
+            }
+        ])
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn status_preserves_invalid_preconditions_alongside_scan_incomplete() {
     use std::os::unix::fs::PermissionsExt;
 

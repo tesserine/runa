@@ -173,10 +173,8 @@ pub(crate) fn evaluate_protocols(
         .map(|protocol| (protocol.name.as_str(), protocol))
         .collect();
 
-    let timestamps = HashMap::new();
     let context = TriggerContext {
         store: &loaded.store,
-        completion_timestamps: &timestamps,
         active_signals,
         work_unit: None,
     };
@@ -192,8 +190,8 @@ pub(crate) fn evaluate_protocols(
 
         let trigger_eval = evaluate_trigger_trust(
             &protocol.trigger,
+            protocol,
             &context,
-            &protocol.name,
             &scan_findings.affected_types,
         );
         let trigger_state = if trigger_eval.satisfied {
@@ -247,8 +245,8 @@ pub(crate) fn evaluate_protocols(
                         precondition_failures: Vec::new(),
                         unsatisfied_conditions: collect_unsatisfied_conditions(
                             &protocol.trigger,
+                            protocol,
                             &context,
-                            &protocol.name,
                         ),
                     }
                 } else {
@@ -410,15 +408,15 @@ fn scan_incomplete_failures(
 
 fn evaluate_trigger_trust(
     condition: &libagent::TriggerCondition,
+    protocol: &libagent::ProtocolDeclaration,
     context: &TriggerContext<'_>,
-    protocol_name: &str,
     affected_types: &HashSet<String>,
 ) -> TriggerEvaluation {
     match condition {
         libagent::TriggerCondition::OnArtifact { name } => primitive_trigger_eval(
             condition,
+            protocol,
             context,
-            protocol_name,
             affected_types.contains(name.as_str()),
             !has_visible_defect(context.store, name),
             true,
@@ -426,29 +424,23 @@ fn evaluate_trigger_trust(
         ),
         libagent::TriggerCondition::OnInvalid { name } => primitive_trigger_eval(
             condition,
+            protocol,
             context,
-            protocol_name,
             affected_types.contains(name.as_str()),
             true,
             false,
             Some(name.clone()),
         ),
-        libagent::TriggerCondition::OnChange { name } => primitive_trigger_eval(
-            condition,
-            context,
-            protocol_name,
-            affected_types.contains(name.as_str()),
-            true,
-            false,
-            Some(name.clone()),
-        ),
+        libagent::TriggerCondition::OnChange { name } => {
+            on_change_trigger_eval(condition, protocol, context, name, affected_types)
+        }
         libagent::TriggerCondition::OnSignal { .. } => {
-            primitive_trigger_eval(condition, context, protocol_name, false, false, false, None)
+            primitive_trigger_eval(condition, protocol, context, false, false, false, None)
         }
         libagent::TriggerCondition::AllOf { conditions } => {
             let children: Vec<_> = conditions
                 .iter()
-                .map(|child| evaluate_trigger_trust(child, context, protocol_name, affected_types))
+                .map(|child| evaluate_trigger_trust(child, protocol, context, affected_types))
                 .collect();
 
             if children.iter().all(|child| child.satisfied) {
@@ -499,7 +491,7 @@ fn evaluate_trigger_trust(
 
             let children: Vec<_> = conditions
                 .iter()
-                .map(|child| evaluate_trigger_trust(child, context, protocol_name, affected_types))
+                .map(|child| evaluate_trigger_trust(child, protocol, context, affected_types))
                 .collect();
 
             if children
@@ -551,15 +543,15 @@ fn evaluate_trigger_trust(
 
 fn primitive_trigger_eval(
     condition: &libagent::TriggerCondition,
+    protocol: &libagent::ProtocolDeclaration,
     context: &TriggerContext<'_>,
-    protocol_name: &str,
     affected: bool,
     untrustworthy_when_not_satisfied: bool,
     untrustworthy_when_satisfied: bool,
     artifact_type: Option<String>,
 ) -> TriggerEvaluation {
     let satisfied = matches!(
-        evaluate_trigger(condition, context, protocol_name),
+        evaluate_trigger(condition, protocol, context),
         TriggerResult::Satisfied
     );
 
@@ -581,6 +573,45 @@ fn primitive_trigger_eval(
         } else {
             Vec::new()
         },
+    }
+}
+
+fn on_change_trigger_eval(
+    condition: &libagent::TriggerCondition,
+    protocol: &libagent::ProtocolDeclaration,
+    context: &TriggerContext<'_>,
+    input_type: &str,
+    affected_types: &HashSet<String>,
+) -> TriggerEvaluation {
+    let satisfied = matches!(
+        evaluate_trigger(condition, protocol, context),
+        TriggerResult::Satisfied
+    );
+
+    let mut trusted = true;
+    let mut scan_types = Vec::new();
+
+    if affected_types.contains(input_type) && !satisfied {
+        trusted = false;
+        scan_types.push(input_type.to_string());
+    }
+
+    let affected_outputs: Vec<String> = protocol
+        .produces
+        .iter()
+        .chain(protocol.may_produce.iter())
+        .filter(|artifact_type| affected_types.contains(artifact_type.as_str()))
+        .cloned()
+        .collect();
+    if !affected_outputs.is_empty() {
+        trusted = false;
+        append_unique(&mut scan_types, affected_outputs);
+    }
+
+    TriggerEvaluation {
+        satisfied,
+        trusted,
+        scan_types,
     }
 }
 
@@ -615,15 +646,15 @@ fn artifact_type_from_path(path: &Path, workspace_dir: &Path) -> Option<String> 
 
 fn collect_unsatisfied_conditions(
     condition: &libagent::TriggerCondition,
+    protocol: &libagent::ProtocolDeclaration,
     context: &TriggerContext<'_>,
-    protocol_name: &str,
 ) -> Vec<String> {
-    match evaluate_trigger(condition, context, protocol_name) {
+    match evaluate_trigger(condition, protocol, context) {
         TriggerResult::Satisfied => Vec::new(),
         TriggerResult::NotSatisfied(reason) => match condition {
             libagent::TriggerCondition::AllOf { conditions } => conditions
                 .iter()
-                .flat_map(|child| collect_unsatisfied_conditions(child, context, protocol_name))
+                .flat_map(|child| collect_unsatisfied_conditions(child, protocol, context))
                 .collect(),
             libagent::TriggerCondition::AnyOf { conditions } => {
                 if conditions.is_empty() {
@@ -631,9 +662,7 @@ fn collect_unsatisfied_conditions(
                 } else {
                     conditions
                         .iter()
-                        .flat_map(|child| {
-                            collect_unsatisfied_conditions(child, context, protocol_name)
-                        })
+                        .flat_map(|child| collect_unsatisfied_conditions(child, protocol, context))
                         .collect()
                 }
             }
