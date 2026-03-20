@@ -51,12 +51,14 @@ pub fn discover_ready_candidates(
             referenced_types.insert(t);
         }
 
-        // Scan trust: skip protocol entirely if any requires or trigger-
-        // referenced type is partially scanned. Evaluating triggers or
-        // preconditions against incomplete data could lead to false activation.
+        // Scan trust: skip protocol entirely if any required output, required
+        // input, or trigger-referenced type is partially scanned. Evaluating
+        // triggers, freshness, or preconditions against incomplete data could
+        // lead to false activation.
         if protocol
             .requires
             .iter()
+            .chain(protocol.produces.iter())
             .any(|t| partially_scanned_types.contains(t.as_str()))
             || trigger_types
                 .iter()
@@ -910,7 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn partially_scanned_output_type_skips_completed_suppression() {
+    fn partially_scanned_output_type_skips_candidate_discovery() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
         store
@@ -949,11 +951,7 @@ mod tests {
         let candidates =
             discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
 
-        // Must NOT be suppressed: output type was partially scanned,
-        // so postcondition check against stale data is untrusted.
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].protocol_name, "implement");
-        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+        assert!(candidates.is_empty());
     }
 
     #[test]

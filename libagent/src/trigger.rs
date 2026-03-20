@@ -149,13 +149,14 @@ pub(crate) fn derived_completion_timestamp(
     protocol
         .produces
         .iter()
-        .flat_map(|artifact_type| {
+        .filter_map(|artifact_type| {
             store
                 .instances_of(artifact_type, work_unit)
                 .into_iter()
                 .filter(|(_, state)| state.work_unit.as_deref() == work_unit)
+                .map(|(_, state)| state.last_modified_ms)
+                .max()
         })
-        .map(|(_, state)| state.last_modified_ms)
         .min()
 }
 
@@ -444,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn on_change_uses_oldest_matching_output_timestamp() {
+    fn on_change_uses_newest_matching_output_timestamp_per_type() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["doc", "implementation"]);
         store
@@ -483,10 +484,10 @@ mod tests {
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         let protocol = make_protocol(cond.clone(), &["implementation"], &[]);
-        assert_eq!(
+        assert!(matches!(
             super::evaluate(&cond, &protocol, &ctx),
-            TriggerResult::Satisfied
-        );
+            TriggerResult::NotSatisfied(_)
+        ));
     }
 
     #[test]
@@ -600,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn derived_completion_timestamp_uses_unscoped_outputs_for_unscoped_work() {
+    fn derived_completion_timestamp_uses_newest_unscoped_output_for_unscoped_work() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["implementation"]);
         store
@@ -641,7 +642,53 @@ mod tests {
 
         assert_eq!(
             derived_completion_timestamp(&protocol, &store, None),
-            Some(1000)
+            Some(2000)
+        );
+    }
+
+    #[test]
+    fn derived_completion_timestamp_uses_oldest_per_type_maximum() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["implementation", "review"]);
+        store
+            .record_with_timestamp(
+                "implementation",
+                "impl-old",
+                Path::new("impl-old.json"),
+                &json!({"title": "old"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "impl-new",
+                Path::new("impl-new.json"),
+                &json!({"title": "new"}),
+                2500,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "review",
+                "review-current",
+                Path::new("review.json"),
+                &json!({"title": "review"}),
+                2000,
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            TriggerCondition::OnSignal {
+                name: "manual".into(),
+            },
+            &["implementation", "review"],
+            &[],
+        );
+
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, None),
+            Some(2000)
         );
     }
 
