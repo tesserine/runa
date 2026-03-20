@@ -153,7 +153,6 @@ pub(crate) fn derived_completion_timestamp(
             store
                 .instances_of(artifact_type, work_unit)
                 .into_iter()
-                .filter(|(_, state)| state.work_unit.as_deref() == work_unit)
                 .map(|(_, state)| state.last_modified_ms)
                 .max()
         })
@@ -564,12 +563,12 @@ mod tests {
     }
 
     #[test]
-    fn derived_completion_timestamp_excludes_unscoped_outputs_for_scoped_work_unit() {
+    fn derived_completion_timestamp_includes_unscoped_outputs_for_scoped_work_unit() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("s"), vec!["implementation"]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["implementation", "summary"]);
         store
             .record_with_timestamp(
-                "implementation",
+                "summary",
                 "shared",
                 Path::new("shared.json"),
                 &json!({"title": "shared"}),
@@ -590,13 +589,13 @@ mod tests {
             TriggerCondition::OnSignal {
                 name: "manual".into(),
             },
-            &["implementation"],
+            &["implementation", "summary"],
             &[],
         );
 
         assert_eq!(
             derived_completion_timestamp(&protocol, &store, Some("wu-a")),
-            Some(2000)
+            Some(1000)
         );
     }
 

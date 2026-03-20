@@ -1093,7 +1093,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_outputs_do_not_pin_scoped_freshness() {
+    fn stale_shared_outputs_keep_scoped_work_runnable() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(
             &tmp.path().join("s"),
@@ -1147,6 +1147,8 @@ mod tests {
             &HashSet::new(),
         );
 
-        assert!(candidates.is_empty());
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "implement");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
     }
 }
