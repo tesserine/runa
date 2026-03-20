@@ -1,10 +1,10 @@
 use std::collections::{BTreeSet, HashSet};
 
-use crate::completion::CompletionStore;
-use crate::enforcement::enforce_postconditions;
 use crate::model::{ProtocolDeclaration, TriggerCondition};
 use crate::store::ArtifactStore;
-use crate::trigger::{TriggerContext, TriggerResult, evaluate as evaluate_trigger};
+use crate::trigger::{
+    TriggerContext, TriggerResult, derived_completion_timestamp, evaluate as evaluate_trigger,
+};
 
 /// A (protocol, work_unit) pair that is ready for execution.
 #[derive(Debug, Clone, PartialEq)]
@@ -24,7 +24,6 @@ pub struct Candidate {
 pub fn discover_ready_candidates(
     protocols: &[ProtocolDeclaration],
     store: &ArtifactStore,
-    completions: &CompletionStore,
     active_signals: &HashSet<String>,
     topological_order: &[&str],
     partially_scanned_types: &HashSet<String>,
@@ -36,54 +35,32 @@ pub fn discover_ready_candidates(
             continue;
         };
 
-        // Collect artifact type names from trigger tree (kept separate for
-        // scan trust checks), then merge with requires and accepts.
         let mut trigger_types = HashSet::new();
         trigger_artifact_types(&protocol.trigger, &mut trigger_types);
 
-        let mut referenced_types = HashSet::new();
-        for name in &protocol.requires {
-            referenced_types.insert(name.as_str());
-        }
-        for name in &protocol.accepts {
-            referenced_types.insert(name.as_str());
-        }
-        for &t in &trigger_types {
-            referenced_types.insert(t);
-        }
-
-        // Scan trust: skip protocol entirely if any requires or trigger-
-        // referenced type is partially scanned. Evaluating triggers or
-        // preconditions against incomplete data could lead to false activation.
-        if protocol
-            .requires
-            .iter()
-            .any(|t| partially_scanned_types.contains(t.as_str()))
-            || trigger_types
-                .iter()
-                .any(|t| partially_scanned_types.contains(*t))
-        {
+        let scan_incomplete_types =
+            protocol_scan_incomplete_types(protocol, partially_scanned_types);
+        if !scan_incomplete_types.is_empty() {
             continue;
         }
 
-        // Collect distinct work_unit values from referenced artifact instances.
-        let work_units = collect_work_units(store, &referenced_types, partially_scanned_types);
+        let work_units = protocol_work_units(protocol, store, partially_scanned_types);
+        let freshness_types = protocol_freshness_types(protocol, &trigger_types);
 
         for wu in &work_units {
             let wu_ref = wu.as_deref();
 
             // Build trigger context scoped to this work_unit.
-            let timestamps = completions.timestamps_for_trigger_context(wu_ref);
             let ctx = TriggerContext {
                 store,
-                completion_timestamps: &timestamps,
                 active_signals,
                 work_unit: wu_ref,
+                partially_scanned_types,
             };
 
             // Evaluate trigger.
             if !matches!(
-                evaluate_trigger(&protocol.trigger, &ctx, &protocol.name),
+                evaluate_trigger(&protocol.trigger, protocol, &ctx),
                 TriggerResult::Satisfied
             ) {
                 continue;
@@ -94,22 +71,13 @@ pub fn discover_ready_candidates(
                 continue;
             }
 
-            // Completed suppression: already completed and postconditions still pass.
-            // Skip suppression when the trigger contains on_change — the trigger
-            // was satisfied because inputs changed after the last completion, so
-            // the protocol should re-run even if prior outputs are still valid.
-            // Also skip when output types are partially scanned — postconditions
-            // against stale data are untrusted.
-            let outputs_partially_scanned = protocol
-                .produces
-                .iter()
-                .chain(&protocol.may_produce)
-                .any(|t| partially_scanned_types.contains(t.as_str()));
-            if completions.is_completed(&protocol.name, wu_ref)
-                && !outputs_partially_scanned
-                && enforce_postconditions(protocol, store, wu_ref).is_ok()
-                && !any_on_change_satisfied(&protocol.trigger, &ctx, &protocol.name)
-            {
+            if protocol_is_current(
+                protocol,
+                store,
+                &freshness_types,
+                wu_ref,
+                partially_scanned_types,
+            ) {
                 continue;
             }
 
@@ -121,6 +89,57 @@ pub fn discover_ready_candidates(
     }
 
     candidates
+}
+
+pub fn protocol_scan_incomplete_types(
+    protocol: &ProtocolDeclaration,
+    partially_scanned_types: &HashSet<String>,
+) -> Vec<String> {
+    let mut trigger_types = HashSet::new();
+    trigger_artifact_types(&protocol.trigger, &mut trigger_types);
+
+    let mut incomplete = Vec::new();
+    for artifact_type in &protocol.requires {
+        if partially_scanned_types.contains(artifact_type.as_str())
+            && !incomplete.contains(artifact_type)
+        {
+            incomplete.push(artifact_type.clone());
+        }
+    }
+
+    let mut trigger_type_names: Vec<&str> = trigger_types.into_iter().collect();
+    trigger_type_names.sort_unstable();
+    for artifact_type in trigger_type_names {
+        if partially_scanned_types.contains(artifact_type)
+            && !incomplete.iter().any(|existing| existing == artifact_type)
+        {
+            incomplete.push(artifact_type.to_string());
+        }
+    }
+
+    incomplete
+}
+
+pub fn protocol_work_units(
+    protocol: &ProtocolDeclaration,
+    store: &ArtifactStore,
+    partially_scanned_types: &HashSet<String>,
+) -> BTreeSet<Option<String>> {
+    let mut trigger_types = HashSet::new();
+    trigger_artifact_types(&protocol.trigger, &mut trigger_types);
+
+    let mut referenced_types = HashSet::new();
+    for name in &protocol.requires {
+        referenced_types.insert(name.as_str());
+    }
+    for name in &protocol.accepts {
+        referenced_types.insert(name.as_str());
+    }
+    for &artifact_type in &trigger_types {
+        referenced_types.insert(artifact_type);
+    }
+
+    collect_work_units(store, &referenced_types, partially_scanned_types)
 }
 
 /// Walk a trigger condition tree and collect artifact type names
@@ -141,35 +160,57 @@ fn trigger_artifact_types<'a>(condition: &'a TriggerCondition, out: &mut HashSet
     }
 }
 
-/// True if any `OnChange` node in the trigger tree evaluates to Satisfied.
-///
-/// Walks the trigger tree and evaluates only `OnChange` conditions. Returns
-/// true as soon as any one is Satisfied. For composite triggers like
-/// `AnyOf(on_signal, on_change)`, this distinguishes whether the overall
-/// Satisfied result came from a change-based branch or a non-change branch.
-fn any_on_change_satisfied(
-    condition: &TriggerCondition,
-    context: &TriggerContext<'_>,
-    protocol_name: &str,
+fn protocol_is_current(
+    protocol: &ProtocolDeclaration,
+    store: &ArtifactStore,
+    referenced_types: &HashSet<&str>,
+    work_unit: Option<&str>,
+    partially_scanned_types: &HashSet<String>,
 ) -> bool {
-    match condition {
-        TriggerCondition::OnChange { .. } => {
-            matches!(
-                evaluate_trigger(condition, context, protocol_name),
-                TriggerResult::Satisfied
-            )
-        }
-        TriggerCondition::AllOf { conditions } => conditions
-            .iter()
-            .any(|c| any_on_change_satisfied(c, context, protocol_name)),
-        TriggerCondition::AnyOf { conditions } => conditions.iter().any(|c| {
-            matches!(
-                evaluate_trigger(c, context, protocol_name),
-                TriggerResult::Satisfied
-            ) && any_on_change_satisfied(c, context, protocol_name)
-        }),
-        _ => false,
+    if protocol.produces.is_empty() && protocol.may_produce.is_empty() {
+        return false;
     }
+
+    if protocol
+        .produces
+        .iter()
+        .any(|artifact_type| partially_scanned_types.contains(artifact_type.as_str()))
+    {
+        return false;
+    }
+
+    if protocol.may_produce.iter().any(|artifact_type| {
+        partially_scanned_types.contains(artifact_type.as_str())
+            && !store.instances_of(artifact_type, work_unit).is_empty()
+    }) {
+        return false;
+    }
+
+    let Some(output_timestamp) =
+        derived_completion_timestamp(protocol, store, work_unit, partially_scanned_types)
+    else {
+        return false;
+    };
+
+    referenced_types
+        .iter()
+        .filter_map(|artifact_type| store.latest_modification_ms(artifact_type, work_unit))
+        .max()
+        .is_none_or(|latest_input| latest_input <= output_timestamp)
+}
+
+fn protocol_freshness_types<'a>(
+    protocol: &'a ProtocolDeclaration,
+    trigger_types: &HashSet<&'a str>,
+) -> HashSet<&'a str> {
+    let mut freshness_types = HashSet::new();
+    for name in &protocol.requires {
+        freshness_types.insert(name.as_str());
+    }
+    for &artifact_type in trigger_types {
+        freshness_types.insert(artifact_type);
+    }
+    freshness_types
 }
 
 /// Collect distinct work_unit values from artifact instances across multiple types.
@@ -220,6 +261,22 @@ mod tests {
     use serde_json::json;
     use std::path::Path;
     use tempfile::TempDir;
+
+    fn discover_ready_candidates(
+        protocols: &[ProtocolDeclaration],
+        store: &ArtifactStore,
+        active_signals: &HashSet<String>,
+        topological_order: &[&str],
+        partially_scanned_types: &HashSet<String>,
+    ) -> Vec<Candidate> {
+        super::discover_ready_candidates(
+            protocols,
+            store,
+            active_signals,
+            topological_order,
+            partially_scanned_types,
+        )
+    }
 
     fn make_protocol(
         name: &str,
@@ -364,7 +421,6 @@ mod tests {
     fn signal_only_protocol_evaluated_once_unscoped() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::from(["go".to_string()]);
 
         let protocol = make_protocol(
@@ -376,14 +432,8 @@ mod tests {
             TriggerCondition::OnSignal { name: "go".into() },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &completions,
-            &signals,
-            &["ground"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["ground"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "ground");
@@ -411,7 +461,6 @@ mod tests {
             )
             .unwrap();
 
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
 
         let protocol = make_protocol(
@@ -428,7 +477,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -461,8 +509,6 @@ mod tests {
             )
             .unwrap();
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::new();
 
         let protocol = make_protocol(
@@ -479,13 +525,233 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
         );
 
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn stale_outputs_do_not_suppress_candidates() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        store
+            .record_with_timestamp(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+                1000,
+            )
+            .unwrap();
+
+        let signals = HashSet::new();
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "implement");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+    }
+
+    #[test]
+    fn discover_ready_candidates_keeps_on_change_freshness_per_work_unit() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        store
+            .record_with_timestamp(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "constraints",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"title": "B", "work_unit": "wu-b"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "b1",
+                Path::new("impl-b1.json"),
+                &json!({"title": "impl-B", "work_unit": "wu-b"}),
+                2000,
+            )
+            .unwrap();
+
+        let signals = HashSet::new();
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnChange {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "implement");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+    }
+
+    #[test]
+    fn accepts_artifacts_do_not_affect_currentness() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["constraints", "prior-art", "implementation"],
+        );
+        store
+            .record_with_timestamp(
+                "constraints",
+                "a1",
+                Path::new("constraints-a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "prior-art",
+                "a1",
+                Path::new("prior-art-a1.json"),
+                &json!({"title": "optional", "work_unit": "wu-a"}),
+                3000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+
+        let signals = HashSet::new();
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &["prior-art"],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn may_produce_only_protocols_are_not_suppressed() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "notes"]);
+        store
+            .record_with_timestamp(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "notes",
+                "old-note",
+                Path::new("note.json"),
+                &json!({"title": "old", "work_unit": "wu-a"}),
+                500,
+            )
+            .unwrap();
+
+        let signals = HashSet::new();
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &[],
+            &["notes"],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "implement");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
     }
 
     #[test]
@@ -502,8 +768,6 @@ mod tests {
             .unwrap();
         // No implementation artifact → postconditions fail → not suppressed.
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::new();
 
         let protocol = make_protocol(
@@ -520,7 +784,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -545,16 +808,15 @@ mod tests {
             .unwrap();
         // Implementation still valid from prior run.
         store
-            .record(
+            .record_with_timestamp(
                 "implementation",
                 "a1",
                 Path::new("impl-a1.json"),
                 &json!({"title": "impl-A", "work_unit": "wu-a"}),
+                1000,
             )
             .unwrap();
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::new();
 
         // on_change trigger: constraints changed at 2000, completion was at 1000.
@@ -572,7 +834,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -597,16 +858,15 @@ mod tests {
             )
             .unwrap();
         store
-            .record(
+            .record_with_timestamp(
                 "implementation",
                 "a1",
                 Path::new("impl-a1.json"),
                 &json!({"title": "impl-A", "work_unit": "wu-a"}),
+                1000,
             )
             .unwrap();
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::from(["go".to_string()]);
 
         // on_change nested inside all_of: still should not be suppressed.
@@ -629,7 +889,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -662,8 +921,6 @@ mod tests {
             )
             .unwrap();
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::from(["go".to_string()]);
 
         // AnyOf(on_signal("go"), on_change("constraints"))
@@ -689,7 +946,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -723,8 +979,6 @@ mod tests {
             )
             .unwrap();
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         // Signal "y" is active, signal "x" is not.
         let signals = HashSet::from(["y".to_string()]);
 
@@ -755,7 +1009,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -779,7 +1032,6 @@ mod tests {
             )
             .unwrap();
 
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
         let partial = HashSet::from(["constraints".to_string()]);
 
@@ -794,14 +1046,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &completions,
-            &signals,
-            &["implement"],
-            &partial,
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
 
         assert!(candidates.is_empty());
     }
@@ -819,7 +1065,6 @@ mod tests {
             )
             .unwrap();
 
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
         let partial = HashSet::from(["lint".to_string()]);
 
@@ -836,20 +1081,14 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &completions,
-            &signals,
-            &["fix-lint"],
-            &partial,
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["fix-lint"], &partial);
 
         assert!(candidates.is_empty());
     }
 
     #[test]
-    fn partially_scanned_output_type_skips_completed_suppression() {
+    fn partially_scanned_output_type_does_not_globally_skip_candidate_discovery() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
         store
@@ -863,17 +1102,30 @@ mod tests {
         // Output artifact present — postconditions would pass on full scan.
         store
             .record(
+                "constraints",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"title": "B", "work_unit": "wu-b"}),
+            )
+            .unwrap();
+        store
+            .record(
                 "implementation",
                 "a1",
                 Path::new("impl-a1.json"),
                 &json!({"title": "impl-A", "work_unit": "wu-a"}),
             )
             .unwrap();
+        store
+            .record(
+                "implementation",
+                "b1",
+                Path::new("impl-b1.json"),
+                &json!({"title": "impl-B", "work_unit": "wu-b"}),
+            )
+            .unwrap();
 
-        let mut completions = CompletionStore::load(tmp.path()).unwrap();
-        completions.record_at("implement", Some("wu-a"), 1000);
         let signals = HashSet::new();
-        // implementation is partially scanned — postcondition data is stale.
         let partial = HashSet::from(["implementation".to_string()]);
 
         let protocol = make_protocol(
@@ -887,17 +1139,138 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &completions,
-            &signals,
-            &["implement"],
-            &partial,
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+        assert_eq!(candidates[1].work_unit, Some("wu-b".into()));
+    }
+
+    #[test]
+    fn partially_scanned_output_type_does_not_affect_non_on_change_trigger_gate() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let signals = HashSet::from(["go".to_string()]);
+        let partial = HashSet::from(["implementation".to_string()]);
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnSignal { name: "go".into() },
         );
 
-        // Must NOT be suppressed: output type was partially scanned,
-        // so postcondition check against stale data is untrusted.
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "implement");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+    }
+
+    #[test]
+    fn partially_scanned_optional_output_does_not_skip_completed_suppression() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["constraints", "implementation", "notes"],
+        );
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let signals = HashSet::new();
+        let partial = HashSet::from(["notes".to_string()]);
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &["notes"],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn present_partially_scanned_optional_output_skips_completed_suppression() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["constraints", "implementation", "notes"],
+        );
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "notes",
+                "a1",
+                Path::new("notes-a1.json"),
+                &json!({"title": "optional", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let signals = HashSet::new();
+        let partial = HashSet::from(["notes".to_string()]);
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &["notes"],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
+
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
         assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
@@ -907,7 +1280,6 @@ mod tests {
     fn unsatisfied_trigger_not_candidate() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
 
         let protocol = make_protocol(
@@ -919,14 +1291,8 @@ mod tests {
             TriggerCondition::OnSignal { name: "go".into() },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &completions,
-            &signals,
-            &["ground"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["ground"], &HashSet::new());
 
         assert!(candidates.is_empty());
     }
@@ -936,7 +1302,6 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
         // constraints is required but missing.
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::from(["go".to_string()]);
 
         let protocol = make_protocol(
@@ -951,7 +1316,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &completions,
             &signals,
             &["implement"],
             &HashSet::new(),
@@ -971,7 +1335,6 @@ mod tests {
             .record("b", "x", Path::new("b.json"), &json!({"title": "B"}))
             .unwrap();
 
-        let completions = CompletionStore::load(tmp.path()).unwrap();
         let signals = HashSet::new();
 
         let protocols = vec![
@@ -997,7 +1360,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &protocols,
             &store,
-            &completions,
             &signals,
             &["beta", "alpha"],
             &HashSet::new(),
@@ -1006,5 +1368,65 @@ mod tests {
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].protocol_name, "beta");
         assert_eq!(candidates[1].protocol_name, "alpha");
+    }
+
+    #[test]
+    fn stale_shared_outputs_keep_scoped_work_runnable() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["constraints", "implementation", "summary"],
+        );
+        store
+            .record_with_timestamp(
+                "constraints",
+                "a1",
+                Path::new("constraints-a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                1500,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "summary",
+                "shared",
+                Path::new("summary.json"),
+                &json!({"title": "summary"}),
+                1000,
+            )
+            .unwrap();
+
+        let signals = HashSet::new();
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation", "summary"],
+            &[],
+            TriggerCondition::OnChange {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "implement");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
     }
 }

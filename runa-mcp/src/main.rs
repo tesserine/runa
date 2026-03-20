@@ -2,9 +2,7 @@ mod context;
 mod handler;
 
 use libagent::project::{self, RUNA_DIR, STORE_DIRNAME};
-use libagent::{
-    ArtifactStore, CompletionStore, discover_ready_candidates, enforce_postconditions, scan,
-};
+use libagent::{ArtifactStore, discover_ready_candidates, enforce_postconditions, scan};
 use rmcp::service::ServiceExt;
 use rmcp::transport::io;
 use std::collections::HashSet;
@@ -44,17 +42,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("warning: {warning}");
     }
 
-    // 5. Load completion timestamps.
-    let mut completions = CompletionStore::load(&runa_dir)?;
-
-    // 6. Collect partially scanned types.
+    // 5. Collect partially scanned types.
     let partially_scanned: HashSet<String> = scan_result
         .partially_scanned_types
         .iter()
         .map(|p| p.artifact_type.clone())
         .collect();
 
-    // 7. Discover ready candidates.
+    // 6. Discover ready candidates.
     let topo_order = match loaded.graph.topological_order() {
         Ok(order) => order,
         Err(cycle) => {
@@ -68,13 +63,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let candidates = discover_ready_candidates(
         &loaded.manifest.protocols,
         &loaded.store,
-        &completions,
         &active_signals,
         &topo_refs,
         &partially_scanned,
     );
 
-    // 8. Select first viable candidate.
+    // 7. Select first viable candidate.
     let (candidate, protocol) = {
         let mut found = None;
         for c in &candidates {
@@ -115,7 +109,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         candidate.protocol_name, candidate.work_unit
     );
 
-    // 9. Build handler.
+    // 8. Build handler.
     let handler = RunaHandler::new(
         protocol.clone(),
         candidate.work_unit.clone(),
@@ -123,7 +117,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         loaded.workspace_dir.clone(),
     );
 
-    // 10. Serve via stdio transport.
+    // 9. Serve via stdio transport.
     let (stdin, stdout) = io::stdio();
     let service = handler
         .serve((stdin, stdout))
@@ -131,12 +125,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .inspect_err(|e| eprintln!("runa-mcp: server init failed: {e}"))?;
     service.waiting().await?;
 
-    // 11. Re-scan workspace with a fresh store.
+    // 10. Re-scan workspace with a fresh store.
     let store_dir = runa_dir.join(STORE_DIRNAME);
     let mut store = ArtifactStore::new(loaded.manifest.artifact_types.clone(), store_dir)?;
     let post_scan = scan(&loaded.workspace_dir, &mut store)?;
 
-    // 12. Check postconditions and record completion.
+    // 11. Check postconditions.
     let work_unit_ref = candidate.work_unit.as_deref();
     let output_type_names: HashSet<&str> = protocol
         .produces
@@ -153,24 +147,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !partial_output_types.is_empty() {
         eprintln!(
             "runa-mcp: post-session scan incomplete for output types {:?} \
-             of '{}' work_unit={:?}, no completion recorded",
+             of '{}' work_unit={:?}",
             partial_output_types, protocol.name, candidate.work_unit
         );
     } else if enforce_postconditions(&protocol, &store, work_unit_ref).is_ok() {
-        // 13. Record completion.
-        completions.record(&protocol.name, work_unit_ref);
-        completions.save(&runa_dir)?;
         eprintln!(
-            "runa-mcp: postconditions met, completion recorded for '{}' work_unit={:?}",
+            "runa-mcp: postconditions met for '{}' work_unit={:?}",
             protocol.name, candidate.work_unit
         );
     } else {
         eprintln!(
-            "runa-mcp: postconditions not met for '{}' work_unit={:?}, no completion recorded",
+            "runa-mcp: postconditions not met for '{}' work_unit={:?}",
             protocol.name, candidate.work_unit
         );
     }
 
-    // 14. Exit 0.
+    // 12. Exit 0.
     Ok(())
 }

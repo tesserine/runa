@@ -15,7 +15,6 @@
 //!
 //! See `ARCHITECTURE.md` in the repository root for data flow and design details.
 
-pub mod completion;
 pub mod context;
 pub mod enforcement;
 pub mod graph;
@@ -29,7 +28,6 @@ pub mod store;
 pub(crate) mod test_helpers;
 pub mod trigger;
 pub mod validation;
-pub use completion::{CompletionError, CompletionStore};
 pub use enforcement::{
     ArtifactFailure, EnforcementError, Phase, Relationship, enforce_postconditions,
     enforce_preconditions,

@@ -1,6 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use crate::model::TriggerCondition;
+use crate::enforcement::enforce_postconditions;
+use crate::model::{ProtocolDeclaration, TriggerCondition};
 use crate::store::{ArtifactStore, ValidationStatus};
 
 /// Outcome of evaluating a trigger condition against current state.
@@ -17,23 +18,20 @@ pub enum TriggerResult {
 
 /// Read-only snapshot of the state needed to evaluate trigger conditions.
 ///
-/// Bundles the artifact store with per-protocol completion timestamps and
-/// currently active signals. Evaluation is pure — no side effects.
+/// Bundles the artifact store with currently active signals. Evaluation is
+/// pure — no side effects.
 pub struct TriggerContext<'a> {
     pub store: &'a ArtifactStore,
-    pub completion_timestamps: &'a HashMap<String, u64>,
     pub active_signals: &'a HashSet<String>,
     pub work_unit: Option<&'a str>,
+    pub partially_scanned_types: &'a HashSet<String>,
 }
 
 /// Evaluate whether a trigger condition is satisfied given current state.
-///
-/// `protocol_name` identifies the protocol being evaluated, used to look up
-/// its last completion timestamp for `OnChange` conditions.
 pub fn evaluate(
     condition: &TriggerCondition,
+    protocol: &ProtocolDeclaration,
     context: &TriggerContext<'_>,
-    protocol_name: &str,
 ) -> TriggerResult {
     match condition {
         TriggerCondition::OnArtifact { name } => {
@@ -71,17 +69,22 @@ pub fn evaluate(
                     "no instances of artifact type '{name}' exist"
                 )),
                 Some(latest) => {
-                    match context.completion_timestamps.get(protocol_name) {
+                    match derived_completion_timestamp(
+                        protocol,
+                        context.store,
+                        context.work_unit,
+                        context.partially_scanned_types,
+                    ) {
                         None => {
-                            // Never completed — any instance counts as changed.
+                            // No output evidence — any input instance counts as changed.
                             TriggerResult::Satisfied
                         }
-                        Some(&last_completion) => {
-                            if latest > last_completion {
+                        Some(last_output_update) => {
+                            if latest > last_output_update {
                                 TriggerResult::Satisfied
                             } else {
                                 TriggerResult::NotSatisfied(format!(
-                                    "artifact type '{name}' has not changed since last completion"
+                                    "artifact type '{name}' has not changed since protocol outputs were last updated"
                                 ))
                             }
                         }
@@ -110,7 +113,7 @@ pub fn evaluate(
 
         TriggerCondition::AllOf { conditions } => {
             for child in conditions {
-                let result = evaluate(child, context, protocol_name);
+                let result = evaluate(child, protocol, context);
                 if let TriggerResult::NotSatisfied(_) = result {
                     return result;
                 }
@@ -124,7 +127,7 @@ pub fn evaluate(
             }
             let mut reasons = Vec::new();
             for child in conditions {
-                match evaluate(child, context, protocol_name) {
+                match evaluate(child, protocol, context) {
                     TriggerResult::Satisfied => return TriggerResult::Satisfied,
                     TriggerResult::NotSatisfied(reason) => {
                         reasons.push(reason);
@@ -136,22 +139,86 @@ pub fn evaluate(
     }
 }
 
+pub(crate) fn derived_completion_timestamp(
+    protocol: &ProtocolDeclaration,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+    partially_scanned_types: &HashSet<String>,
+) -> Option<u64> {
+    if protocol.produces.is_empty() {
+        return None;
+    }
+
+    if protocol
+        .produces
+        .iter()
+        .any(|artifact_type| partially_scanned_types.contains(artifact_type.as_str()))
+    {
+        return None;
+    }
+
+    if enforce_postconditions(protocol, store, work_unit).is_err() {
+        return None;
+    }
+
+    protocol
+        .produces
+        .iter()
+        .filter_map(|artifact_type| {
+            store
+                .instances_of(artifact_type, work_unit)
+                .into_iter()
+                .map(|(_, state)| state.last_modified_ms)
+                .max()
+        })
+        .min()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ProtocolDeclaration;
     use crate::test_helpers::make_store;
     use serde_json::json;
     use std::path::Path;
     use tempfile::TempDir;
 
+    fn make_protocol(
+        trigger: TriggerCondition,
+        produces: &[&str],
+        may_produce: &[&str],
+    ) -> ProtocolDeclaration {
+        ProtocolDeclaration {
+            name: "protocol".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: produces.iter().map(|s| s.to_string()).collect(),
+            may_produce: may_produce.iter().map(|s| s.to_string()).collect(),
+            trigger,
+        }
+    }
+
     fn empty_context(store: &ArtifactStore) -> TriggerContext<'_> {
         // Leaked to avoid lifetime issues in tests — fine for test code.
         TriggerContext {
             store,
-            completion_timestamps: Box::leak(Box::default()),
             active_signals: Box::leak(Box::default()),
             work_unit: None,
+            partially_scanned_types: Box::leak(Box::default()),
         }
+    }
+
+    fn empty_partials() -> &'static HashSet<String> {
+        Box::leak(Box::default())
+    }
+
+    fn evaluate(
+        condition: &TriggerCondition,
+        context: &TriggerContext<'_>,
+        _name: &str,
+    ) -> TriggerResult {
+        let protocol = make_protocol(condition.clone(), &[], &[]);
+        super::evaluate(condition, &protocol, context)
     }
 
     // --- OnArtifact ---
@@ -245,9 +312,9 @@ mod tests {
     // --- OnChange ---
 
     #[test]
-    fn on_change_satisfied_when_never_completed() {
+    fn on_change_satisfied_when_no_output_evidence() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "implementation"]);
         store
             .record_with_timestamp(
                 "doc",
@@ -258,22 +325,25 @@ mod tests {
             )
             .unwrap();
 
-        let timestamps = HashMap::new();
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
-        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
+        let protocol = make_protocol(cond.clone(), &["implementation"], &[]);
+        assert_eq!(
+            super::evaluate(&cond, &protocol, &ctx),
+            TriggerResult::Satisfied
+        );
     }
 
     #[test]
-    fn on_change_satisfied_when_modified_after_completion() {
+    fn on_change_satisfied_when_input_newer_than_output() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "implementation"]);
         store
             .record_with_timestamp(
                 "doc",
@@ -283,23 +353,35 @@ mod tests {
                 2000,
             )
             .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "a",
+                Path::new("impl.json"),
+                &json!({"title": "done"}),
+                1000,
+            )
+            .unwrap();
 
-        let timestamps = HashMap::from([("protocol".to_string(), 1000u64)]);
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
-        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
+        let protocol = make_protocol(cond.clone(), &["implementation"], &[]);
+        assert_eq!(
+            super::evaluate(&cond, &protocol, &ctx),
+            TriggerResult::Satisfied
+        );
     }
 
     #[test]
-    fn on_change_not_satisfied_when_not_modified_since_completion() {
+    fn on_change_not_satisfied_when_output_newer_than_input() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "implementation"]);
         store
             .record_with_timestamp(
                 "doc",
@@ -309,18 +391,27 @@ mod tests {
                 1000,
             )
             .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "a",
+                Path::new("impl.json"),
+                &json!({"title": "done"}),
+                2000,
+            )
+            .unwrap();
 
-        let timestamps = HashMap::from([("protocol".to_string(), 2000u64)]);
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
+        let protocol = make_protocol(cond.clone(), &["implementation"], &[]);
         assert!(matches!(
-            evaluate(&cond, &ctx, "protocol"),
+            super::evaluate(&cond, &protocol, &ctx),
             TriggerResult::NotSatisfied(_)
         ));
     }
@@ -341,7 +432,7 @@ mod tests {
     #[test]
     fn on_change_not_satisfied_when_same_timestamp() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "implementation"]);
         store
             .record_with_timestamp(
                 "doc",
@@ -351,58 +442,341 @@ mod tests {
                 1000,
             )
             .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "a",
+                Path::new("impl.json"),
+                &json!({"title": "done"}),
+                1000,
+            )
+            .unwrap();
 
-        let timestamps = HashMap::from([("protocol".to_string(), 1000u64)]);
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
+        let protocol = make_protocol(cond.clone(), &["implementation"], &[]);
         assert!(matches!(
-            evaluate(&cond, &ctx, "protocol"),
+            super::evaluate(&cond, &protocol, &ctx),
             TriggerResult::NotSatisfied(_)
         ));
     }
 
     #[test]
-    fn on_change_satisfied_when_one_of_multiple_instances_newer() {
+    fn on_change_uses_newest_matching_output_timestamp_per_type() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
-        // Old instance — before completion.
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "implementation"]);
         store
             .record_with_timestamp(
                 "doc",
-                "old",
-                Path::new("old.json"),
+                "a",
+                Path::new("a.json"),
+                &json!({"title": "new"}),
+                1500,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "old-output",
+                Path::new("old-output.json"),
+                &json!({"title": "old"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "new-output",
+                Path::new("new-output.json"),
+                &json!({"title": "new"}),
+                2500,
+            )
+            .unwrap();
+
+        let signals = HashSet::new();
+        let ctx = TriggerContext {
+            store: &store,
+            active_signals: &signals,
+            work_unit: None,
+            partially_scanned_types: empty_partials(),
+        };
+        let cond = TriggerCondition::OnChange { name: "doc".into() };
+        let protocol = make_protocol(cond.clone(), &["implementation"], &[]);
+        assert!(matches!(
+            super::evaluate(&cond, &protocol, &ctx),
+            TriggerResult::NotSatisfied(_)
+        ));
+    }
+
+    #[test]
+    fn on_change_ignores_stale_may_produce_timestamps() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["doc", "implementation", "notes"],
+        );
+        store
+            .record_with_timestamp(
+                "doc",
+                "a",
+                Path::new("a.json"),
+                &json!({"title": "current"}),
+                1500,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "impl",
+                Path::new("impl.json"),
+                &json!({"title": "done"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "notes",
+                "old-note",
+                Path::new("notes.json"),
                 &json!({"title": "old"}),
                 500,
             )
             .unwrap();
-        // New instance — after completion.
+
+        let signals = HashSet::new();
+        let ctx = TriggerContext {
+            store: &store,
+            active_signals: &signals,
+            work_unit: None,
+            partially_scanned_types: empty_partials(),
+        };
+        let cond = TriggerCondition::OnChange { name: "doc".into() };
+        let protocol = make_protocol(cond.clone(), &["implementation"], &["notes"]);
+        assert!(matches!(
+            super::evaluate(&cond, &protocol, &ctx),
+            TriggerResult::NotSatisfied(_)
+        ));
+    }
+
+    #[test]
+    fn derived_completion_timestamp_is_none_for_may_produce_only_protocols() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["notes"]);
         store
             .record_with_timestamp(
-                "doc",
-                "new",
-                Path::new("new.json"),
+                "notes",
+                "note",
+                Path::new("note.json"),
+                &json!({"title": "optional"}),
+                1000,
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            TriggerCondition::OnSignal {
+                name: "manual".into(),
+            },
+            &[],
+            &["notes"],
+        );
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, None, &HashSet::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn derived_completion_timestamp_is_none_when_produces_type_is_partially_scanned() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["implementation"]);
+        store
+            .record_with_timestamp(
+                "implementation",
+                "impl",
+                Path::new("impl.json"),
+                &json!({"title": "done"}),
+                1000,
+            )
+            .unwrap();
+
+        let partial = HashSet::from(["implementation".to_string()]);
+        let protocol = make_protocol(
+            TriggerCondition::OnSignal {
+                name: "manual".into(),
+            },
+            &["implementation"],
+            &[],
+        );
+
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, None, &partial),
+            None
+        );
+    }
+
+    #[test]
+    fn derived_completion_timestamp_includes_unscoped_outputs_for_scoped_work_unit() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["implementation", "summary"]);
+        store
+            .record_with_timestamp(
+                "summary",
+                "shared",
+                Path::new("shared.json"),
+                &json!({"title": "shared"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "wu-a",
+                Path::new("wu-a.json"),
+                &json!({"title": "scoped", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            TriggerCondition::OnSignal {
+                name: "manual".into(),
+            },
+            &["implementation", "summary"],
+            &[],
+        );
+
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, Some("wu-a"), &HashSet::new()),
+            Some(1000)
+        );
+    }
+
+    #[test]
+    fn derived_completion_timestamp_uses_newest_unscoped_output_for_unscoped_work() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["implementation"]);
+        store
+            .record_with_timestamp(
+                "implementation",
+                "shared-old",
+                Path::new("shared-old.json"),
+                &json!({"title": "old"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "shared-new",
+                Path::new("shared-new.json"),
                 &json!({"title": "new"}),
                 2000,
             )
             .unwrap();
 
-        let timestamps = HashMap::from([("protocol".to_string(), 1000u64)]);
+        let protocol = make_protocol(
+            TriggerCondition::OnSignal {
+                name: "manual".into(),
+            },
+            &["implementation"],
+            &[],
+        );
+
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, None, &HashSet::new()),
+            Some(2000)
+        );
+    }
+
+    #[test]
+    fn derived_completion_timestamp_uses_oldest_per_type_maximum() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["implementation", "review"]);
+        store
+            .record_with_timestamp(
+                "implementation",
+                "impl-old",
+                Path::new("impl-old.json"),
+                &json!({"title": "old"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "impl-new",
+                Path::new("impl-new.json"),
+                &json!({"title": "new"}),
+                2500,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "review",
+                "review-current",
+                Path::new("review.json"),
+                &json!({"title": "review"}),
+                2000,
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            TriggerCondition::OnSignal {
+                name: "manual".into(),
+            },
+            &["implementation", "review"],
+            &[],
+        );
+
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, None, &HashSet::new()),
+            Some(2000)
+        );
+    }
+
+    #[test]
+    fn on_change_satisfied_when_required_outputs_are_partially_scanned() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "implementation"]);
+        store
+            .record_with_timestamp(
+                "doc",
+                "a",
+                Path::new("a.json"),
+                &json!({"title": "A"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "a",
+                Path::new("impl.json"),
+                &json!({"title": "done"}),
+                2000,
+            )
+            .unwrap();
+
         let signals = HashSet::new();
+        let partial = HashSet::from(["implementation".to_string()]);
         let ctx = TriggerContext {
             store: &store,
-            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: &partial,
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
-        // Any single instance newer than completion → satisfied.
-        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
+        let protocol = make_protocol(cond.clone(), &["implementation"], &[]);
+        assert_eq!(
+            super::evaluate(&cond, &protocol, &ctx),
+            TriggerResult::Satisfied
+        );
     }
 
     // --- OnInvalid ---
@@ -493,13 +867,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
-        let timestamps = HashMap::new();
         let signals = HashSet::from(["deploy".to_string()]);
         let ctx = TriggerContext {
             store: &store,
-            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnSignal {
             name: "deploy".into(),
@@ -532,13 +905,12 @@ mod tests {
             .record("doc", "a", Path::new("a.json"), &json!({"title": "A"}))
             .unwrap();
 
-        let timestamps = HashMap::new();
         let signals = HashSet::from(["go".to_string()]);
         let ctx = TriggerContext {
             store: &store,
-            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
 
         let cond = TriggerCondition::AllOf {
@@ -591,13 +963,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
-        let timestamps = HashMap::new();
         let signals = HashSet::from(["go".to_string()]);
         let ctx = TriggerContext {
             store: &store,
-            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
 
         let cond = TriggerCondition::AnyOf {
@@ -653,13 +1024,12 @@ mod tests {
             .unwrap();
         // "approval" has no instances — OnArtifact for it would fail.
 
-        let timestamps = HashMap::new();
         let signals = HashSet::from(["approved".to_string()]);
         let ctx = TriggerContext {
             store: &store,
-            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
 
         // AllOf(OnArtifact("doc"), AnyOf(OnSignal("approved"), OnArtifact("approval")))
@@ -738,15 +1108,14 @@ mod tests {
             )
             .unwrap();
 
-        let timestamps = HashMap::new();
         let signals = HashSet::new();
 
         // Scoped to WU-A: only valid instance visible → satisfied.
         let ctx_a = TriggerContext {
             store: &store,
-            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: Some("wu-a"),
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnArtifact { name: "doc".into() };
         assert_eq!(
@@ -757,9 +1126,9 @@ mod tests {
         // Scoped to WU-B: only invalid instance visible → not satisfied.
         let ctx_b = TriggerContext {
             store: &store,
-            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: Some("wu-b"),
+            partially_scanned_types: empty_partials(),
         };
         assert!(matches!(
             evaluate(&cond, &ctx_b, "protocol"),
@@ -776,13 +1145,12 @@ mod tests {
             .record("doc", "shared", Path::new("s.json"), &json!({"title": "S"}))
             .unwrap();
 
-        let timestamps = HashMap::new();
         let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            completion_timestamps: &timestamps,
             active_signals: &signals,
             work_unit: Some("wu-x"),
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnArtifact { name: "doc".into() };
         assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);

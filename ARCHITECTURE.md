@@ -6,9 +6,9 @@ Runa is a cognitive runtime for AI agents. This document describes the codebase 
 
 Three crates, Rust 2024 edition, resolver v3:
 
-- **`libagent`** — All domain logic: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, context injection construction, pre/post-execution enforcement, project loading, completion timestamp persistence, and protocol selection.
+- **`libagent`** — All domain logic: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, context injection construction, pre/post-execution enforcement, project loading, and protocol selection.
 - **`runa-cli`** — Thin CLI binary. Clap-based argument parsing, delegates to libagent. No domain logic.
-- **`runa-mcp`** — MCP server binary. Single-session stdio process that serves one (protocol, work_unit) pair per invocation. Loads the project, selects a ready candidate, exposes protocol outputs as MCP tools and context as an MCP prompt, then records completion on success.
+- **`runa-mcp`** — MCP server binary. Single-session stdio process that serves one (protocol, work_unit) pair per invocation. Loads the project, selects a ready candidate, exposes protocol outputs as MCP tools and context as an MCP prompt, then relies on the produced artifacts themselves as completion evidence.
 
 ## Data Flow
 
@@ -20,13 +20,13 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 3. **Artifact workspace → validated state.** `scan::scan` walks the artifact workspace, parses `*.json` files under `<workspace>/<type_name>/`, validates them against the type schemas, and reconciles the results into `.runa/store/`. Valid, invalid, and malformed artifacts are all stored — invalid and malformed state are meaningful for trigger evaluation. Per-file read failures are collected as unreadable findings rather than aborting reconciliation.
 
-4. **Trigger evaluation.** `trigger::evaluate` recursively evaluates a `TriggerCondition` tree against a `TriggerContext` (artifact store, per-protocol completion timestamps, active signals) and returns a `TriggerResult`. Pure function, no side effects. In the CLI, active signals are loaded from `.runa/signals.json`; if the file is absent, evaluation treats the signal set as empty.
+4. **Trigger evaluation.** `trigger::evaluate` recursively evaluates a `TriggerCondition` tree against a `TriggerContext` (artifact store, active signals) plus the protocol declaration and returns a `TriggerResult`. `OnChange` derives temporal state from output artifact timestamps for the same work unit. Pure function, no side effects. In the CLI, active signals are loaded from `.runa/signals.json`; if the file is absent, evaluation treats the signal set as empty.
 
 5. **Context injection construction.** `context::build_context` converts a ready `ProtocolDeclaration` plus the current artifact store into the stable agent-facing payload used by `runa step` and `runa-mcp`: protocol name, available required/accepted artifact refs, and expected outputs.
 
-6. **Protocol selection.** `selection::discover_ready_candidates` evaluates protocols in topological order, discovers candidate work_units from artifact instances, and returns (protocol, work_unit) pairs where trigger, preconditions, and scan trust are all satisfied. Already-completed work (activated with passing postconditions) is suppressed.
+6. **Protocol selection.** `selection::discover_ready_candidates` evaluates protocols in topological order, discovers candidate work_units from artifact instances, and returns (protocol, work_unit) pairs where trigger, preconditions, and scan trust are all satisfied. Current work whose valid outputs are newer than all relevant inputs is suppressed directly from artifact freshness.
 
-7. **MCP runtime loop.** `runa-mcp` loads the project, scans, selects the first ready candidate, serves an MCP session via stdio, then re-scans and checks postconditions. Successful postconditions trigger completion timestamp recording.
+7. **MCP runtime loop.** `runa-mcp` loads the project, scans, selects the first ready candidate, serves an MCP session via stdio, then re-scans and checks postconditions. Successful postconditions leave completion evidence in the workspace via the output artifacts themselves.
 
 ## Modules
 
@@ -62,7 +62,7 @@ Filesystem reconciliation from the artifact workspace into the store. `scan` tre
 
 ### `trigger.rs`
 
-Recursive trigger condition evaluator. `evaluate` is a pure function that takes a `TriggerCondition`, a `TriggerContext` (read-only references to the artifact store, completion timestamps, and active signals), and a protocol name. Six condition variants: `OnArtifact` distinguishes between missing valid instances and visible invalid/stale instances, `OnChange` compares latest artifact modification against the protocol's completion timestamp, `OnInvalid` checks `store.has_any_invalid`, `OnSignal` checks set membership, `AllOf` short-circuits on first failure, `AnyOf` short-circuits on first success.
+Recursive trigger condition evaluator. `evaluate` is a pure function that takes a `TriggerCondition`, the enclosing `ProtocolDeclaration`, and a `TriggerContext` (read-only references to the artifact store and active signals). Six condition variants: `OnArtifact` distinguishes between missing valid instances and visible invalid/stale instances, `OnChange` compares the named input's latest timestamp against the protocol's derived output timestamp, `OnInvalid` checks `store.has_any_invalid`, `OnSignal` checks set membership, `AllOf` short-circuits on first failure, `AnyOf` short-circuits on first success.
 
 ### `enforcement.rs`
 
@@ -76,19 +76,15 @@ Returns `EnforcementError` on failure, containing the protocol name, enforcement
 
 Shared project loading logic used by both `runa-cli` and `runa-mcp`. Config resolution chain (explicit override → `.runa/config.toml` → XDG config → error), manifest parsing, dependency graph construction, and artifact store initialization. `load_signals` reads `.runa/signals.json` with graceful fallback on missing or malformed files.
 
-### `completion.rs`
-
-Per-(protocol, work_unit) completion timestamp persistence. `CompletionStore` stores millisecond timestamps keyed by (protocol name, optional work_unit). Persists as `.runa/completions.json` using atomic write (tmp + rename). Transparently migrates from the legacy `activations.json` filename on first load. `timestamps_for_trigger_context` bridges to the existing `TriggerContext.completion_timestamps` interface by producing a scoped `HashMap<String, u64>`.
-
 ### `selection.rs`
 
-Work-unit discovery and protocol selection. `discover_ready_candidates` evaluates protocols in topological order, collecting candidate work_units from artifact instances referenced by the protocol's edges and trigger tree. For each candidate: checks scan trust (skips if any `requires` type is partially scanned), evaluates the trigger condition, checks preconditions, and suppresses already-completed work. Returns candidates in topological protocol order with deterministic lexicographic work_unit ordering within each protocol.
+Work-unit discovery and protocol selection. `discover_ready_candidates` evaluates protocols in topological order, collecting candidate work_units from artifact instances referenced by the protocol's edges and trigger tree. For each candidate: checks scan trust (skips if any `requires` type is partially scanned), evaluates the trigger condition, checks preconditions, and suppresses work whose outputs are already fresh relative to its inputs. Returns candidates in topological protocol order with deterministic lexicographic work_unit ordering within each protocol.
 
 ## runa-mcp Modules
 
 ### `main.rs`
 
-Runtime loop: loads the project, scans the workspace, discovers ready candidates, selects the first, builds the MCP handler, serves via stdio transport, then re-scans and checks postconditions. Records completion timestamps on successful postcondition checks.
+Runtime loop: loads the project, scans the workspace, discovers ready candidates, selects the first, builds the MCP handler, serves via stdio transport, then re-scans and checks postconditions. Successful outputs become the completion evidence for the next selection pass.
 
 ### `handler.rs`
 
@@ -105,7 +101,6 @@ Natural language context prompt renderer. Transforms `ContextInjection` into a `
   config.toml                   # Created by `runa init`: methodology_path, optional artifacts_dir
   state.toml                    # Created by `runa init`: initialized_at, runa_version
   signals.json                  # Optional runtime signal state: { "active": ["name", ...] }
-  completions.json              # Per-(protocol, work_unit) completion timestamps (created by runa-mcp)
   workspace/                    # Default artifact workspace (configurable via artifacts_dir)
     {type_name}/
       {instance_id}.json        # Agent-produced artifact file
@@ -147,7 +142,7 @@ Runs the workspace reconciliation pass. Reads artifact files from the resolved w
 
 ### `runa status`
 
-Runs an implicit workspace scan, then evaluates every protocol against current runtime state. Classification is ordered and mutually exclusive: `WAITING` when the trigger is not satisfied, `BLOCKED` when the trigger is satisfied but `enforce_preconditions` fails, and `READY` otherwise. Uses persisted active signals from `.runa/signals.json` and still uses an empty completion timestamp map because no runtime state loop exists yet. If `signals.json` is unreadable or malformed, status appends a warning and evaluates with an empty active-signal set.
+Runs an implicit workspace scan, then evaluates every protocol against current runtime state. Classification is ordered and mutually exclusive: `WAITING` when the trigger is not satisfied, `BLOCKED` when the trigger is satisfied but `enforce_preconditions` fails, and `READY` otherwise. Uses persisted active signals from `.runa/signals.json`; `on_change` freshness is derived directly from artifact timestamps in the store. If `signals.json` is unreadable or malformed, status appends a warning and evaluates with an empty active-signal set.
 
 Text output groups protocols as `READY`, `BLOCKED`, then `WAITING`, preserving the graph-derived protocol order within each group. `READY` entries list valid required and accepted artifact instances, `BLOCKED` entries list required artifact failures (`missing`, `invalid`, `stale`, `scan_incomplete`), and `WAITING` entries list detailed unsatisfied trigger conditions including the trigger condition and the specific `TriggerResult::NotSatisfied` reason. When scan reconciliation is partial, status prints scan warnings before the protocol groups and treats any protocol whose `requires` includes an affected artifact type as blocked because readiness cannot be verified; affected `accepts` types remain non-blocking and are omitted from the reported inputs.
 

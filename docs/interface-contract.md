@@ -32,7 +32,8 @@ A protocol declaration:
 - **requires** — zero or more artifact type names
 - **accepts** — zero or more artifact type names
 - **produces** — zero or more artifact type names
-- **may_produce** — zero or more artifact type names. A protocol whose only outputs are `may_produce` types completes successfully when the agent produces nothing — the contract does not require optional outputs. If output should always be produced, the artifact type belongs in `produces`.
+- **may_produce** — zero or more artifact type names. Absent optional outputs do not fail postconditions, but they also do not create completion evidence. If output should always be produced, the artifact type belongs in `produces`.
+- Completion is derived from output artifact timestamps. Protocols with no `produces` types are never suppressed by freshness — runa cannot derive completion from artifacts that don't exist. If a protocol needs completion tracking, it must declare at least one `produces` artifact type.
 - **trigger** — one trigger condition (see below)
 
 Topology is not declared. It emerges from the graph of requires/produces/may_produce relationships across protocols. A pipeline emerges when protocols chain linearly. A graph emerges when protocols fan in or fan out. A cycle emerges when a protocol produces an artifact type that another protocol's trigger monitors for change. The methodology does not tell runa what shape it is. runa computes the shape from declarations.
@@ -42,9 +43,11 @@ Topology is not declared. It emerges from the graph of requires/produces/may_pro
 A trigger condition defines when runa should activate a protocol. Triggers are composable from four primitive types:
 
 - **on_artifact(name)** — the named artifact exists and satisfies its schema
-- **on_change(name)** — the named artifact has been modified since this protocol last completed successfully. runa tracks completion timestamps per protocol and compares against artifact modification timestamps.
+- **on_change(name)** — the named artifact is newer than this protocol's current output artifacts for the same work unit. runa derives freshness from artifact timestamps in the store rather than persisting separate completion records.
 - **on_invalid(name)** — an instance of the named artifact type exists but fails validation against its declared schema
 - **on_signal(name)** — an external event (operator action, webhook, scheduler)
+
+Completion is derived from output artifact timestamps. For `on_change` protocols, the output must change content to evidence that the changed input was processed. If the correct response to changed input is "the existing output is still valid," the protocol's capstone should still reflect the verification — for example, by including a review timestamp or updated rationale that changes the content hash. Identical rewrites are invisible to the artifact store.
 
 These compose through two operators:
 
