@@ -599,7 +599,6 @@ fn on_change_trigger_eval(
     let affected_outputs: Vec<String> = protocol
         .produces
         .iter()
-        .chain(protocol.may_produce.iter())
         .filter(|artifact_type| affected_types.contains(artifact_type.as_str()))
         .cloned()
         .collect();

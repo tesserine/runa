@@ -143,7 +143,6 @@ fn protocol_is_current(
     if protocol
         .produces
         .iter()
-        .chain(protocol.may_produce.iter())
         .any(|artifact_type| partially_scanned_types.contains(artifact_type.as_str()))
     {
         return false;
@@ -1021,6 +1020,57 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
         assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+    }
+
+    #[test]
+    fn partially_scanned_optional_output_does_not_skip_completed_suppression() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["constraints", "implementation", "notes"],
+        );
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let completions = CompletionStore::load(tmp.path()).unwrap();
+        let signals = HashSet::new();
+        let partial = HashSet::from(["notes".to_string()]);
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &["notes"],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &completions,
+            &signals,
+            &["implement"],
+            &partial,
+        );
+
+        assert!(candidates.is_empty());
     }
 
     #[test]

@@ -47,6 +47,8 @@ A trigger condition defines when runa should activate a protocol. Triggers are c
 - **on_invalid(name)** — an instance of the named artifact type exists but fails validation against its declared schema
 - **on_signal(name)** — an external event (operator action, webhook, scheduler)
 
+Completion is derived from output artifact timestamps. For `on_change` protocols, the output must change content to evidence that the changed input was processed. If the correct response to changed input is "the existing output is still valid," the protocol's capstone should still reflect the verification — for example, by including a review timestamp or updated rationale that changes the content hash. Identical rewrites are invisible to the artifact store.
+
 These compose through two operators:
 
 - **all_of(conditions...)** — all conditions must be satisfied

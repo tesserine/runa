@@ -1219,6 +1219,86 @@ trigger = { type = "on_change", name = "doc" }
 
 #[cfg(unix)]
 #[test]
+fn status_does_not_block_on_change_for_partial_optional_outputs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "doc"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[artifact_types]]
+name = "reviewed"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[artifact_types]]
+name = "review-notes"
+schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
+
+[[protocols]]
+name = "review"
+produces = ["reviewed"]
+may_produce = ["review-notes"]
+trigger = { type = "on_change", name = "doc" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("doc")).unwrap();
+    fs::create_dir_all(workspace.join("reviewed")).unwrap();
+    fs::create_dir_all(workspace.join("review-notes")).unwrap();
+    fs::write(workspace.join("doc/input.json"), r#"{"title":"draft"}"#).unwrap();
+    fs::write(workspace.join("reviewed/input.json"), r#"{"title":"done"}"#).unwrap();
+    let unreadable_optional = workspace.join("review-notes/hidden.json");
+    fs::write(&unreadable_optional, r#"{"title":"note"}"#).unwrap();
+    fs::set_permissions(&unreadable_optional, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable_optional, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let review = value["protocols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|protocol| protocol["name"] == "review")
+        .unwrap();
+
+    assert_eq!(review["status"], "waiting");
+    assert_eq!(review["trigger"], "not_satisfied");
+    assert_eq!(
+        review["unsatisfied_conditions"],
+        serde_json::json!([
+            "on_change(doc): artifact type 'doc' has not changed since protocol outputs were last updated"
+        ])
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn status_preserves_invalid_preconditions_alongside_scan_incomplete() {
     use std::os::unix::fs::PermissionsExt;
 
