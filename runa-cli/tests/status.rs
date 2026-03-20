@@ -1217,6 +1217,90 @@ trigger = { type = "on_change", name = "doc" }
     );
 }
 
+#[test]
+fn status_marks_on_change_ready_when_work_unit_freshness_is_mixed() {
+    use std::{thread::sleep, time::Duration};
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "doc"
+schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
+
+[[artifact_types]]
+name = "reviewed"
+schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
+
+[[protocols]]
+name = "review"
+produces = ["reviewed"]
+trigger = { type = "on_change", name = "doc" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("doc")).unwrap();
+    fs::create_dir_all(workspace.join("reviewed")).unwrap();
+
+    fs::write(
+        workspace.join("reviewed/a.json"),
+        r#"{"title":"done-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    sleep(Duration::from_millis(20));
+    fs::write(
+        workspace.join("doc/a.json"),
+        r#"{"title":"draft-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    sleep(Duration::from_millis(20));
+    fs::write(
+        workspace.join("doc/b.json"),
+        r#"{"title":"draft-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+    sleep(Duration::from_millis(20));
+    fs::write(
+        workspace.join("reviewed/b.json"),
+        r#"{"title":"done-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let review = value["protocols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|protocol| protocol["name"] == "review")
+        .unwrap();
+
+    assert_eq!(review["status"], "ready");
+    assert_eq!(review["trigger"], "satisfied");
+}
+
 #[cfg(unix)]
 #[test]
 fn status_does_not_block_on_change_for_partial_optional_outputs() {

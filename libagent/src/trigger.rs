@@ -146,6 +146,22 @@ pub(crate) fn derived_completion_timestamp(
         return None;
     }
 
+    // Unscoped evaluation cannot derive meaningful freshness from
+    // work-unit-scoped outputs — a fresh output for one work unit
+    // would mask stale outputs for others. Return None so on_change
+    // reports Satisfied conservatively.
+    if work_unit.is_none() {
+        let has_scoped_output = protocol.produces.iter().any(|artifact_type| {
+            store
+                .instances_of(artifact_type, None)
+                .into_iter()
+                .any(|(_, state)| state.work_unit.is_some())
+        });
+        if has_scoped_output {
+            return None;
+        }
+    }
+
     protocol
         .produces
         .iter()
@@ -621,15 +637,6 @@ mod tests {
                 2000,
             )
             .unwrap();
-        store
-            .record_with_timestamp(
-                "implementation",
-                "wu-a",
-                Path::new("wu-a.json"),
-                &json!({"title": "scoped", "work_unit": "wu-a"}),
-                500,
-            )
-            .unwrap();
 
         let protocol = make_protocol(
             TriggerCondition::OnSignal {
@@ -689,6 +696,40 @@ mod tests {
             derived_completion_timestamp(&protocol, &store, None),
             Some(2000)
         );
+    }
+
+    #[test]
+    fn derived_completion_timestamp_is_none_for_unscoped_mixed_work_unit_outputs() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["implementation"]);
+        store
+            .record_with_timestamp(
+                "implementation",
+                "wu-a",
+                Path::new("wu-a.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "wu-b",
+                Path::new("wu-b.json"),
+                &json!({"title": "B", "work_unit": "wu-b"}),
+                3000,
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            TriggerCondition::OnSignal {
+                name: "manual".into(),
+            },
+            &["implementation"],
+            &[],
+        );
+
+        assert_eq!(derived_completion_timestamp(&protocol, &store, None), None);
     }
 
     // --- OnInvalid ---
