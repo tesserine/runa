@@ -1221,17 +1221,9 @@ trigger = { type = "on_change", name = "doc" }
         .find(|protocol| protocol["name"] == "review")
         .unwrap();
 
-    assert_eq!(review["status"], "blocked");
+    assert_eq!(review["status"], "ready");
     assert_eq!(review["trigger"], "satisfied");
-    assert_eq!(
-        review["precondition_failures"],
-        serde_json::json!([
-            {
-                "artifact_type": "reviewed",
-                "reason": "scan_incomplete"
-            }
-        ])
-    );
+    assert!(review.get("precondition_failures").is_none());
 }
 
 #[test]

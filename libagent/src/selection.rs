@@ -55,6 +55,7 @@ pub fn discover_ready_candidates(
                 store,
                 active_signals,
                 work_unit: wu_ref,
+                partially_scanned_types,
             };
 
             // Evaluate trigger.
@@ -98,7 +99,7 @@ pub fn protocol_scan_incomplete_types(
     trigger_artifact_types(&protocol.trigger, &mut trigger_types);
 
     let mut incomplete = Vec::new();
-    for artifact_type in protocol.requires.iter().chain(protocol.produces.iter()) {
+    for artifact_type in &protocol.requires {
         if partially_scanned_types.contains(artifact_type.as_str())
             && !incomplete.contains(artifact_type)
         {
@@ -185,7 +186,9 @@ fn protocol_is_current(
         return false;
     }
 
-    let Some(output_timestamp) = derived_completion_timestamp(protocol, store, work_unit) else {
+    let Some(output_timestamp) =
+        derived_completion_timestamp(protocol, store, work_unit, partially_scanned_types)
+    else {
         return false;
     };
 
@@ -1085,7 +1088,7 @@ mod tests {
     }
 
     #[test]
-    fn partially_scanned_output_type_skips_candidate_discovery() {
+    fn partially_scanned_output_type_does_not_globally_skip_candidate_discovery() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
         store
@@ -1099,15 +1102,30 @@ mod tests {
         // Output artifact present — postconditions would pass on full scan.
         store
             .record(
+                "constraints",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"title": "B", "work_unit": "wu-b"}),
+            )
+            .unwrap();
+        store
+            .record(
                 "implementation",
                 "a1",
                 Path::new("impl-a1.json"),
                 &json!({"title": "impl-A", "work_unit": "wu-a"}),
             )
             .unwrap();
+        store
+            .record(
+                "implementation",
+                "b1",
+                Path::new("impl-b1.json"),
+                &json!({"title": "impl-B", "work_unit": "wu-b"}),
+            )
+            .unwrap();
 
         let signals = HashSet::new();
-        // implementation is partially scanned — postcondition data is stale.
         let partial = HashSet::from(["implementation".to_string()]);
 
         let protocol = make_protocol(
@@ -1124,7 +1142,41 @@ mod tests {
         let candidates =
             discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
 
-        assert!(candidates.is_empty());
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+        assert_eq!(candidates[1].work_unit, Some("wu-b".into()));
+    }
+
+    #[test]
+    fn partially_scanned_output_type_does_not_affect_non_on_change_trigger_gate() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let signals = HashSet::from(["go".to_string()]);
+        let partial = HashSet::from(["implementation".to_string()]);
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnSignal { name: "go".into() },
+        );
+
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "implement");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
     }
 
     #[test]

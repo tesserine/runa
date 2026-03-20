@@ -280,6 +280,7 @@ pub(crate) fn evaluate_protocols(
                 store: &loaded.store,
                 active_signals,
                 work_unit: work_unit.as_deref(),
+                partially_scanned_types: &scan_findings.affected_types,
             };
             let trigger_eval = evaluate_trigger_trust(
                 &protocol.trigger,

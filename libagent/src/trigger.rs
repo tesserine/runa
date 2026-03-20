@@ -24,6 +24,7 @@ pub struct TriggerContext<'a> {
     pub store: &'a ArtifactStore,
     pub active_signals: &'a HashSet<String>,
     pub work_unit: Option<&'a str>,
+    pub partially_scanned_types: &'a HashSet<String>,
 }
 
 /// Evaluate whether a trigger condition is satisfied given current state.
@@ -68,7 +69,12 @@ pub fn evaluate(
                     "no instances of artifact type '{name}' exist"
                 )),
                 Some(latest) => {
-                    match derived_completion_timestamp(protocol, context.store, context.work_unit) {
+                    match derived_completion_timestamp(
+                        protocol,
+                        context.store,
+                        context.work_unit,
+                        context.partially_scanned_types,
+                    ) {
                         None => {
                             // No output evidence — any input instance counts as changed.
                             TriggerResult::Satisfied
@@ -137,8 +143,17 @@ pub(crate) fn derived_completion_timestamp(
     protocol: &ProtocolDeclaration,
     store: &ArtifactStore,
     work_unit: Option<&str>,
+    partially_scanned_types: &HashSet<String>,
 ) -> Option<u64> {
     if protocol.produces.is_empty() {
+        return None;
+    }
+
+    if protocol
+        .produces
+        .iter()
+        .any(|artifact_type| partially_scanned_types.contains(artifact_type.as_str()))
+    {
         return None;
     }
 
@@ -189,7 +204,12 @@ mod tests {
             store,
             active_signals: Box::leak(Box::default()),
             work_unit: None,
+            partially_scanned_types: Box::leak(Box::default()),
         }
+    }
+
+    fn empty_partials() -> &'static HashSet<String> {
+        Box::leak(Box::default())
     }
 
     fn evaluate(
@@ -310,6 +330,7 @@ mod tests {
             store: &store,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         let protocol = make_protocol(cond.clone(), &["implementation"], &[]);
@@ -347,6 +368,7 @@ mod tests {
             store: &store,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         let protocol = make_protocol(cond.clone(), &["implementation"], &[]);
@@ -384,6 +406,7 @@ mod tests {
             store: &store,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         let protocol = make_protocol(cond.clone(), &["implementation"], &[]);
@@ -434,6 +457,7 @@ mod tests {
             store: &store,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         let protocol = make_protocol(cond.clone(), &["implementation"], &[]);
@@ -480,6 +504,7 @@ mod tests {
             store: &store,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         let protocol = make_protocol(cond.clone(), &["implementation"], &[]);
@@ -529,6 +554,7 @@ mod tests {
             store: &store,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnChange { name: "doc".into() };
         let protocol = make_protocol(cond.clone(), &["implementation"], &["notes"]);
@@ -559,7 +585,39 @@ mod tests {
             &[],
             &["notes"],
         );
-        assert_eq!(derived_completion_timestamp(&protocol, &store, None), None);
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, None, &HashSet::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn derived_completion_timestamp_is_none_when_produces_type_is_partially_scanned() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["implementation"]);
+        store
+            .record_with_timestamp(
+                "implementation",
+                "impl",
+                Path::new("impl.json"),
+                &json!({"title": "done"}),
+                1000,
+            )
+            .unwrap();
+
+        let partial = HashSet::from(["implementation".to_string()]);
+        let protocol = make_protocol(
+            TriggerCondition::OnSignal {
+                name: "manual".into(),
+            },
+            &["implementation"],
+            &[],
+        );
+
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, None, &partial),
+            None
+        );
     }
 
     #[test]
@@ -594,7 +652,7 @@ mod tests {
         );
 
         assert_eq!(
-            derived_completion_timestamp(&protocol, &store, Some("wu-a")),
+            derived_completion_timestamp(&protocol, &store, Some("wu-a"), &HashSet::new()),
             Some(1000)
         );
     }
@@ -631,7 +689,7 @@ mod tests {
         );
 
         assert_eq!(
-            derived_completion_timestamp(&protocol, &store, None),
+            derived_completion_timestamp(&protocol, &store, None, &HashSet::new()),
             Some(2000)
         );
     }
@@ -677,8 +735,47 @@ mod tests {
         );
 
         assert_eq!(
-            derived_completion_timestamp(&protocol, &store, None),
+            derived_completion_timestamp(&protocol, &store, None, &HashSet::new()),
             Some(2000)
+        );
+    }
+
+    #[test]
+    fn on_change_satisfied_when_required_outputs_are_partially_scanned() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "implementation"]);
+        store
+            .record_with_timestamp(
+                "doc",
+                "a",
+                Path::new("a.json"),
+                &json!({"title": "A"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "a",
+                Path::new("impl.json"),
+                &json!({"title": "done"}),
+                2000,
+            )
+            .unwrap();
+
+        let signals = HashSet::new();
+        let partial = HashSet::from(["implementation".to_string()]);
+        let ctx = TriggerContext {
+            store: &store,
+            active_signals: &signals,
+            work_unit: None,
+            partially_scanned_types: &partial,
+        };
+        let cond = TriggerCondition::OnChange { name: "doc".into() };
+        let protocol = make_protocol(cond.clone(), &["implementation"], &[]);
+        assert_eq!(
+            super::evaluate(&cond, &protocol, &ctx),
+            TriggerResult::Satisfied
         );
     }
 
@@ -775,6 +872,7 @@ mod tests {
             store: &store,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnSignal {
             name: "deploy".into(),
@@ -812,6 +910,7 @@ mod tests {
             store: &store,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
 
         let cond = TriggerCondition::AllOf {
@@ -869,6 +968,7 @@ mod tests {
             store: &store,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
 
         let cond = TriggerCondition::AnyOf {
@@ -929,6 +1029,7 @@ mod tests {
             store: &store,
             active_signals: &signals,
             work_unit: None,
+            partially_scanned_types: empty_partials(),
         };
 
         // AllOf(OnArtifact("doc"), AnyOf(OnSignal("approved"), OnArtifact("approval")))
@@ -1014,6 +1115,7 @@ mod tests {
             store: &store,
             active_signals: &signals,
             work_unit: Some("wu-a"),
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnArtifact { name: "doc".into() };
         assert_eq!(
@@ -1026,6 +1128,7 @@ mod tests {
             store: &store,
             active_signals: &signals,
             work_unit: Some("wu-b"),
+            partially_scanned_types: empty_partials(),
         };
         assert!(matches!(
             evaluate(&cond, &ctx_b, "protocol"),
@@ -1047,6 +1150,7 @@ mod tests {
             store: &store,
             active_signals: &signals,
             work_unit: Some("wu-x"),
+            partially_scanned_types: empty_partials(),
         };
         let cond = TriggerCondition::OnArtifact { name: "doc".into() };
         assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
