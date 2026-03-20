@@ -24,6 +24,7 @@ pub(crate) enum TriggerState {
 #[derive(Clone)]
 pub(crate) struct ProtocolEntry {
     pub(crate) name: String,
+    pub(crate) work_unit: Option<String>,
     pub(crate) status: ProtocolStatus,
     pub(crate) trigger: TriggerState,
     pub(crate) inputs: Vec<InputEntry>,
@@ -34,6 +35,8 @@ pub(crate) struct ProtocolEntry {
 #[derive(Clone, Serialize)]
 pub(crate) struct ProtocolJson {
     pub(crate) name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) work_unit: Option<String>,
     pub(crate) status: ProtocolStatus,
     pub(crate) trigger: TriggerState,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -101,6 +104,46 @@ impl EvaluatedProtocols {
     pub(crate) fn json_protocols(&self) -> Vec<ProtocolJson> {
         self.ordered_entries().cloned().map(protocol_json).collect()
     }
+}
+
+fn failure_entries_from_types(artifact_types: Vec<String>) -> Vec<FailureEntry> {
+    artifact_types
+        .into_iter()
+        .map(|artifact_type| FailureEntry {
+            artifact_type,
+            reason: "scan_incomplete",
+        })
+        .collect()
+}
+
+fn append_unique_failures(target: &mut Vec<FailureEntry>, additional: Vec<FailureEntry>) {
+    for failure in additional {
+        if !target.iter().any(|existing| {
+            existing.artifact_type == failure.artifact_type && existing.reason == failure.reason
+        }) {
+            target.push(failure);
+        }
+    }
+}
+
+fn precondition_scan_failures(
+    protocol: &libagent::ProtocolDeclaration,
+    affected_types: &HashSet<String>,
+) -> Vec<FailureEntry> {
+    let mut failures = Vec::new();
+    for artifact_type in protocol.requires.iter().chain(protocol.produces.iter()) {
+        if affected_types.contains(artifact_type.as_str())
+            && !failures
+                .iter()
+                .any(|failure: &FailureEntry| failure.artifact_type == *artifact_type)
+        {
+            failures.push(FailureEntry {
+                artifact_type: artifact_type.clone(),
+                reason: "scan_incomplete",
+            });
+        }
+    }
+    failures
 }
 
 pub(crate) fn collect_scan_findings(
@@ -173,13 +216,41 @@ pub(crate) fn evaluate_protocols(
         .map(|protocol| (protocol.name.as_str(), protocol))
         .collect();
 
-    let context = TriggerContext {
-        store: &loaded.store,
+    let ready_candidates = libagent::discover_ready_candidates(
+        &loaded.manifest.protocols,
+        &loaded.store,
         active_signals,
-        work_unit: None,
-    };
+        &skill_order,
+        &scan_findings.affected_types,
+    );
+    let ready_set: HashSet<(String, Option<String>)> = ready_candidates
+        .iter()
+        .map(|candidate| (candidate.protocol_name.clone(), candidate.work_unit.clone()))
+        .collect();
 
-    let mut ready = Vec::new();
+    let mut ready: Vec<ProtocolEntry> = ready_candidates
+        .iter()
+        .map(|candidate| {
+            let protocol = skill_map
+                .get(candidate.protocol_name.as_str())
+                .expect("ready candidate protocol must exist in manifest");
+            ProtocolEntry {
+                name: protocol.name.clone(),
+                work_unit: candidate.work_unit.clone(),
+                status: ProtocolStatus::Ready,
+                trigger: TriggerState::Satisfied,
+                inputs: collect_inputs(
+                    protocol,
+                    &loaded.store,
+                    working_dir,
+                    &scan_findings.affected_types,
+                    candidate.work_unit.as_deref(),
+                ),
+                precondition_failures: Vec::new(),
+                unsatisfied_conditions: Vec::new(),
+            }
+        })
+        .collect();
     let mut blocked = Vec::new();
     let mut waiting = Vec::new();
 
@@ -188,88 +259,116 @@ pub(crate) fn evaluate_protocols(
             continue;
         };
 
-        let trigger_eval = evaluate_trigger_trust(
-            &protocol.trigger,
+        let protocol_scan_failures =
+            failure_entries_from_types(libagent::selection::protocol_scan_incomplete_types(
+                protocol,
+                &scan_findings.affected_types,
+            ));
+        let readiness_scan_failures =
+            precondition_scan_failures(protocol, &scan_findings.affected_types);
+
+        for work_unit in libagent::selection::protocol_work_units(
             protocol,
-            &context,
+            &loaded.store,
             &scan_findings.affected_types,
-        );
-        let trigger_state = if trigger_eval.satisfied {
-            TriggerState::Satisfied
-        } else {
-            TriggerState::NotSatisfied
-        };
+        ) {
+            if ready_set.contains(&(protocol.name.clone(), work_unit.clone())) {
+                continue;
+            }
 
-        let scan_failures =
-            scan_incomplete_failures(protocol, scan_findings, &trigger_eval.scan_types);
-        let entry = match trigger_state {
-            TriggerState::Satisfied => {
-                let mut precondition_failures = scan_failures;
+            let context = TriggerContext {
+                store: &loaded.store,
+                active_signals,
+                work_unit: work_unit.as_deref(),
+            };
+            let trigger_eval = evaluate_trigger_trust(
+                &protocol.trigger,
+                protocol,
+                &context,
+                &scan_findings.affected_types,
+            );
+            let trigger_state = if trigger_eval.satisfied {
+                TriggerState::Satisfied
+            } else {
+                TriggerState::NotSatisfied
+            };
+            let scan_failures =
+                scan_incomplete_failures(protocol, scan_findings, &trigger_eval.scan_types);
 
-                if let Err(err) = enforce_preconditions(protocol, &loaded.store, None) {
-                    precondition_failures.extend(err.failures.iter().map(failure_entry));
+            let entry = if trigger_eval.satisfied {
+                let mut precondition_failures = protocol_scan_failures.clone();
+                append_unique_failures(&mut precondition_failures, scan_failures);
+                if let Err(err) =
+                    enforce_preconditions(protocol, &loaded.store, work_unit.as_deref())
+                {
+                    append_unique_failures(
+                        &mut precondition_failures,
+                        err.failures.iter().map(failure_entry).collect(),
+                    );
                 }
 
                 if precondition_failures.is_empty() {
                     ProtocolEntry {
                         name: protocol.name.clone(),
-                        status: ProtocolStatus::Ready,
-                        trigger: TriggerState::Satisfied,
-                        inputs: collect_inputs(
-                            protocol,
-                            &loaded.store,
-                            working_dir,
-                            &scan_findings.affected_types,
-                        ),
-                        precondition_failures: Vec::new(),
-                        unsatisfied_conditions: Vec::new(),
-                    }
-                } else {
-                    ProtocolEntry {
-                        name: protocol.name.clone(),
-                        status: ProtocolStatus::Blocked,
-                        trigger: TriggerState::Satisfied,
-                        inputs: Vec::new(),
-                        precondition_failures,
-                        unsatisfied_conditions: Vec::new(),
-                    }
-                }
-            }
-            TriggerState::NotSatisfied => {
-                if scan_failures.is_empty() {
-                    ProtocolEntry {
-                        name: protocol.name.clone(),
+                        work_unit: work_unit.clone(),
                         status: ProtocolStatus::Waiting,
-                        trigger: TriggerState::NotSatisfied,
+                        trigger: TriggerState::Satisfied,
                         inputs: Vec::new(),
                         precondition_failures: Vec::new(),
-                        unsatisfied_conditions: collect_unsatisfied_conditions(
-                            &protocol.trigger,
-                            protocol,
-                            &context,
-                        ),
+                        unsatisfied_conditions: vec!["outputs are current".to_string()],
                     }
                 } else {
-                    let mut precondition_failures = scan_failures;
-                    if let Err(err) = enforce_preconditions(protocol, &loaded.store, None) {
-                        precondition_failures.extend(err.failures.iter().map(failure_entry));
-                    }
                     ProtocolEntry {
                         name: protocol.name.clone(),
+                        work_unit: work_unit.clone(),
                         status: ProtocolStatus::Blocked,
-                        trigger: TriggerState::NotSatisfied,
+                        trigger: TriggerState::Satisfied,
                         inputs: Vec::new(),
                         precondition_failures,
                         unsatisfied_conditions: Vec::new(),
                     }
                 }
-            }
-        };
+            } else if scan_failures.is_empty() && readiness_scan_failures.is_empty() {
+                ProtocolEntry {
+                    name: protocol.name.clone(),
+                    work_unit: work_unit.clone(),
+                    status: ProtocolStatus::Waiting,
+                    trigger: trigger_state,
+                    inputs: Vec::new(),
+                    precondition_failures: Vec::new(),
+                    unsatisfied_conditions: collect_unsatisfied_conditions(
+                        &protocol.trigger,
+                        protocol,
+                        &context,
+                    ),
+                }
+            } else {
+                let mut precondition_failures = readiness_scan_failures.clone();
+                append_unique_failures(&mut precondition_failures, scan_failures);
+                if let Err(err) =
+                    enforce_preconditions(protocol, &loaded.store, work_unit.as_deref())
+                {
+                    append_unique_failures(
+                        &mut precondition_failures,
+                        err.failures.iter().map(failure_entry).collect(),
+                    );
+                }
+                ProtocolEntry {
+                    name: protocol.name.clone(),
+                    work_unit: work_unit.clone(),
+                    status: ProtocolStatus::Blocked,
+                    trigger: trigger_state,
+                    inputs: Vec::new(),
+                    precondition_failures,
+                    unsatisfied_conditions: Vec::new(),
+                }
+            };
 
-        match entry.status {
-            ProtocolStatus::Ready => ready.push(entry),
-            ProtocolStatus::Blocked => blocked.push(entry),
-            ProtocolStatus::Waiting => waiting.push(entry),
+            match entry.status {
+                ProtocolStatus::Ready => ready.push(entry),
+                ProtocolStatus::Blocked => blocked.push(entry),
+                ProtocolStatus::Waiting => waiting.push(entry),
+            }
         }
     }
 
@@ -289,7 +388,7 @@ pub(crate) fn print_group(label: &str, entries: &[ProtocolEntry]) {
     }
 
     for entry in entries {
-        println!("  {}", entry.name);
+        println!("  {}", display_protocol_name(entry));
         match entry.status {
             ProtocolStatus::Ready => {
                 for input in &entry.inputs {
@@ -318,6 +417,7 @@ fn collect_inputs(
     store: &libagent::ArtifactStore,
     working_dir: &Path,
     affected_types: &HashSet<String>,
+    work_unit: Option<&str>,
 ) -> Vec<InputEntry> {
     let mut inputs = Vec::new();
 
@@ -325,7 +425,7 @@ fn collect_inputs(
         if affected_types.contains(artifact_type) {
             continue;
         }
-        for (instance_id, state) in store.instances_of(artifact_type, None) {
+        for (instance_id, state) in store.instances_of(artifact_type, work_unit) {
             if matches!(state.status, libagent::ValidationStatus::Valid) {
                 inputs.push(InputEntry {
                     artifact_type: artifact_type.clone(),
@@ -341,7 +441,7 @@ fn collect_inputs(
         if affected_types.contains(artifact_type) {
             continue;
         }
-        for (instance_id, state) in store.instances_of(artifact_type, None) {
+        for (instance_id, state) in store.instances_of(artifact_type, work_unit) {
             if matches!(state.status, libagent::ValidationStatus::Valid) {
                 inputs.push(InputEntry {
                     artifact_type: artifact_type.clone(),
@@ -673,6 +773,7 @@ fn collect_unsatisfied_conditions(
 fn protocol_json(entry: ProtocolEntry) -> ProtocolJson {
     ProtocolJson {
         name: entry.name,
+        work_unit: entry.work_unit,
         status: entry.status,
         trigger: entry.trigger,
         inputs: if entry.inputs.is_empty() {
@@ -710,5 +811,12 @@ fn protocol_json(entry: ProtocolEntry) -> ProtocolJson {
         } else {
             Some(entry.unsatisfied_conditions)
         },
+    }
+}
+
+fn display_protocol_name(entry: &ProtocolEntry) -> String {
+    match &entry.work_unit {
+        Some(work_unit) => format!("{} (work_unit={work_unit})", entry.name),
+        None => entry.name.clone(),
     }
 }

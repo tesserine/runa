@@ -54,6 +54,8 @@ struct StepJson<'a> {
 #[derive(Serialize)]
 struct PlanEntry {
     protocol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work_unit: Option<String>,
     trigger: String,
     context: ContextInjection,
 }
@@ -99,7 +101,11 @@ pub fn run(
             let protocol = protocol_map
                 .get(entry.name.as_str())
                 .expect("planned protocol must exist in manifest");
-            let mut context = libagent::context::build_context(protocol, &loaded.store, None);
+            let mut context = libagent::context::build_context(
+                protocol,
+                &loaded.store,
+                entry.work_unit.as_deref(),
+            );
             context.inputs.retain(|input| {
                 input.relationship == ArtifactRelationship::Requires
                     || !scan_findings
@@ -108,6 +114,7 @@ pub fn run(
             });
             PlanEntry {
                 protocol: entry.name.clone(),
+                work_unit: entry.work_unit.clone(),
                 trigger: protocol.trigger.to_string(),
                 context,
             }
@@ -151,7 +158,16 @@ pub fn run(
             println!("Execution plan:");
             for (index, entry) in execution_plan.iter().enumerate() {
                 println!();
-                println!("  {}. {}", index + 1, entry.protocol);
+                match &entry.work_unit {
+                    Some(work_unit) => {
+                        println!(
+                            "  {}. {} (work_unit={work_unit})",
+                            index + 1,
+                            entry.protocol
+                        )
+                    }
+                    None => println!("  {}. {}", index + 1, entry.protocol),
+                }
                 println!("     trigger: {}", entry.trigger);
                 println!("     context:");
                 let context =

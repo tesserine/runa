@@ -767,15 +767,12 @@ trigger = { type = "on_signal", name = "go" }
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let execution_plan = value["execution_plan"].as_array().unwrap();
-    assert_eq!(execution_plan.len(), 2, "{value:#}");
-    assert_eq!(execution_plan[0]["protocol"], "independent");
-    assert_eq!(execution_plan[1]["protocol"], "publish");
+    assert_eq!(execution_plan.len(), 1, "{value:#}");
+    assert_eq!(execution_plan[0]["protocol"], "publish");
 }
 
 #[test]
-fn step_dry_run_keeps_on_change_protocol_in_execution_plan_when_work_unit_freshness_is_mixed() {
-    use std::{thread::sleep, time::Duration};
-
+fn step_dry_run_reports_per_work_unit_on_change_readiness_when_freshness_is_mixed() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = dir.path().join("manifest.toml");
     fs::write(
@@ -812,19 +809,46 @@ trigger = { type = "on_change", name = "doc" }
         r#"{"title":"done-a","work_unit":"wu-a"}"#,
     )
     .unwrap();
-    sleep(Duration::from_millis(20));
+    let first_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        first_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first_scan.stderr)
+    );
     fs::write(
         workspace.join("doc/a.json"),
         r#"{"title":"draft-a","work_unit":"wu-a"}"#,
     )
     .unwrap();
-    sleep(Duration::from_millis(20));
+    let second_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        second_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&second_scan.stderr)
+    );
     fs::write(
         workspace.join("doc/b.json"),
         r#"{"title":"draft-b","work_unit":"wu-b"}"#,
     )
     .unwrap();
-    sleep(Duration::from_millis(20));
+    let third_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        third_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&third_scan.stderr)
+    );
     fs::write(
         workspace.join("reviewed/b.json"),
         r#"{"title":"done-b","work_unit":"wu-b"}"#,
@@ -849,13 +873,23 @@ trigger = { type = "on_change", name = "doc" }
     let execution_plan = value["execution_plan"].as_array().unwrap();
     assert_eq!(execution_plan.len(), 1, "{value:#}");
     assert_eq!(execution_plan[0]["protocol"], "review");
+    assert_eq!(execution_plan[0]["work_unit"], "wu-a");
 
-    let review = value["protocols"]
+    let reviews: Vec<_> = value["protocols"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|protocol| protocol["name"] == "review")
+        .filter(|protocol| protocol["name"] == "review")
+        .collect();
+    assert_eq!(reviews.len(), 2, "{value:#}");
+    let ready = reviews
+        .iter()
+        .find(|protocol| protocol["status"] == "ready")
         .unwrap();
-    assert_eq!(review["status"], "ready");
-    assert_eq!(review["trigger"], "satisfied");
+    let waiting = reviews
+        .iter()
+        .find(|protocol| protocol["status"] == "waiting")
+        .unwrap();
+    assert_eq!(ready["work_unit"], "wu-a");
+    assert_eq!(waiting["work_unit"], "wu-b");
 }

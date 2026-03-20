@@ -861,7 +861,7 @@ trigger = { type = "any_of", conditions = [] }
 
 #[cfg(unix)]
 #[test]
-fn status_keeps_on_invalid_ready_when_partial_scan_cannot_change_satisfied_trigger() {
+fn status_blocks_on_invalid_when_candidate_discovery_scan_trust_is_missing() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -911,14 +911,22 @@ trigger = { type = "on_invalid", name = "report" }
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let protocols = value["protocols"].as_array().unwrap();
     assert_eq!(protocols[0]["name"], "repair");
-    assert_eq!(protocols[0]["status"], "ready");
+    assert_eq!(protocols[0]["status"], "blocked");
     assert_eq!(protocols[0]["trigger"], "satisfied");
-    assert!(protocols[0].get("precondition_failures").is_none());
+    assert_eq!(
+        protocols[0]["precondition_failures"],
+        serde_json::json!([
+            {
+                "artifact_type": "report",
+                "reason": "scan_incomplete"
+            }
+        ])
+    );
 }
 
 #[cfg(unix)]
 #[test]
-fn status_keeps_any_of_ready_when_other_branch_proves_satisfaction() {
+fn status_blocks_any_of_when_candidate_discovery_scan_trust_is_missing() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -976,8 +984,17 @@ trigger = { type = "any_of", conditions = [
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let protocols = value["protocols"].as_array().unwrap();
     assert_eq!(protocols[0]["name"], "implement");
-    assert_eq!(protocols[0]["status"], "ready");
+    assert_eq!(protocols[0]["status"], "blocked");
     assert_eq!(protocols[0]["trigger"], "satisfied");
+    assert_eq!(
+        protocols[0]["precondition_failures"],
+        serde_json::json!([
+            {
+                "artifact_type": "report",
+                "reason": "scan_incomplete"
+            }
+        ])
+    );
 }
 
 #[cfg(unix)]
@@ -1218,9 +1235,7 @@ trigger = { type = "on_change", name = "doc" }
 }
 
 #[test]
-fn status_marks_on_change_ready_when_work_unit_freshness_is_mixed() {
-    use std::{thread::sleep, time::Duration};
-
+fn status_reports_per_work_unit_on_change_readiness_when_freshness_is_mixed() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = dir.path().join("manifest.toml");
     fs::write(
@@ -1257,19 +1272,46 @@ trigger = { type = "on_change", name = "doc" }
         r#"{"title":"done-a","work_unit":"wu-a"}"#,
     )
     .unwrap();
-    sleep(Duration::from_millis(20));
+    let first_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        first_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first_scan.stderr)
+    );
     fs::write(
         workspace.join("doc/a.json"),
         r#"{"title":"draft-a","work_unit":"wu-a"}"#,
     )
     .unwrap();
-    sleep(Duration::from_millis(20));
+    let second_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        second_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&second_scan.stderr)
+    );
     fs::write(
         workspace.join("doc/b.json"),
         r#"{"title":"draft-b","work_unit":"wu-b"}"#,
     )
     .unwrap();
-    sleep(Duration::from_millis(20));
+    let third_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        third_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&third_scan.stderr)
+    );
     fs::write(
         workspace.join("reviewed/b.json"),
         r#"{"title":"done-b","work_unit":"wu-b"}"#,
@@ -1290,15 +1332,27 @@ trigger = { type = "on_change", name = "doc" }
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let review = value["protocols"]
+    let reviews: Vec<_> = value["protocols"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|protocol| protocol["name"] == "review")
+        .filter(|protocol| protocol["name"] == "review")
+        .collect();
+
+    assert_eq!(reviews.len(), 2, "{value:#}");
+    let ready = reviews
+        .iter()
+        .find(|protocol| protocol["status"] == "ready")
+        .unwrap();
+    let waiting = reviews
+        .iter()
+        .find(|protocol| protocol["status"] == "waiting")
         .unwrap();
 
-    assert_eq!(review["status"], "ready");
-    assert_eq!(review["trigger"], "satisfied");
+    assert_eq!(ready["work_unit"], "wu-a");
+    assert_eq!(ready["trigger"], "satisfied");
+    assert_eq!(waiting["work_unit"], "wu-b");
+    assert_eq!(waiting["trigger"], "not_satisfied");
 }
 
 #[cfg(unix)]

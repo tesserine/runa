@@ -35,40 +35,17 @@ pub fn discover_ready_candidates(
             continue;
         };
 
-        // Collect artifact type names from trigger tree (kept separate for
-        // scan trust checks), then merge with requires and accepts.
         let mut trigger_types = HashSet::new();
         trigger_artifact_types(&protocol.trigger, &mut trigger_types);
 
-        let mut referenced_types = HashSet::new();
-        for name in &protocol.requires {
-            referenced_types.insert(name.as_str());
-        }
-        for name in &protocol.accepts {
-            referenced_types.insert(name.as_str());
-        }
-        for &t in &trigger_types {
-            referenced_types.insert(t);
-        }
-
-        // Scan trust: skip protocol entirely if any required output, required
-        // input, or trigger-referenced type is partially scanned. Evaluating
-        // triggers, freshness, or preconditions against incomplete data could
-        // lead to false activation.
-        if protocol
-            .requires
-            .iter()
-            .chain(protocol.produces.iter())
-            .any(|t| partially_scanned_types.contains(t.as_str()))
-            || trigger_types
-                .iter()
-                .any(|t| partially_scanned_types.contains(*t))
-        {
+        let scan_incomplete_types =
+            protocol_scan_incomplete_types(protocol, partially_scanned_types);
+        if !scan_incomplete_types.is_empty() {
             continue;
         }
 
-        // Collect distinct work_unit values from referenced artifact instances.
-        let work_units = collect_work_units(store, &referenced_types, partially_scanned_types);
+        let work_units = protocol_work_units(protocol, store, partially_scanned_types);
+        let freshness_types = protocol_freshness_types(protocol, &trigger_types);
 
         for wu in &work_units {
             let wu_ref = wu.as_deref();
@@ -96,7 +73,7 @@ pub fn discover_ready_candidates(
             if protocol_is_current(
                 protocol,
                 store,
-                &referenced_types,
+                &freshness_types,
                 wu_ref,
                 partially_scanned_types,
             ) {
@@ -111,6 +88,57 @@ pub fn discover_ready_candidates(
     }
 
     candidates
+}
+
+pub fn protocol_scan_incomplete_types(
+    protocol: &ProtocolDeclaration,
+    partially_scanned_types: &HashSet<String>,
+) -> Vec<String> {
+    let mut trigger_types = HashSet::new();
+    trigger_artifact_types(&protocol.trigger, &mut trigger_types);
+
+    let mut incomplete = Vec::new();
+    for artifact_type in protocol.requires.iter().chain(protocol.produces.iter()) {
+        if partially_scanned_types.contains(artifact_type.as_str())
+            && !incomplete.contains(artifact_type)
+        {
+            incomplete.push(artifact_type.clone());
+        }
+    }
+
+    let mut trigger_type_names: Vec<&str> = trigger_types.into_iter().collect();
+    trigger_type_names.sort_unstable();
+    for artifact_type in trigger_type_names {
+        if partially_scanned_types.contains(artifact_type)
+            && !incomplete.iter().any(|existing| existing == artifact_type)
+        {
+            incomplete.push(artifact_type.to_string());
+        }
+    }
+
+    incomplete
+}
+
+pub fn protocol_work_units(
+    protocol: &ProtocolDeclaration,
+    store: &ArtifactStore,
+    partially_scanned_types: &HashSet<String>,
+) -> BTreeSet<Option<String>> {
+    let mut trigger_types = HashSet::new();
+    trigger_artifact_types(&protocol.trigger, &mut trigger_types);
+
+    let mut referenced_types = HashSet::new();
+    for name in &protocol.requires {
+        referenced_types.insert(name.as_str());
+    }
+    for name in &protocol.accepts {
+        referenced_types.insert(name.as_str());
+    }
+    for &artifact_type in &trigger_types {
+        referenced_types.insert(artifact_type);
+    }
+
+    collect_work_units(store, &referenced_types, partially_scanned_types)
 }
 
 /// Walk a trigger condition tree and collect artifact type names
@@ -150,6 +178,13 @@ fn protocol_is_current(
         return false;
     }
 
+    if protocol.may_produce.iter().any(|artifact_type| {
+        partially_scanned_types.contains(artifact_type.as_str())
+            && !store.instances_of(artifact_type, work_unit).is_empty()
+    }) {
+        return false;
+    }
+
     let Some(output_timestamp) = derived_completion_timestamp(protocol, store, work_unit) else {
         return false;
     };
@@ -159,6 +194,20 @@ fn protocol_is_current(
         .filter_map(|artifact_type| store.latest_modification_ms(artifact_type, work_unit))
         .max()
         .is_none_or(|latest_input| latest_input <= output_timestamp)
+}
+
+fn protocol_freshness_types<'a>(
+    protocol: &'a ProtocolDeclaration,
+    trigger_types: &HashSet<&'a str>,
+) -> HashSet<&'a str> {
+    let mut freshness_types = HashSet::new();
+    for name in &protocol.requires {
+        freshness_types.insert(name.as_str());
+    }
+    for &artifact_type in trigger_types {
+        freshness_types.insert(artifact_type);
+    }
+    freshness_types
 }
 
 /// Collect distinct work_unit values from artifact instances across multiple types.
@@ -594,6 +643,64 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
         assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+    }
+
+    #[test]
+    fn accepts_artifacts_do_not_affect_currentness() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["constraints", "prior-art", "implementation"],
+        );
+        store
+            .record_with_timestamp(
+                "constraints",
+                "a1",
+                Path::new("constraints-a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "prior-art",
+                "a1",
+                Path::new("prior-art-a1.json"),
+                &json!({"title": "optional", "work_unit": "wu-a"}),
+                3000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+
+        let signals = HashSet::new();
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &["prior-art"],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &signals,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert!(candidates.is_empty());
     }
 
     #[test]
@@ -1062,6 +1169,59 @@ mod tests {
             discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
 
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn present_partially_scanned_optional_output_skips_completed_suppression() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["constraints", "implementation", "notes"],
+        );
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "notes",
+                "a1",
+                Path::new("notes-a1.json"),
+                &json!({"title": "optional", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let signals = HashSet::new();
+        let partial = HashSet::from(["notes".to_string()]);
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &["notes"],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "implement");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
     }
 
     #[test]
