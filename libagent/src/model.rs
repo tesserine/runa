@@ -69,25 +69,10 @@ pub enum TriggerCondition {
     OnChange { name: String },
     /// The named artifact exists but fails schema validation.
     OnInvalid { name: String },
-    /// An external event (operator action, webhook, scheduler).
-    OnSignal { name: String },
     /// All conditions must be satisfied.
     AllOf { conditions: Vec<TriggerCondition> },
     /// At least one condition must be satisfied.
     AnyOf { conditions: Vec<TriggerCondition> },
-}
-
-pub fn is_valid_signal_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-
-    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
-        return false;
-    }
-
-    chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
 }
 
 impl fmt::Display for TriggerCondition {
@@ -96,7 +81,6 @@ impl fmt::Display for TriggerCondition {
             TriggerCondition::OnArtifact { name } => write!(f, "on_artifact({name})"),
             TriggerCondition::OnChange { name } => write!(f, "on_change({name})"),
             TriggerCondition::OnInvalid { name } => write!(f, "on_invalid({name})"),
-            TriggerCondition::OnSignal { name } => write!(f, "on_signal({name})"),
             TriggerCondition::AllOf { conditions } => {
                 write!(f, "all_of(")?;
                 for (i, c) in conditions.iter().enumerate() {
@@ -171,9 +155,6 @@ mod tests {
             TriggerCondition::OnInvalid {
                 name: "test-evidence".into(),
             },
-            TriggerCondition::OnSignal {
-                name: "approved".into(),
-            },
         ];
         for tc in cases {
             let json = serde_json::to_string(&tc).unwrap();
@@ -191,8 +172,8 @@ mod tests {
                 },
                 TriggerCondition::AnyOf {
                     conditions: vec![
-                        TriggerCondition::OnSignal {
-                            name: "approved".into(),
+                        TriggerCondition::OnInvalid {
+                            name: "draft".into(),
                         },
                         TriggerCondition::OnArtifact {
                             name: "auto-approve".into(),
@@ -221,7 +202,9 @@ mod tests {
         );
 
         let tc = TriggerCondition::AllOf {
-            conditions: vec![TriggerCondition::OnSignal { name: "go".into() }],
+            conditions: vec![TriggerCondition::OnInvalid {
+                name: "report".into(),
+            }],
         };
         let value = serde_json::to_value(&tc).unwrap();
         assert_eq!(
@@ -229,7 +212,7 @@ mod tests {
             serde_json::json!({
                 "type": "all_of",
                 "conditions": [
-                    { "type": "on_signal", "name": "go" }
+                    { "type": "on_invalid", "name": "report" }
                 ]
             })
         );
@@ -238,13 +221,13 @@ mod tests {
     #[test]
     fn protocol_declaration_empty_vecs() {
         let protocol = ProtocolDeclaration {
-            name: "signal-only".into(),
+            name: "artifact-only".into(),
             requires: vec![],
             accepts: vec![],
             produces: vec![],
             may_produce: vec![],
-            trigger: TriggerCondition::OnSignal {
-                name: "manual".into(),
+            trigger: TriggerCondition::OnArtifact {
+                name: "constraints".into(),
             },
         };
         let json = serde_json::to_string(&protocol).unwrap();
@@ -277,21 +260,13 @@ mod tests {
     }
 
     #[test]
-    fn display_on_signal() {
-        let tc = TriggerCondition::OnSignal {
-            name: "approved".into(),
-        };
-        assert_eq!(tc.to_string(), "on_signal(approved)");
-    }
-
-    #[test]
     fn display_nested_composite() {
         let tc = TriggerCondition::AllOf {
             conditions: vec![
                 TriggerCondition::OnArtifact { name: "X".into() },
                 TriggerCondition::AnyOf {
                     conditions: vec![
-                        TriggerCondition::OnSignal { name: "go".into() },
+                        TriggerCondition::OnInvalid { name: "Z".into() },
                         TriggerCondition::OnArtifact { name: "Y".into() },
                     ],
                 },
@@ -299,24 +274,7 @@ mod tests {
         };
         assert_eq!(
             tc.to_string(),
-            "all_of(on_artifact(X), any_of(on_signal(go), on_artifact(Y)))"
+            "all_of(on_artifact(X), any_of(on_invalid(Z), on_artifact(Y)))"
         );
-    }
-
-    #[test]
-    fn signal_name_validation_rejects_invalid_edge_cases() {
-        assert!(!is_valid_signal_name(""));
-        assert!(!is_valid_signal_name("-start"));
-        assert!(!is_valid_signal_name("_start"));
-        assert!(!is_valid_signal_name("Bad"));
-        assert!(!is_valid_signal_name("release/v1"));
-    }
-
-    #[test]
-    fn signal_name_validation_accepts_underscores_and_hyphens() {
-        assert!(is_valid_signal_name("begin"));
-        assert!(is_valid_signal_name("qa_ready"));
-        assert!(is_valid_signal_name("release-v1"));
-        assert!(is_valid_signal_name("1phase_ready"));
     }
 }

@@ -20,7 +20,7 @@ schema = { type = "object" }
 [[protocols]]
 name = "ground"
 produces = ["constraints"]
-trigger = { type = "on_signal", name = "init" }
+trigger = { type = "on_change", name = "constraints" }
 
 [[protocols]]
 name = "design"
@@ -168,30 +168,6 @@ fn list_errors_on_uninitialized_project() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("no config found"), "stderr: {stderr}");
-}
-
-#[test]
-fn list_ignores_malformed_signals_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
-
-    let project_dir = dir.path().join("project");
-    fs::create_dir(&project_dir).unwrap();
-    init_project(&project_dir, &manifest_path);
-    fs::write(project_dir.join(".runa/signals.json"), "{not json").unwrap();
-
-    let output = runa_bin()
-        .arg("list")
-        .current_dir(&project_dir)
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 #[test]

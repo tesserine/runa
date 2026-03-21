@@ -458,6 +458,15 @@ mod tests {
     use super::*;
     use crate::model::TriggerCondition;
 
+    fn default_trigger(requires: &[&str], produces: &[&str]) -> TriggerCondition {
+        let name = requires
+            .first()
+            .or(produces.first())
+            .copied()
+            .unwrap_or("artifact");
+        TriggerCondition::OnChange { name: name.into() }
+    }
+
     fn protocol(name: &str, requires: &[&str], produces: &[&str]) -> ProtocolDeclaration {
         ProtocolDeclaration {
             name: name.into(),
@@ -465,9 +474,7 @@ mod tests {
             accepts: vec![],
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: vec![],
-            trigger: TriggerCondition::OnSignal {
-                name: "manual".into(),
-            },
+            trigger: default_trigger(requires, produces),
         }
     }
 
@@ -483,9 +490,7 @@ mod tests {
             accepts: vec![],
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: may_produce.iter().map(|s| (*s).into()).collect(),
-            trigger: TriggerCondition::OnSignal {
-                name: "manual".into(),
-            },
+            trigger: default_trigger(requires, produces),
         }
     }
 
@@ -501,9 +506,7 @@ mod tests {
             accepts: accepts.iter().map(|s| (*s).into()).collect(),
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: vec![],
-            trigger: TriggerCondition::OnSignal {
-                name: "manual".into(),
-            },
+            trigger: default_trigger(requires, produces),
         }
     }
 

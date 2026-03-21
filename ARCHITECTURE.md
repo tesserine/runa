@@ -20,7 +20,7 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 3. **Artifact workspace → validated state.** `scan::scan` walks the artifact workspace, parses `*.json` files under `<workspace>/<type_name>/`, validates them against the type schemas, and reconciles the results into `.runa/store/`. Valid, invalid, and malformed artifacts are all stored — invalid and malformed state are meaningful for trigger evaluation. Per-file read failures are collected as unreadable findings rather than aborting reconciliation.
 
-4. **Trigger evaluation.** `trigger::evaluate` recursively evaluates a `TriggerCondition` tree against a `TriggerContext` (artifact store, active signals) plus the protocol declaration and returns a `TriggerResult`. `OnChange` derives temporal state from output artifact timestamps for the same work unit. Pure function, no side effects. In the CLI, active signals are loaded from `.runa/signals.json`; if the file is absent, evaluation treats the signal set as empty.
+4. **Trigger evaluation.** `trigger::evaluate` recursively evaluates a `TriggerCondition` tree against a `TriggerContext` (artifact store, scan metadata) plus the protocol declaration and returns a `TriggerResult`. `OnChange` derives temporal state from output artifact timestamps for the same work unit. Pure function, no side effects.
 
 5. **Context injection construction.** `context::build_context` converts a ready `ProtocolDeclaration` plus the current artifact store into the stable agent-facing payload used by `runa step` and `runa-mcp`: protocol name, available required/accepted artifact refs, and expected outputs.
 
@@ -32,7 +32,7 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 ### `model.rs`
 
-Core types: `Manifest`, `ArtifactType`, `ProtocolDeclaration`, `TriggerCondition`. `TriggerCondition` is a tagged enum (`#[serde(tag = "type", rename_all = "snake_case")]`) with six variants: `OnArtifact`, `OnChange`, `OnInvalid`, `OnSignal`, `AllOf`, `AnyOf`. `AllOf`/`AnyOf` hold `Vec<TriggerCondition>` for arbitrary nesting depth.
+Core types: `Manifest`, `ArtifactType`, `ProtocolDeclaration`, `TriggerCondition`. `TriggerCondition` is a tagged enum (`#[serde(tag = "type", rename_all = "snake_case")]`) with five variants: `OnArtifact`, `OnChange`, `OnInvalid`, `AllOf`, `AnyOf`. `AllOf`/`AnyOf` hold `Vec<TriggerCondition>` for arbitrary nesting depth.
 
 ### `manifest.rs`
 
@@ -62,7 +62,7 @@ Filesystem reconciliation from the artifact workspace into the store. `scan` tre
 
 ### `trigger.rs`
 
-Recursive trigger condition evaluator. `evaluate` is a pure function that takes a `TriggerCondition`, the enclosing `ProtocolDeclaration`, and a `TriggerContext` (read-only references to the artifact store and active signals). Six condition variants: `OnArtifact` distinguishes between missing valid instances and visible invalid/stale instances, `OnChange` compares the named input's latest timestamp against the protocol's derived output timestamp, `OnInvalid` checks `store.has_any_invalid`, `OnSignal` checks set membership, `AllOf` short-circuits on first failure, `AnyOf` short-circuits on first success.
+Recursive trigger condition evaluator. `evaluate` is a pure function that takes a `TriggerCondition`, the enclosing `ProtocolDeclaration`, and a `TriggerContext` (read-only references to the artifact store and scan metadata). Five condition variants: `OnArtifact` distinguishes between missing valid instances and visible invalid/stale instances, `OnChange` compares the named input's latest timestamp against the protocol's derived output timestamp, `OnInvalid` checks `store.has_any_invalid`, `AllOf` short-circuits on first failure, `AnyOf` short-circuits on first success.
 
 ### `enforcement.rs`
 
@@ -74,7 +74,7 @@ Returns `EnforcementError` on failure, containing the protocol name, enforcement
 
 ### `project.rs`
 
-Shared project loading logic used by both `runa-cli` and `runa-mcp`. Config resolution chain (explicit override → `.runa/config.toml` → XDG config → error), manifest parsing, dependency graph construction, and artifact store initialization. `load_signals` reads `.runa/signals.json` with graceful fallback on missing or malformed files.
+Shared project loading logic used by both `runa-cli` and `runa-mcp`. Config resolution chain (explicit override → `.runa/config.toml` → XDG config → error), manifest parsing, dependency graph construction, and artifact store initialization.
 
 ### `selection.rs`
 
@@ -100,7 +100,6 @@ Natural language context prompt renderer. Transforms `ContextInjection` into a `
 .runa/
   config.toml                   # Created by `runa init`: methodology_path, optional artifacts_dir
   state.toml                    # Created by `runa init`: initialized_at, runa_version
-  signals.json                  # Optional runtime signal state: { "active": ["name", ...] }
   workspace/                    # Default artifact workspace (configurable via artifacts_dir)
     {type_name}/
       {instance_id}.json        # Agent-produced artifact file
@@ -111,17 +110,13 @@ Natural language context prompt renderer. Transforms `ContextInjection` into a `
 
 ## CLI Commands
 
-Commands that operate on a loaded methodology share `project::load`, which resolves the config file, reads the methodology path from it, parses the manifest, builds the dependency graph, and opens the artifact store. Commands that evaluate `on_signal` triggers load `.runa/signals.json` separately so malformed signal state cannot break unrelated commands; unreadable or malformed signal state downgrades to a warning plus an empty active-signal set.
+Commands that operate on a loaded methodology share `project::load`, which resolves the config file, reads the methodology path from it, parses the manifest, builds the dependency graph, and opens the artifact store.
 
 Config resolution is whole-file (first found wins, no per-field merging): `--config` CLI flag → `RUNA_CONFIG` env var → `.runa/config.toml` → `$XDG_CONFIG_HOME/runa/config.toml` → error.
 
 ### `runa init --methodology <PATH> [--artifacts-dir <DIR>] [--config <PATH>]`
 
 Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes the path, creates `.runa/config.toml` (or writes to the `--config` path) containing the canonical methodology path and optional artifact workspace directory. Creates `.runa/state.toml`, `.runa/store/`, and the resolved artifact workspace directory. Reports the artifact type and protocol counts on success.
-
-### `runa signal begin <NAME>` / `runa signal clear <NAME>` / `runa signal list`
-
-Manages persisted operator signals without loading the manifest or artifact store. The signal command verifies initialization by checking for `.runa/state.toml`, then reads and writes `.runa/signals.json` directly. Signal names must match `[a-z0-9][a-z0-9_-]*`, the same rule enforced by manifest parsing for `on_signal` trigger names. `begin` ensures the signal is present, `clear` ensures it is absent, and both are idempotent. `list` prints the current active signals in lexicographic order or an explicit empty-state message when none are active.
 
 ### `runa list`
 
@@ -142,23 +137,21 @@ Runs the workspace reconciliation pass. Reads artifact files from the resolved w
 
 ### `runa status`
 
-Runs an implicit workspace scan, then evaluates every protocol against current runtime state. Classification is ordered and mutually exclusive: `WAITING` when the trigger is not satisfied, `BLOCKED` when the trigger is satisfied but `enforce_preconditions` fails, and `READY` otherwise. Uses persisted active signals from `.runa/signals.json`; `on_change` freshness is derived directly from artifact timestamps in the store. If `signals.json` is unreadable or malformed, status appends a warning and evaluates with an empty active-signal set.
+Runs an implicit workspace scan, then evaluates every protocol against current runtime state. Classification is ordered and mutually exclusive: `WAITING` when the trigger is not satisfied, `BLOCKED` when the trigger is satisfied but `enforce_preconditions` fails, and `READY` otherwise. `on_change` freshness is derived directly from artifact timestamps in the store.
 
 Text output groups protocols as `READY`, `BLOCKED`, then `WAITING`, preserving the graph-derived protocol order within each group. `READY` entries list valid required and accepted artifact instances, `BLOCKED` entries list required artifact failures (`missing`, `invalid`, `stale`, `scan_incomplete`), and `WAITING` entries list detailed unsatisfied trigger conditions including the trigger condition and the specific `TriggerResult::NotSatisfied` reason. When scan reconciliation is partial, status prints scan warnings before the protocol groups and treats any protocol whose `requires` includes an affected artifact type as blocked because readiness cannot be verified; affected `accepts` types remain non-blocking and are omitted from the reported inputs.
 
 `--json` emits a versioned envelope:
 - `version` — integer envelope version, currently `2`
 - `methodology` — manifest name
-- `scan_warnings` — array of human-readable warnings for partial scan findings and degraded signal loading, empty when neither condition applies
+- `scan_warnings` — array of human-readable warnings for partial scan findings, empty when none apply
 - `protocols` — flat ordered array of protocol objects with `name`, `status`, `trigger`, plus the status-specific field `inputs`, `precondition_failures`, or `unsatisfied_conditions`
 
 Exits 0 for successful status evaluation regardless of whether protocols are ready, blocked, or waiting. Non-zero exit remains reserved for project-load, scan, or serialization failures.
 
 ### `runa step --dry-run [--json]`
 
-Runs the same implicit scan and shared protocol evaluation used by `runa status`, then builds an execution plan from the `READY` protocols that can be placed in a valid execution order. Plan entries preserve graph order for the non-cyclic frontier and include the protocol name, the trigger condition string, and the JSON-serialized `libagent::context::ContextInjection` payload. If a hard dependency cycle exists, `step` reports the cycle as a warning, excludes the cycle participants from the plan, and still includes any unrelated orderable READY protocols. Text output prints the execution plan followed by the grouped READY/BLOCKED/WAITING view. JSON output adds an `execution_plan` array plus an optional `cycle` path while reusing the same `protocols` status entries and `scan_warnings` envelope fields as `runa status`. `on_signal` readiness uses the same persisted signal set and warning-and-empty-set fallback as `runa status`.
-
-`runa step` without `--dry-run` is a deliberate stub: it prints `Agent execution is not yet implemented. Use --dry-run to see the execution plan.` and exits with code 1.
+Runs the same implicit scan and shared protocol evaluation used by `runa status`, then builds an execution plan from the `READY` protocols that can be placed in a valid execution order. Plan entries preserve graph order for the non-cyclic frontier and include the protocol name, the trigger condition string, and the JSON-serialized `libagent::context::ContextInjection` payload. If a hard dependency cycle exists, `step` reports the cycle as a warning, excludes the cycle participants from the plan, and still includes any unrelated orderable READY protocols. Text output prints the execution plan followed by the grouped READY/BLOCKED/WAITING view. JSON output adds an `execution_plan` array plus an optional `cycle` path while reusing the same `protocols` status entries and `scan_warnings` envelope fields as `runa status`. `runa step` without `--dry-run` is a deliberate stub: it prints `Agent execution is not yet implemented. Use --dry-run to see the execution plan.` and exits with code 1.
 
 ## Key Design Patterns
 

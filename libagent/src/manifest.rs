@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::model::{Manifest, TriggerCondition, is_valid_signal_name};
+use crate::model::Manifest;
 
 /// Errors that can occur when parsing a manifest file.
 #[derive(Debug)]
@@ -15,8 +15,6 @@ pub enum ManifestError {
     DuplicateArtifactType(String),
     /// Two protocols share the same name.
     DuplicateProtocolName(String),
-    /// An on_signal trigger uses an invalid signal name.
-    InvalidSignalName(String),
     /// A schema file path reference does not exist on disk.
     SchemaFileNotFound {
         artifact_type: String,
@@ -40,12 +38,6 @@ impl fmt::Display for ManifestError {
             }
             ManifestError::DuplicateProtocolName(name) => {
                 write!(f, "duplicate protocol name: {name}")
-            }
-            ManifestError::InvalidSignalName(name) => {
-                write!(
-                    f,
-                    "invalid signal name '{name}': expected pattern [a-z0-9][a-z0-9_-]*"
-                )
             }
             ManifestError::SchemaFileNotFound {
                 artifact_type,
@@ -158,31 +150,9 @@ fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
         if !seen.insert(&protocol.name) {
             return Err(ManifestError::DuplicateProtocolName(protocol.name.clone()));
         }
-        validate_trigger(&protocol.trigger)?;
     }
 
     Ok(())
-}
-
-fn validate_trigger(trigger: &TriggerCondition) -> Result<(), ManifestError> {
-    match trigger {
-        TriggerCondition::OnSignal { name } => {
-            if is_valid_signal_name(name) {
-                Ok(())
-            } else {
-                Err(ManifestError::InvalidSignalName(name.clone()))
-            }
-        }
-        TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
-            for condition in conditions {
-                validate_trigger(condition)?;
-            }
-            Ok(())
-        }
-        TriggerCondition::OnArtifact { .. }
-        | TriggerCondition::OnChange { .. }
-        | TriggerCondition::OnInvalid { .. } => Ok(()),
-    }
 }
 
 #[cfg(test)]
@@ -220,8 +190,8 @@ name = "ground"
 produces = ["constraints"]
 
 [protocols.trigger]
-type = "on_signal"
-name = "init"
+type = "on_change"
+name = "constraints"
 
 [[protocols]]
 name = "design"
@@ -244,8 +214,8 @@ name = "constraints"
         assert_eq!(manifest.protocols[0].produces, vec!["constraints"]);
         assert_eq!(
             manifest.protocols[0].trigger,
-            TriggerCondition::OnSignal {
-                name: "init".into()
+            TriggerCondition::OnChange {
+                name: "constraints".into()
             }
         );
         assert_eq!(manifest.protocols[1].name, "design");
@@ -273,7 +243,7 @@ schema = { type = "object" }
 [[protocols]]
 name = "generate"
 produces = ["report"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "report" }
 "#;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("manifest.toml");
@@ -295,7 +265,7 @@ schema = { type = "object" }
 
 [[protocols]]
 name = "y"
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "report" }
 "#;
         let err = from_str(toml).unwrap_err();
         assert!(
@@ -317,7 +287,7 @@ schema = {{ type = "object" }}
 {legacy_key}
 name = "do-it"
 produces = ["thing"]
-trigger = {{ type = "on_signal", name = "go" }}
+trigger = {{ type = "on_change", name = "thing" }}
 "#,
             legacy_key = concat!("[[", "skills", "]]"),
         );
@@ -353,26 +323,6 @@ trigger = { type = "bogus", name = "whatever" }
     }
 
     #[test]
-    fn parse_invalid_signal_name_rejects_manifest() {
-        let toml = r#"
-name = "bad"
-
-[[artifact_types]]
-name = "x"
-schema = { type = "object" }
-
-[[protocols]]
-name = "y"
-trigger = { type = "on_signal", name = "release/v1" }
-"#;
-        let err = from_str(toml).unwrap_err();
-        assert!(
-            matches!(err, ManifestError::InvalidSignalName(ref name) if name == "release/v1"),
-            "expected InvalidSignalName, got: {err}"
-        );
-    }
-
-    #[test]
     fn parse_duplicate_artifact_type_names() {
         let toml = r#"
 name = "dupes"
@@ -387,7 +337,7 @@ schema = { type = "string" }
 
 [[protocols]]
 name = "gen"
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "report" }
 "#;
         let err = from_str(toml).unwrap_err();
         match err {
@@ -407,11 +357,11 @@ schema = { type = "object" }
 
 [[protocols]]
 name = "do-thing"
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "report" }
 
 [[protocols]]
 name = "do-thing"
-trigger = { type = "on_signal", name = "start" }
+trigger = { type = "on_change", name = "x" }
 "#;
         let err = from_str(toml).unwrap_err();
         match err {
@@ -442,7 +392,7 @@ type = "all_of"
 conditions = [
     { type = "on_artifact", name = "constraints" },
     { type = "any_of", conditions = [
-        { type = "on_signal", name = "approved" },
+        { type = "on_invalid", name = "constraints" },
         { type = "on_artifact", name = "auto-approve" },
     ]},
 ]
@@ -458,8 +408,8 @@ conditions = [
                     },
                     TriggerCondition::AnyOf {
                         conditions: vec![
-                            TriggerCondition::OnSignal {
-                                name: "approved".into(),
+                            TriggerCondition::OnInvalid {
+                                name: "constraints".into(),
                             },
                             TriggerCondition::OnArtifact {
                                 name: "auto-approve".into(),
@@ -529,7 +479,7 @@ schema = "schemas/thing.schema.json"
 [[protocols]]
 name = "make-thing"
 produces = ["thing"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "report" }
 "#;
         let manifest_path = dir.path().join("manifest.toml");
         std::fs::write(&manifest_path, toml).unwrap();
@@ -554,7 +504,7 @@ schema = "schemas/nonexistent.schema.json"
 [[protocols]]
 name = "make-thing"
 produces = ["thing"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "report" }
 "#;
         let manifest_path = dir.path().join("manifest.toml");
         std::fs::write(&manifest_path, toml).unwrap();
@@ -584,7 +534,7 @@ schema = "bad.json"
 [[protocols]]
 name = "make-thing"
 produces = ["thing"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "report" }
 "#;
         let manifest_path = dir.path().join("manifest.toml");
         std::fs::write(&manifest_path, toml).unwrap();
@@ -623,7 +573,7 @@ schema = "ext.schema.json"
 [[protocols]]
 name = "do-it"
 produces = ["inline-thing", "file-thing"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "report" }
 "#;
         let manifest_path = dir.path().join("manifest.toml");
         std::fs::write(&manifest_path, toml).unwrap();
@@ -647,7 +597,7 @@ schema = { type = "object" }
 [[protocols]]
 name = "do-it"
 produces = ["thing"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "report" }
 "#;
         let manifest = from_str(toml).unwrap();
         let protocol = &manifest.protocols[0];

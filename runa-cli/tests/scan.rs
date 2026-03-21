@@ -16,7 +16,7 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 [[protocols]]
 name = "ground"
 produces = ["constraints"]
-trigger = { type = "on_signal", name = "init" }
+trigger = { type = "on_change", name = "constraints" }
 "#
 }
 

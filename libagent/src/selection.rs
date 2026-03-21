@@ -24,7 +24,6 @@ pub struct Candidate {
 pub fn discover_ready_candidates(
     protocols: &[ProtocolDeclaration],
     store: &ArtifactStore,
-    active_signals: &HashSet<String>,
     topological_order: &[&str],
     partially_scanned_types: &HashSet<String>,
 ) -> Vec<Candidate> {
@@ -53,7 +52,6 @@ pub fn discover_ready_candidates(
             // Build trigger context scoped to this work_unit.
             let ctx = TriggerContext {
                 store,
-                active_signals,
                 work_unit: wu_ref,
                 partially_scanned_types,
             };
@@ -151,7 +149,6 @@ fn trigger_artifact_types<'a>(condition: &'a TriggerCondition, out: &mut HashSet
         | TriggerCondition::OnInvalid { name } => {
             out.insert(name.as_str());
         }
-        TriggerCondition::OnSignal { .. } => {}
         TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
             for child in conditions {
                 trigger_artifact_types(child, out);
@@ -265,14 +262,12 @@ mod tests {
     fn discover_ready_candidates(
         protocols: &[ProtocolDeclaration],
         store: &ArtifactStore,
-        active_signals: &HashSet<String>,
         topological_order: &[&str],
         partially_scanned_types: &HashSet<String>,
     ) -> Vec<Candidate> {
         super::discover_ready_candidates(
             protocols,
             store,
-            active_signals,
             topological_order,
             partially_scanned_types,
         )
@@ -310,9 +305,6 @@ mod tests {
                         },
                         TriggerCondition::OnInvalid {
                             name: "report".into(),
-                        },
-                        TriggerCondition::OnSignal {
-                            name: "deploy".into(),
                         },
                     ],
                 },
@@ -418,22 +410,24 @@ mod tests {
     }
 
     #[test]
-    fn signal_only_protocol_evaluated_once_unscoped() {
+    fn artifact_only_protocol_evaluated_once_unscoped() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp.path().join("s"), vec!["doc"]);
-        let signals = HashSet::from(["go".to_string()]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        store
+            .record("doc", "d1", Path::new("d1.json"), &json!({"title": "D"}))
+            .unwrap();
 
         let protocol = make_protocol(
             "ground",
             &[],
             &[],
-            &["doc"],
             &[],
-            TriggerCondition::OnSignal { name: "go".into() },
+            &[],
+            TriggerCondition::OnArtifact { name: "doc".into() },
         );
 
         let candidates =
-            discover_ready_candidates(&[protocol], &store, &signals, &["ground"], &HashSet::new());
+            discover_ready_candidates(&[protocol], &store, &["ground"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "ground");
@@ -461,8 +455,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
-
         let protocol = make_protocol(
             "implement",
             &["constraints"],
@@ -477,7 +469,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &signals,
             &["implement"],
             &HashSet::new(),
         );
@@ -509,8 +500,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
-
         let protocol = make_protocol(
             "implement",
             &["constraints"],
@@ -525,7 +514,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &signals,
             &["implement"],
             &HashSet::new(),
         );
@@ -556,8 +544,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
-
         let protocol = make_protocol(
             "implement",
             &["constraints"],
@@ -572,7 +558,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &signals,
             &["implement"],
             &HashSet::new(),
         );
@@ -623,7 +608,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let protocol = make_protocol(
             "implement",
             &["constraints"],
@@ -638,7 +622,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &signals,
             &["implement"],
             &HashSet::new(),
         );
@@ -683,7 +666,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let protocol = make_protocol(
             "implement",
             &["constraints"],
@@ -698,7 +680,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &signals,
             &["implement"],
             &HashSet::new(),
         );
@@ -729,7 +710,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let protocol = make_protocol(
             "implement",
             &["constraints"],
@@ -744,7 +724,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &signals,
             &["implement"],
             &HashSet::new(),
         );
@@ -768,8 +747,6 @@ mod tests {
             .unwrap();
         // No implementation artifact → postconditions fail → not suppressed.
 
-        let signals = HashSet::new();
-
         let protocol = make_protocol(
             "implement",
             &["constraints"],
@@ -784,7 +761,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &signals,
             &["implement"],
             &HashSet::new(),
         );
@@ -817,8 +793,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
-
         // on_change trigger: constraints changed at 2000, completion was at 1000.
         let protocol = make_protocol(
             "implement",
@@ -834,7 +808,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &signals,
             &["implement"],
             &HashSet::new(),
         );
@@ -867,8 +840,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::from(["go".to_string()]);
-
         // on_change nested inside all_of: still should not be suppressed.
         let protocol = make_protocol(
             "implement",
@@ -881,7 +852,9 @@ mod tests {
                     TriggerCondition::OnChange {
                         name: "constraints".into(),
                     },
-                    TriggerCondition::OnSignal { name: "go".into() },
+                    TriggerCondition::OnArtifact {
+                        name: "constraints".into(),
+                    },
                 ],
             },
         );
@@ -889,7 +862,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &signals,
             &["implement"],
             &HashSet::new(),
         );
@@ -921,11 +893,9 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::from(["go".to_string()]);
-
-        // AnyOf(on_signal("go"), on_change("constraints"))
-        // Signal fires, but constraints haven't changed since completion.
-        // The trigger is satisfied (via signal), but no on_change was satisfied,
+        // AnyOf(on_artifact("constraints"), on_change("constraints"))
+        // on_artifact fires, but constraints haven't changed since completion.
+        // The trigger is satisfied (via on_artifact), but no on_change was satisfied,
         // so suppression should apply.
         let protocol = make_protocol(
             "implement",
@@ -935,7 +905,9 @@ mod tests {
             &[],
             TriggerCondition::AnyOf {
                 conditions: vec![
-                    TriggerCondition::OnSignal { name: "go".into() },
+                    TriggerCondition::OnArtifact {
+                        name: "constraints".into(),
+                    },
                     TriggerCondition::OnChange {
                         name: "constraints".into(),
                     },
@@ -946,7 +918,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &signals,
             &["implement"],
             &HashSet::new(),
         );
@@ -979,12 +950,10 @@ mod tests {
             )
             .unwrap();
 
-        // Signal "y" is active, signal "x" is not.
-        let signals = HashSet::from(["y".to_string()]);
-
-        // any_of(all_of(on_change(constraints), on_signal("x")), on_signal("y"))
-        // The all_of branch is NOT satisfied (x inactive), so on_change in it
-        // should not count. The trigger fires via on_signal("y") only.
+        // any_of(all_of(on_change(constraints), on_invalid(constraints)), on_artifact(constraints))
+        // The all_of branch is NOT satisfied (constraints is valid, so on_invalid
+        // fails), so on_change in it should not count. The trigger fires via
+        // on_artifact("constraints") only.
         let protocol = make_protocol(
             "implement",
             &["constraints"],
@@ -998,10 +967,14 @@ mod tests {
                             TriggerCondition::OnChange {
                                 name: "constraints".into(),
                             },
-                            TriggerCondition::OnSignal { name: "x".into() },
+                            TriggerCondition::OnInvalid {
+                                name: "constraints".into(),
+                            },
                         ],
                     },
-                    TriggerCondition::OnSignal { name: "y".into() },
+                    TriggerCondition::OnArtifact {
+                        name: "constraints".into(),
+                    },
                 ],
             },
         );
@@ -1009,13 +982,12 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &signals,
             &["implement"],
             &HashSet::new(),
         );
 
         // Must be suppressed: the on_change is in an unsatisfied branch,
-        // the trigger fires via on_signal("y"), and postconditions pass.
+        // the trigger fires via on_artifact("constraints"), and postconditions pass.
         assert!(candidates.is_empty());
     }
 
@@ -1032,7 +1004,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let partial = HashSet::from(["constraints".to_string()]);
 
         let protocol = make_protocol(
@@ -1047,7 +1018,7 @@ mod tests {
         );
 
         let candidates =
-            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
+            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert!(candidates.is_empty());
     }
@@ -1065,7 +1036,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let partial = HashSet::from(["lint".to_string()]);
 
         // lint is only referenced by the trigger, not in requires.
@@ -1082,7 +1052,7 @@ mod tests {
         );
 
         let candidates =
-            discover_ready_candidates(&[protocol], &store, &signals, &["fix-lint"], &partial);
+            discover_ready_candidates(&[protocol], &store, &["fix-lint"], &partial);
 
         assert!(candidates.is_empty());
     }
@@ -1125,7 +1095,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let partial = HashSet::from(["implementation".to_string()]);
 
         let protocol = make_protocol(
@@ -1140,7 +1109,7 @@ mod tests {
         );
 
         let candidates =
-            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
+            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
@@ -1160,7 +1129,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::from(["go".to_string()]);
         let partial = HashSet::from(["implementation".to_string()]);
         let protocol = make_protocol(
             "implement",
@@ -1168,11 +1136,13 @@ mod tests {
             &[],
             &["implementation"],
             &[],
-            TriggerCondition::OnSignal { name: "go".into() },
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
         );
 
         let candidates =
-            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
+            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -1203,7 +1173,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let partial = HashSet::from(["notes".to_string()]);
 
         let protocol = make_protocol(
@@ -1218,7 +1187,7 @@ mod tests {
         );
 
         let candidates =
-            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
+            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert!(candidates.is_empty());
     }
@@ -1255,7 +1224,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let partial = HashSet::from(["notes".to_string()]);
         let protocol = make_protocol(
             "implement",
@@ -1269,7 +1237,7 @@ mod tests {
         );
 
         let candidates =
-            discover_ready_candidates(&[protocol], &store, &signals, &["implement"], &partial);
+            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -1279,8 +1247,7 @@ mod tests {
     #[test]
     fn unsatisfied_trigger_not_candidate() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp.path().join("s"), vec!["doc"]);
-        let signals = HashSet::new();
+        let store = make_store(&tmp.path().join("s"), vec!["doc", "missing"]);
 
         let protocol = make_protocol(
             "ground",
@@ -1288,11 +1255,13 @@ mod tests {
             &[],
             &["doc"],
             &[],
-            TriggerCondition::OnSignal { name: "go".into() },
+            TriggerCondition::OnArtifact {
+                name: "missing".into(),
+            },
         );
 
         let candidates =
-            discover_ready_candidates(&[protocol], &store, &signals, &["ground"], &HashSet::new());
+            discover_ready_candidates(&[protocol], &store, &["ground"], &HashSet::new());
 
         assert!(candidates.is_empty());
     }
@@ -1300,9 +1269,16 @@ mod tests {
     #[test]
     fn preconditions_fail_not_candidate() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
-        // constraints is required but missing.
-        let signals = HashSet::from(["go".to_string()]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        // constraints is required but missing — only an implementation instance exists.
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A"}),
+            )
+            .unwrap();
 
         let protocol = make_protocol(
             "implement",
@@ -1310,13 +1286,14 @@ mod tests {
             &[],
             &["implementation"],
             &[],
-            TriggerCondition::OnSignal { name: "go".into() },
+            TriggerCondition::OnArtifact {
+                name: "implementation".into(),
+            },
         );
 
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &signals,
             &["implement"],
             &HashSet::new(),
         );
@@ -1334,8 +1311,6 @@ mod tests {
         store
             .record("b", "x", Path::new("b.json"), &json!({"title": "B"}))
             .unwrap();
-
-        let signals = HashSet::new();
 
         let protocols = vec![
             make_protocol(
@@ -1360,7 +1335,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &protocols,
             &store,
-            &signals,
             &["beta", "alpha"],
             &HashSet::new(),
         );
@@ -1405,7 +1379,6 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let protocol = make_protocol(
             "implement",
             &["constraints"],
@@ -1420,7 +1393,6 @@ mod tests {
         let candidates = discover_ready_candidates(
             &[protocol],
             &store,
-            &signals,
             &["implement"],
             &HashSet::new(),
         );

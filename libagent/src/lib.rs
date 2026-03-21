@@ -34,9 +34,7 @@ pub use enforcement::{
 };
 pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use manifest::ManifestError;
-pub use model::{
-    ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition, is_valid_signal_name,
-};
+pub use model::{ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition};
 pub use project::{Config, LoadedProject, ProjectError, State};
 pub use scan::{
     ArtifactRef, InvalidArtifact, MalformedArtifact, PartiallyScannedType, ScanError, ScanResult,

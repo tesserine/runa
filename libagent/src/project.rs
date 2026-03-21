@@ -8,7 +8,6 @@ use crate::{ArtifactStore, DependencyGraph, GraphError, Manifest, ManifestError,
 pub const RUNA_DIR: &str = ".runa";
 pub const CONFIG_FILENAME: &str = "config.toml";
 pub const STATE_FILENAME: &str = "state.toml";
-pub const SIGNALS_FILENAME: &str = "signals.json";
 pub const DEFAULT_WORKSPACE_DIR: &str = "workspace";
 pub const STORE_DIRNAME: &str = "store";
 
@@ -194,41 +193,6 @@ pub fn load(
     })
 }
 
-#[derive(Deserialize)]
-struct SignalsFile {
-    active: Vec<String>,
-}
-
-pub fn load_signals(runa_dir: &Path) -> (std::collections::HashSet<String>, Vec<String>) {
-    let path = runa_dir.join(SIGNALS_FILENAME);
-    let content = match std::fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return (std::collections::HashSet::new(), Vec::new());
-        }
-        Err(err) => {
-            return (
-                std::collections::HashSet::new(),
-                vec![format!(
-                    "could not read .runa/signals.json: {}; treating as no active signals",
-                    err
-                )],
-            );
-        }
-    };
-
-    match serde_json::from_str::<SignalsFile>(&content) {
-        Ok(parsed) => (parsed.active.into_iter().collect(), Vec::new()),
-        Err(err) => (
-            std::collections::HashSet::new(),
-            vec![format!(
-                "could not parse .runa/signals.json: {}; treating as no active signals",
-                err
-            )],
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,7 +217,7 @@ schema = { type = "object" }
 [[protocols]]
 name = "ground"
 produces = ["constraints"]
-trigger = { type = "on_signal", name = "init" }
+trigger = { type = "on_change", name = "constraints" }
 "#
     }
 
@@ -296,77 +260,6 @@ trigger = { type = "on_signal", name = "init" }
         let loaded = load(&working, None).unwrap();
         assert_eq!(loaded.manifest.name, "test-methodology");
         assert_eq!(loaded.workspace_dir, working.join(".runa/workspace"));
-    }
-
-    #[test]
-    fn load_reads_active_signals_from_signals_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
-
-        let working = dir.path().join("project");
-        fs::create_dir(&working).unwrap();
-        write_project_files(&working, &manifest_path);
-        fs::write(
-            working.join(".runa").join("signals.json"),
-            r#"{ "active": ["deploy", "begin"] }"#,
-        )
-        .unwrap();
-
-        let (signals, warnings) = load_signals(&working.join(".runa"));
-        assert_eq!(signals.len(), 2);
-        assert!(signals.contains("deploy"));
-        assert!(signals.contains("begin"));
-        assert!(warnings.is_empty());
-    }
-
-    #[test]
-    fn load_treats_missing_signals_file_as_empty_set() {
-        let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
-
-        let working = dir.path().join("project");
-        fs::create_dir(&working).unwrap();
-        write_project_files(&working, &manifest_path);
-
-        let (signals, warnings) = load_signals(&working.join(".runa"));
-        assert!(signals.is_empty());
-        assert!(warnings.is_empty());
-    }
-
-    #[test]
-    fn load_warns_when_signals_file_is_malformed() {
-        let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
-
-        let working = dir.path().join("project");
-        fs::create_dir(&working).unwrap();
-        write_project_files(&working, &manifest_path);
-        fs::write(working.join(".runa").join("signals.json"), "{not json").unwrap();
-
-        let (signals, warnings) = load_signals(&working.join(".runa"));
-        assert!(signals.is_empty());
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("could not parse .runa/signals.json"));
-    }
-
-    #[test]
-    fn load_warns_when_signals_file_cannot_be_read() {
-        let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
-
-        let working = dir.path().join("project");
-        fs::create_dir(&working).unwrap();
-        write_project_files(&working, &manifest_path);
-        fs::create_dir(working.join(".runa").join("signals.json")).unwrap();
-
-        let (signals, warnings) = load_signals(&working.join(".runa"));
-        assert!(signals.is_empty());
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("could not read .runa/signals.json"));
     }
 
     #[test]
