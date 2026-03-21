@@ -500,7 +500,6 @@ mod tests {
             )
             .unwrap();
 
-
         let protocol = make_protocol(
             "implement",
             &["constraints"],
@@ -544,7 +543,6 @@ mod tests {
                 1000,
             )
             .unwrap();
-
 
         let protocol = make_protocol(
             "implement",
@@ -749,7 +747,6 @@ mod tests {
             .unwrap();
         // No implementation artifact → postconditions fail → not suppressed.
 
-
         let protocol = make_protocol(
             "implement",
             &["constraints"],
@@ -795,7 +792,6 @@ mod tests {
                 1000,
             )
             .unwrap();
-
 
         // on_change trigger: constraints changed at 2000, completion was at 1000.
         let protocol = make_protocol(
@@ -1315,7 +1311,6 @@ mod tests {
         store
             .record("b", "x", Path::new("b.json"), &json!({"title": "B"}))
             .unwrap();
-
 
         let protocols = vec![
             make_protocol(

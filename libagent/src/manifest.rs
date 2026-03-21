@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::model::{Manifest, TriggerCondition};
+use crate::model::Manifest;
 
 /// Errors that can occur when parsing a manifest file.
 #[derive(Debug)]
@@ -150,24 +150,9 @@ fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
         if !seen.insert(&protocol.name) {
             return Err(ManifestError::DuplicateProtocolName(protocol.name.clone()));
         }
-        validate_trigger(&protocol.trigger)?;
     }
 
     Ok(())
-}
-
-fn validate_trigger(trigger: &TriggerCondition) -> Result<(), ManifestError> {
-    match trigger {
-        TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
-            for condition in conditions {
-                validate_trigger(condition)?;
-            }
-            Ok(())
-        }
-        TriggerCondition::OnArtifact { .. }
-        | TriggerCondition::OnChange { .. }
-        | TriggerCondition::OnInvalid { .. } => Ok(()),
-    }
 }
 
 #[cfg(test)]

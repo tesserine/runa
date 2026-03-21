@@ -557,8 +557,8 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol(
-            TriggerCondition::OnArtifact {
-                name: "trigger-placeholder".into(),
+            TriggerCondition::OnChange {
+                name: "unused".into(),
             },
             &[],
             &["notes"],
@@ -585,8 +585,8 @@ mod tests {
 
         let partial = HashSet::from(["implementation".to_string()]);
         let protocol = make_protocol(
-            TriggerCondition::OnArtifact {
-                name: "trigger-placeholder".into(),
+            TriggerCondition::OnChange {
+                name: "unused".into(),
             },
             &["implementation"],
             &[],
@@ -622,8 +622,8 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol(
-            TriggerCondition::OnArtifact {
-                name: "trigger-placeholder".into(),
+            TriggerCondition::OnChange {
+                name: "unused".into(),
             },
             &["implementation", "summary"],
             &[],
@@ -659,8 +659,8 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol(
-            TriggerCondition::OnArtifact {
-                name: "trigger-placeholder".into(),
+            TriggerCondition::OnChange {
+                name: "unused".into(),
             },
             &["implementation"],
             &[],
@@ -705,8 +705,8 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol(
-            TriggerCondition::OnArtifact {
-                name: "trigger-placeholder".into(),
+            TriggerCondition::OnChange {
+                name: "unused".into(),
             },
             &["implementation", "review"],
             &[],
