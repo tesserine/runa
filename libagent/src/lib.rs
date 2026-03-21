@@ -40,7 +40,10 @@ pub use scan::{
     ArtifactRef, InvalidArtifact, MalformedArtifact, PartiallyScannedType, ScanError, ScanResult,
     UnreadableArtifact, scan,
 };
-pub use selection::{Candidate, discover_ready_candidates};
+pub use selection::{
+    Candidate, CandidateStatus, ClassifiedCandidate, ScanTrust, classify_candidates,
+    collect_unsatisfied_conditions, discover_ready_candidates,
+};
 pub use store::{ArtifactState, ArtifactStore, StoreError, ValidationStatus};
 pub use trigger::{TriggerContext, TriggerResult, evaluate as evaluate_trigger};
 pub use validation::{ValidationError, Violation};

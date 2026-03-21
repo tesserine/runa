@@ -1,7 +1,8 @@
 use std::collections::{BTreeSet, HashSet};
 
+use crate::enforcement::ArtifactFailure;
 use crate::model::{ProtocolDeclaration, TriggerCondition};
-use crate::store::ArtifactStore;
+use crate::store::{ArtifactStore, ValidationStatus};
 use crate::trigger::{
     TriggerContext, TriggerResult, derived_completion_timestamp, evaluate as evaluate_trigger,
 };
@@ -11,6 +12,39 @@ use crate::trigger::{
 pub struct Candidate {
     pub protocol_name: String,
     pub work_unit: Option<String>,
+}
+
+/// Classification status for a (protocol, work_unit) candidate.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CandidateStatus {
+    /// Trigger satisfied, preconditions pass, outputs not current.
+    Ready,
+    /// Trigger satisfied but preconditions fail, or scan incomplete.
+    Blocked {
+        precondition_failures: Vec<ArtifactFailure>,
+        scan_incomplete_types: Vec<String>,
+    },
+    /// Trigger not satisfied, or outputs are already current.
+    Waiting {
+        unsatisfied_conditions: Vec<String>,
+    },
+}
+
+/// A (protocol, work_unit) pair with its classification and scan trust.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassifiedCandidate {
+    pub protocol_name: String,
+    pub work_unit: Option<String>,
+    pub status: CandidateStatus,
+    pub trigger_satisfied: bool,
+    pub scan_trust: ScanTrust,
+}
+
+/// Scan trust information for a classified candidate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScanTrust {
+    pub trusted: bool,
+    pub incomplete_types: Vec<String>,
 }
 
 /// Discover all (protocol, work_unit) pairs that are ready for execution.
@@ -27,66 +61,14 @@ pub fn discover_ready_candidates(
     topological_order: &[&str],
     partially_scanned_types: &HashSet<String>,
 ) -> Vec<Candidate> {
-    let mut candidates = Vec::new();
-
-    for &protocol_name in topological_order {
-        let Some(protocol) = protocols.iter().find(|p| p.name == protocol_name) else {
-            continue;
-        };
-
-        let mut trigger_types = HashSet::new();
-        trigger_artifact_types(&protocol.trigger, &mut trigger_types);
-
-        let scan_incomplete_types =
-            protocol_scan_incomplete_types(protocol, partially_scanned_types);
-        if !scan_incomplete_types.is_empty() {
-            continue;
-        }
-
-        let work_units = protocol_work_units(protocol, store, partially_scanned_types);
-        let freshness_types = protocol_freshness_types(protocol, &trigger_types);
-
-        for wu in &work_units {
-            let wu_ref = wu.as_deref();
-
-            // Build trigger context scoped to this work_unit.
-            let ctx = TriggerContext {
-                store,
-                work_unit: wu_ref,
-                partially_scanned_types,
-            };
-
-            // Evaluate trigger.
-            if !matches!(
-                evaluate_trigger(&protocol.trigger, protocol, &ctx),
-                TriggerResult::Satisfied
-            ) {
-                continue;
-            }
-
-            // Check preconditions.
-            if crate::enforce_preconditions(protocol, store, wu_ref).is_err() {
-                continue;
-            }
-
-            if protocol_is_current(
-                protocol,
-                store,
-                &freshness_types,
-                wu_ref,
-                partially_scanned_types,
-            ) {
-                continue;
-            }
-
-            candidates.push(Candidate {
-                protocol_name: protocol.name.clone(),
-                work_unit: wu.clone(),
-            });
-        }
-    }
-
-    candidates
+    classify_candidates(protocols, store, topological_order, partially_scanned_types)
+        .into_iter()
+        .filter(|c| matches!(c.status, CandidateStatus::Ready))
+        .map(|c| Candidate {
+            protocol_name: c.protocol_name,
+            work_unit: c.work_unit,
+        })
+        .collect()
 }
 
 pub fn protocol_scan_incomplete_types(
@@ -249,6 +231,430 @@ fn collect_work_units(
     }
 
     work_units
+}
+
+// --- Trigger trust evaluation (moved from runa-cli/src/commands/protocol_eval.rs) ---
+
+struct TriggerEvaluation {
+    satisfied: bool,
+    trusted: bool,
+    scan_types: Vec<String>,
+}
+
+fn evaluate_trigger_trust(
+    condition: &TriggerCondition,
+    protocol: &ProtocolDeclaration,
+    context: &TriggerContext<'_>,
+    affected_types: &HashSet<String>,
+) -> TriggerEvaluation {
+    match condition {
+        TriggerCondition::OnArtifact { name } => primitive_trigger_eval(
+            condition,
+            protocol,
+            context,
+            affected_types.contains(name.as_str()),
+            !has_visible_defect(context.store, name),
+            true,
+            Some(name.clone()),
+        ),
+        TriggerCondition::OnInvalid { name } => primitive_trigger_eval(
+            condition,
+            protocol,
+            context,
+            affected_types.contains(name.as_str()),
+            true,
+            false,
+            Some(name.clone()),
+        ),
+        TriggerCondition::OnChange { name } => {
+            on_change_trigger_eval(condition, protocol, context, name, affected_types)
+        }
+        TriggerCondition::AllOf { conditions } => {
+            let children: Vec<_> = conditions
+                .iter()
+                .map(|child| evaluate_trigger_trust(child, protocol, context, affected_types))
+                .collect();
+
+            if children.iter().all(|child| child.satisfied) {
+                let mut scan_types = Vec::new();
+                let mut trusted = true;
+                for child in &children {
+                    if !child.trusted {
+                        trusted = false;
+                        append_unique(&mut scan_types, child.scan_types.clone());
+                    }
+                }
+                TriggerEvaluation {
+                    satisfied: true,
+                    trusted,
+                    scan_types,
+                }
+            } else if children
+                .iter()
+                .any(|child| !child.satisfied && child.trusted)
+            {
+                TriggerEvaluation {
+                    satisfied: false,
+                    trusted: true,
+                    scan_types: Vec::new(),
+                }
+            } else {
+                let mut scan_types = Vec::new();
+                for child in &children {
+                    if !child.trusted {
+                        append_unique(&mut scan_types, child.scan_types.clone());
+                    }
+                }
+                TriggerEvaluation {
+                    satisfied: false,
+                    trusted: false,
+                    scan_types,
+                }
+            }
+        }
+        TriggerCondition::AnyOf { conditions } => {
+            if conditions.is_empty() {
+                return TriggerEvaluation {
+                    satisfied: false,
+                    trusted: true,
+                    scan_types: Vec::new(),
+                };
+            }
+
+            let children: Vec<_> = conditions
+                .iter()
+                .map(|child| evaluate_trigger_trust(child, protocol, context, affected_types))
+                .collect();
+
+            if children
+                .iter()
+                .any(|child| child.satisfied && child.trusted)
+            {
+                TriggerEvaluation {
+                    satisfied: true,
+                    trusted: true,
+                    scan_types: Vec::new(),
+                }
+            } else if children.iter().any(|child| child.satisfied) {
+                let mut scan_types = Vec::new();
+                for child in &children {
+                    if child.satisfied && !child.trusted {
+                        append_unique(&mut scan_types, child.scan_types.clone());
+                    }
+                }
+                TriggerEvaluation {
+                    satisfied: true,
+                    trusted: false,
+                    scan_types,
+                }
+            } else if children
+                .iter()
+                .all(|child| !child.satisfied && child.trusted)
+            {
+                TriggerEvaluation {
+                    satisfied: false,
+                    trusted: true,
+                    scan_types: Vec::new(),
+                }
+            } else {
+                let mut scan_types = Vec::new();
+                for child in &children {
+                    if !child.satisfied && !child.trusted {
+                        append_unique(&mut scan_types, child.scan_types.clone());
+                    }
+                }
+                TriggerEvaluation {
+                    satisfied: false,
+                    trusted: false,
+                    scan_types,
+                }
+            }
+        }
+    }
+}
+
+fn primitive_trigger_eval(
+    condition: &TriggerCondition,
+    protocol: &ProtocolDeclaration,
+    context: &TriggerContext<'_>,
+    affected: bool,
+    untrustworthy_when_not_satisfied: bool,
+    untrustworthy_when_satisfied: bool,
+    artifact_type: Option<String>,
+) -> TriggerEvaluation {
+    let satisfied = matches!(
+        evaluate_trigger(condition, protocol, context),
+        TriggerResult::Satisfied
+    );
+
+    let untrusted = if affected {
+        if satisfied {
+            untrustworthy_when_satisfied
+        } else {
+            untrustworthy_when_not_satisfied
+        }
+    } else {
+        false
+    };
+
+    TriggerEvaluation {
+        satisfied,
+        trusted: !untrusted,
+        scan_types: if untrusted {
+            artifact_type.into_iter().collect()
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+fn on_change_trigger_eval(
+    condition: &TriggerCondition,
+    protocol: &ProtocolDeclaration,
+    context: &TriggerContext<'_>,
+    input_type: &str,
+    affected_types: &HashSet<String>,
+) -> TriggerEvaluation {
+    let satisfied = matches!(
+        evaluate_trigger(condition, protocol, context),
+        TriggerResult::Satisfied
+    );
+
+    let mut trusted = true;
+    let mut scan_types = Vec::new();
+
+    if affected_types.contains(input_type) && !satisfied {
+        trusted = false;
+        scan_types.push(input_type.to_string());
+    }
+
+    let affected_outputs: Vec<String> = protocol
+        .produces
+        .iter()
+        .filter(|artifact_type| affected_types.contains(artifact_type.as_str()))
+        .cloned()
+        .collect();
+    if !affected_outputs.is_empty() {
+        trusted = false;
+        append_unique(&mut scan_types, affected_outputs);
+    }
+
+    TriggerEvaluation {
+        satisfied,
+        trusted,
+        scan_types,
+    }
+}
+
+fn has_visible_defect(store: &ArtifactStore, artifact_type: &str) -> bool {
+    store
+        .instances_of(artifact_type, None)
+        .iter()
+        .any(|(_, state)| {
+            matches!(
+                state.status,
+                ValidationStatus::Invalid(_) | ValidationStatus::Malformed(_) | ValidationStatus::Stale
+            )
+        })
+}
+
+fn append_unique(target: &mut Vec<String>, values: Vec<String>) {
+    for value in values {
+        if !target.contains(&value) {
+            target.push(value);
+        }
+    }
+}
+
+/// Recursively collect unsatisfied trigger condition reasons.
+pub fn collect_unsatisfied_conditions(
+    condition: &TriggerCondition,
+    protocol: &ProtocolDeclaration,
+    context: &TriggerContext<'_>,
+) -> Vec<String> {
+    match evaluate_trigger(condition, protocol, context) {
+        TriggerResult::Satisfied => Vec::new(),
+        TriggerResult::NotSatisfied(reason) => match condition {
+            TriggerCondition::AllOf { conditions } => conditions
+                .iter()
+                .flat_map(|child| collect_unsatisfied_conditions(child, protocol, context))
+                .collect(),
+            TriggerCondition::AnyOf { conditions } => {
+                if conditions.is_empty() {
+                    vec![format!("{condition}: {reason}")]
+                } else {
+                    conditions
+                        .iter()
+                        .flat_map(|child| {
+                            collect_unsatisfied_conditions(child, protocol, context)
+                        })
+                        .collect()
+                }
+            }
+            _ => vec![format!("{condition}: {reason}")],
+        },
+    }
+}
+
+// --- Classified candidate discovery ---
+
+/// Classify all (protocol, work_unit) pairs as READY, BLOCKED, or WAITING.
+///
+/// Evaluates protocols in topological order. For each protocol, discovers
+/// candidate work_units and classifies each based on trigger satisfaction,
+/// scan trust, preconditions, and output freshness.
+///
+/// Results are emitted in topological protocol order, with work_units
+/// in deterministic lexicographic order within each protocol.
+pub fn classify_candidates(
+    protocols: &[ProtocolDeclaration],
+    store: &ArtifactStore,
+    topological_order: &[&str],
+    partially_scanned_types: &HashSet<String>,
+) -> Vec<ClassifiedCandidate> {
+    let mut classified = Vec::new();
+
+    for &protocol_name in topological_order {
+        let Some(protocol) = protocols.iter().find(|p| p.name == protocol_name) else {
+            continue;
+        };
+
+        let protocol_scan_failures =
+            protocol_scan_incomplete_types(protocol, partially_scanned_types);
+        let readiness_scan_failures =
+            precondition_scan_incomplete_types(protocol, partially_scanned_types);
+
+        let work_units = protocol_work_units(protocol, store, partially_scanned_types);
+        let mut trigger_types = HashSet::new();
+        trigger_artifact_types(&protocol.trigger, &mut trigger_types);
+        let freshness_types = protocol_freshness_types(protocol, &trigger_types);
+
+        for wu in &work_units {
+            let wu_ref = wu.as_deref();
+
+            let context = TriggerContext {
+                store,
+                work_unit: wu_ref,
+                partially_scanned_types,
+            };
+            let trigger_eval = evaluate_trigger_trust(
+                &protocol.trigger,
+                protocol,
+                &context,
+                partially_scanned_types,
+            );
+
+            let scan_trust = ScanTrust {
+                trusted: trigger_eval.trusted,
+                incomplete_types: trigger_eval.scan_types.clone(),
+            };
+
+            let trigger_scan_failures = trigger_scan_incomplete_failures(
+                protocol,
+                partially_scanned_types,
+                &trigger_eval.scan_types,
+            );
+
+            let status = if trigger_eval.satisfied {
+                let mut all_scan_failures = protocol_scan_failures.clone();
+                append_unique(&mut all_scan_failures, trigger_scan_failures);
+
+                let precondition_failures =
+                    match crate::enforce_preconditions(protocol, store, wu_ref) {
+                        Ok(()) => Vec::new(),
+                        Err(err) => err.failures,
+                    };
+
+                if all_scan_failures.is_empty() && precondition_failures.is_empty() {
+                    if protocol_is_current(
+                        protocol,
+                        store,
+                        &freshness_types,
+                        wu_ref,
+                        partially_scanned_types,
+                    ) {
+                        CandidateStatus::Waiting {
+                            unsatisfied_conditions: vec!["outputs are current".to_string()],
+                        }
+                    } else {
+                        CandidateStatus::Ready
+                    }
+                } else {
+                    CandidateStatus::Blocked {
+                        precondition_failures,
+                        scan_incomplete_types: all_scan_failures,
+                    }
+                }
+            } else if trigger_scan_failures.is_empty() && readiness_scan_failures.is_empty() {
+                CandidateStatus::Waiting {
+                    unsatisfied_conditions: collect_unsatisfied_conditions(
+                        &protocol.trigger,
+                        protocol,
+                        &context,
+                    ),
+                }
+            } else {
+                let mut all_scan_failures = readiness_scan_failures.clone();
+                append_unique(&mut all_scan_failures, trigger_scan_failures);
+
+                let precondition_failures =
+                    match crate::enforce_preconditions(protocol, store, wu_ref) {
+                        Ok(()) => Vec::new(),
+                        Err(err) => err.failures,
+                    };
+
+                CandidateStatus::Blocked {
+                    precondition_failures,
+                    scan_incomplete_types: all_scan_failures,
+                }
+            };
+
+            classified.push(ClassifiedCandidate {
+                protocol_name: protocol.name.clone(),
+                work_unit: wu.clone(),
+                status,
+                trigger_satisfied: trigger_eval.satisfied,
+                scan_trust,
+            });
+        }
+    }
+
+    classified
+}
+
+/// Collect scan-incomplete types from trigger eval scan_types and requires types.
+fn trigger_scan_incomplete_failures(
+    protocol: &ProtocolDeclaration,
+    partially_scanned_types: &HashSet<String>,
+    trigger_scan_types: &[String],
+) -> Vec<String> {
+    let mut types = trigger_scan_types.to_vec();
+
+    for artifact_type in &protocol.requires {
+        if partially_scanned_types.contains(artifact_type.as_str())
+            && !types.contains(artifact_type)
+        {
+            types.push(artifact_type.clone());
+        }
+    }
+
+    types
+}
+
+/// Collect scan-incomplete types from requires and produces.
+fn precondition_scan_incomplete_types(
+    protocol: &ProtocolDeclaration,
+    partially_scanned_types: &HashSet<String>,
+) -> Vec<String> {
+    let mut types = Vec::new();
+    for artifact_type in protocol.requires.iter().chain(protocol.produces.iter()) {
+        if partially_scanned_types.contains(artifact_type.as_str())
+            && !types.iter().any(|existing: &String| existing == artifact_type)
+        {
+            types.push(artifact_type.clone());
+        }
+    }
+    types
 }
 
 #[cfg(test)]
@@ -1400,5 +1806,290 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
         assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+    }
+
+    // --- classify_candidates tests ---
+
+    #[test]
+    fn classify_ready_candidate() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let classified =
+            classify_candidates(&[protocol], &store, &["implement"], &HashSet::new());
+
+        assert_eq!(classified.len(), 1);
+        assert_eq!(classified[0].protocol_name, "implement");
+        assert_eq!(classified[0].work_unit, Some("wu-a".into()));
+        assert!(matches!(classified[0].status, CandidateStatus::Ready));
+        assert!(classified[0].trigger_satisfied);
+        assert!(classified[0].scan_trust.trusted);
+    }
+
+    #[test]
+    fn classify_waiting_trigger_not_satisfied() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp.path().join("s"), vec!["doc", "missing"]);
+
+        let protocol = make_protocol(
+            "ground",
+            &[],
+            &[],
+            &["doc"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "missing".into(),
+            },
+        );
+
+        let classified =
+            classify_candidates(&[protocol], &store, &["ground"], &HashSet::new());
+
+        assert_eq!(classified.len(), 1);
+        assert!(matches!(
+            classified[0].status,
+            CandidateStatus::Waiting { .. }
+        ));
+        assert!(!classified[0].trigger_satisfied);
+        if let CandidateStatus::Waiting {
+            unsatisfied_conditions,
+        } = &classified[0].status
+        {
+            assert!(!unsatisfied_conditions.is_empty());
+        }
+    }
+
+    #[test]
+    fn classify_blocked_precondition_fails() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        // Trigger fires on implementation, but constraints (required) is missing.
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A"}),
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "implementation".into(),
+            },
+        );
+
+        let classified = classify_candidates(
+            &[protocol],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(classified.len(), 1);
+        assert!(matches!(
+            classified[0].status,
+            CandidateStatus::Blocked { .. }
+        ));
+        assert!(classified[0].trigger_satisfied);
+        if let CandidateStatus::Blocked {
+            precondition_failures,
+            ..
+        } = &classified[0].status
+        {
+            assert!(!precondition_failures.is_empty());
+            assert!(matches!(
+                precondition_failures[0],
+                ArtifactFailure::Missing { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn classify_waiting_outputs_current() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let classified = classify_candidates(
+            &[protocol],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(classified.len(), 1);
+        assert!(matches!(
+            classified[0].status,
+            CandidateStatus::Waiting { .. }
+        ));
+        assert!(classified[0].trigger_satisfied);
+        if let CandidateStatus::Waiting {
+            unsatisfied_conditions,
+        } = &classified[0].status
+        {
+            assert_eq!(unsatisfied_conditions, &["outputs are current"]);
+        }
+    }
+
+    #[test]
+    fn classify_blocked_scan_incomplete() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints"]);
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let partial = HashSet::from(["constraints".to_string()]);
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &[],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let classified =
+            classify_candidates(&[protocol], &store, &["implement"], &partial);
+
+        assert_eq!(classified.len(), 1);
+        assert!(matches!(
+            classified[0].status,
+            CandidateStatus::Blocked { .. }
+        ));
+        assert!(!classified[0].scan_trust.trusted);
+        if let CandidateStatus::Blocked {
+            scan_incomplete_types,
+            ..
+        } = &classified[0].status
+        {
+            assert!(scan_incomplete_types.contains(&"constraints".to_string()));
+        }
+    }
+
+    #[test]
+    fn classify_and_discover_agree_on_ready() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "constraints",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"title": "B", "work_unit": "wu-b"}),
+            )
+            .unwrap();
+        // wu-a has current output, wu-b does not
+        store
+            .record(
+                "implementation",
+                "a1",
+                Path::new("impl-a1.json"),
+                &json!({"title": "impl-A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let classified = classify_candidates(
+            &[protocol.clone()],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+        );
+        let ready_from_classify: Vec<_> = classified
+            .iter()
+            .filter(|c| matches!(c.status, CandidateStatus::Ready))
+            .map(|c| (c.protocol_name.clone(), c.work_unit.clone()))
+            .collect();
+
+        let ready_from_discover = discover_ready_candidates(
+            &[protocol],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+        );
+        let ready_from_discover: Vec<_> = ready_from_discover
+            .iter()
+            .map(|c| (c.protocol_name.clone(), c.work_unit.clone()))
+            .collect();
+
+        assert_eq!(ready_from_classify, ready_from_discover);
     }
 }
