@@ -3,21 +3,19 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use super::CommandError;
 use crate::commands::protocol_eval;
-use crate::project::{self, ProjectError};
 
 #[derive(Debug)]
 pub enum StatusError {
-    Project(ProjectError),
-    Scan(libagent::ScanError),
+    Command(CommandError),
     Json(serde_json::Error),
 }
 
 impl fmt::Display for StatusError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            StatusError::Project(err) => write!(f, "{err}"),
-            StatusError::Scan(err) => write!(f, "{err}"),
+            StatusError::Command(err) => write!(f, "{err}"),
             StatusError::Json(err) => write!(f, "{err}"),
         }
     }
@@ -26,10 +24,15 @@ impl fmt::Display for StatusError {
 impl std::error::Error for StatusError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            StatusError::Project(err) => Some(err),
-            StatusError::Scan(err) => Some(err),
+            StatusError::Command(err) => Some(err),
             StatusError::Json(err) => Some(err),
         }
+    }
+}
+
+impl From<CommandError> for StatusError {
+    fn from(err: CommandError) -> Self {
+        StatusError::Command(err)
     }
 }
 
@@ -46,9 +49,7 @@ pub fn run(
     config_override: Option<&Path>,
     json_output: bool,
 ) -> Result<(), StatusError> {
-    let mut loaded = project::load(working_dir, config_override).map_err(StatusError::Project)?;
-    let scan_result =
-        libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(StatusError::Scan)?;
+    let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
     let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
     let evaluated = protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings);
     let warnings = scan_findings.warnings.clone();

@@ -1,39 +1,12 @@
 use std::collections::HashMap;
-use std::fmt;
 use std::path::Path;
 
-use libagent::ScanError as StoreScanError;
-use libagent::{ArtifactFailure, enforce_preconditions};
+use libagent::ArtifactFailure;
 
-use crate::project::{self, ProjectError};
+use super::CommandError;
 
-#[derive(Debug)]
-pub enum ListError {
-    Project(ProjectError),
-    Scan(StoreScanError),
-}
-
-impl fmt::Display for ListError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ListError::Project(e) => write!(f, "{e}"),
-            ListError::Scan(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-impl std::error::Error for ListError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            ListError::Project(e) => Some(e),
-            ListError::Scan(e) => Some(e),
-        }
-    }
-}
-
-pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), ListError> {
-    let mut loaded = project::load(working_dir, config_override).map_err(ListError::Project)?;
-    libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(ListError::Scan)?;
+pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), CommandError> {
+    let (loaded, _scan_result) = super::load_and_scan(working_dir, config_override)?;
 
     println!("Methodology: {}", loaded.manifest.name);
 
@@ -84,7 +57,7 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), Lis
 
         println!("     trigger:  {}", protocol.trigger);
 
-        if let Err(err) = enforce_preconditions(protocol, &loaded.store, None) {
+        if let Err(err) = libagent::enforce_preconditions(protocol, &loaded.store, None) {
             println!("     BLOCKED:  {}", format_failures(&err.failures));
         }
     }

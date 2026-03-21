@@ -4,16 +4,15 @@ use std::path::Path;
 use libagent::context::{ArtifactRelationship, ContextInjection};
 use serde::Serialize;
 
+use super::CommandError;
 use crate::commands::protocol_eval;
-use crate::project::{self, ProjectError};
 
 const NOT_IMPLEMENTED_MESSAGE: &str =
     "Agent execution is not yet implemented. Use --dry-run to see the execution plan.";
 
 #[derive(Debug)]
 pub enum StepError {
-    Project(ProjectError),
-    Scan(libagent::ScanError),
+    Command(CommandError),
     Json(serde_json::Error),
     NotImplemented,
 }
@@ -21,8 +20,7 @@ pub enum StepError {
 impl fmt::Display for StepError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            StepError::Project(err) => write!(f, "{err}"),
-            StepError::Scan(err) => write!(f, "{err}"),
+            StepError::Command(err) => write!(f, "{err}"),
             StepError::Json(err) => write!(f, "{err}"),
             StepError::NotImplemented => write!(f, "{NOT_IMPLEMENTED_MESSAGE}"),
         }
@@ -32,11 +30,16 @@ impl fmt::Display for StepError {
 impl std::error::Error for StepError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            StepError::Project(err) => Some(err),
-            StepError::Scan(err) => Some(err),
+            StepError::Command(err) => Some(err),
             StepError::Json(err) => Some(err),
             StepError::NotImplemented => None,
         }
+    }
+}
+
+impl From<CommandError> for StepError {
+    fn from(err: CommandError) -> Self {
+        StepError::Command(err)
     }
 }
 
@@ -70,9 +73,7 @@ pub fn run(
         return Err(StepError::NotImplemented);
     }
 
-    let mut loaded = project::load(working_dir, config_override).map_err(StepError::Project)?;
-    let scan_result =
-        libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(StepError::Scan)?;
+    let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
     let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
     let evaluated = protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings);
     let warnings = scan_findings.warnings.clone();
