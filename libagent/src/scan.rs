@@ -802,6 +802,13 @@ mod tests {
         write_file(&unreadable_path, r#"{"title":"ok"}"#);
         std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o0)).unwrap();
 
+        // Root ignores file permissions, so the unreadable simulation won't work.
+        if std::fs::read(&unreadable_path).is_ok() {
+            std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+            return;
+        }
+
         let store_dir = tmp.path().join("store");
         let mut store = make_store(&store_dir, vec!["report"]);
         store
@@ -842,6 +849,13 @@ mod tests {
         let unreadable_path = workspace.join("report/item.json");
         write_file(&unreadable_path, r#"{"title":"ok"}"#);
         std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o0)).unwrap();
+
+        // Root ignores file permissions, so the unreadable simulation won't work.
+        if std::fs::read(&unreadable_path).is_ok() {
+            std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+            return;
+        }
 
         let store_dir = tmp.path().join("store");
         let mut store = make_store(&store_dir, vec!["report"]);
