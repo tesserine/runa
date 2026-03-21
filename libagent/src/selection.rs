@@ -466,12 +466,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -511,12 +507,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert!(candidates.is_empty());
     }
@@ -555,12 +547,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -619,12 +607,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -677,12 +661,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert!(candidates.is_empty());
     }
@@ -721,12 +701,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -758,12 +734,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
     }
@@ -805,12 +777,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         // Must NOT be suppressed: on_change was satisfied because input changed.
         assert_eq!(candidates.len(), 1);
@@ -859,12 +827,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
     }
@@ -915,12 +879,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         // Must be suppressed: on_change was NOT satisfied, prior outputs valid.
         assert!(candidates.is_empty());
@@ -979,12 +939,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         // Must be suppressed: the on_change is in an unsatisfied branch,
         // the trigger fires via on_artifact("constraints"), and postconditions pass.
@@ -1017,8 +973,7 @@ mod tests {
             },
         );
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert!(candidates.is_empty());
     }
@@ -1051,8 +1006,7 @@ mod tests {
             },
         );
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["fix-lint"], &partial);
+        let candidates = discover_ready_candidates(&[protocol], &store, &["fix-lint"], &partial);
 
         assert!(candidates.is_empty());
     }
@@ -1108,8 +1062,7 @@ mod tests {
             },
         );
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
@@ -1141,8 +1094,7 @@ mod tests {
             },
         );
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -1186,8 +1138,7 @@ mod tests {
             },
         );
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert!(candidates.is_empty());
     }
@@ -1236,8 +1187,7 @@ mod tests {
             },
         );
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -1291,12 +1241,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert!(candidates.is_empty());
     }
@@ -1332,12 +1278,8 @@ mod tests {
         ];
 
         // beta first in topological order.
-        let candidates = discover_ready_candidates(
-            &protocols,
-            &store,
-            &["beta", "alpha"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&protocols, &store, &["beta", "alpha"], &HashSet::new());
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].protocol_name, "beta");
@@ -1390,12 +1332,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");

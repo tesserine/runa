@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
@@ -117,7 +116,7 @@ struct TypeScanState {
 }
 
 pub fn scan(workspace_dir: &Path, store: &mut ArtifactStore) -> Result<ScanResult, ScanError> {
-    let scan_timestamp_ms = current_time_ms();
+    let scan_timestamp_ms = crate::util::current_time_ms();
     let known_types: HashSet<String> = store
         .artifact_type_names()
         .into_iter()
@@ -502,13 +501,6 @@ fn classify_disposition(
         Some(state) if state.schema_hash != current_schema_hash => ScanDisposition::Revalidated,
         Some(_) => ScanDisposition::Unchanged,
     }
-}
-
-fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before UNIX epoch")
-        .as_millis() as u64
 }
 
 #[cfg(test)]

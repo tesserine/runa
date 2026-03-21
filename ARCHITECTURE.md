@@ -64,6 +64,10 @@ Filesystem reconciliation from the artifact workspace into the store. `scan` tre
 
 Recursive trigger condition evaluator. `evaluate` is a pure function that takes a `TriggerCondition`, the enclosing `ProtocolDeclaration`, and a `TriggerContext` (read-only references to the artifact store and scan metadata). Five condition variants: `OnArtifact` distinguishes between missing valid instances and visible invalid/stale instances, `OnChange` compares the named input's latest timestamp against the protocol's derived output timestamp, `OnInvalid` checks `store.has_any_invalid`, `AllOf` short-circuits on first failure, `AnyOf` short-circuits on first success.
 
+### `util.rs`
+
+Shared internal utilities (`pub(crate)`). Contains `current_time_ms`, which returns the current wall-clock time as milliseconds since the Unix epoch. Used by `store.rs` and `scan.rs` for artifact modification timestamps. Not part of the public API.
+
 ### `enforcement.rs`
 
 Pre/post-execution enforcement of protocol contracts. Two pure functions that check a `ProtocolDeclaration` against an `ArtifactStore`:
