@@ -20,7 +20,7 @@ schema = { type = "object" }
 [[protocols]]
 name = "ground"
 produces = ["constraints"]
-trigger = { type = "on_signal", name = "init" }
+trigger = { type = "on_change", name = "constraints" }
 
 [[protocols]]
 name = "design"
@@ -65,7 +65,7 @@ fn init_creates_runa_directory() {
 
     assert!(project_dir.join(".runa").is_dir());
     assert!(project_dir.join(".runa/state.toml").is_file());
-    assert!(!project_dir.join(".runa/signals.json").exists());
+
     assert!(project_dir.join(".runa/store").is_dir());
     assert!(project_dir.join(".runa/workspace").is_dir());
 }

@@ -157,7 +157,7 @@ schema = { type = "object" }
 [[protocols]]
 name = "ground"
 produces = ["constraints"]
-trigger = { type = "on_signal", name = "init" }
+trigger = { type = "on_change", name = "constraints" }
 
 [[protocols]]
 name = "design"

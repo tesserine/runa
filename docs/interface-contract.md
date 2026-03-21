@@ -40,12 +40,11 @@ Topology is not declared. It emerges from the graph of requires/produces/may_pro
 
 ### 3. Trigger Conditions
 
-A trigger condition defines when runa should activate a protocol. Triggers are composable from four primitive types:
+A trigger condition defines when runa should activate a protocol. Triggers are composable from three primitive types:
 
 - **on_artifact(name)** — the named artifact exists and satisfies its schema
 - **on_change(name)** — the named artifact is newer than this protocol's current output artifacts for the same work unit. runa derives freshness from artifact timestamps in the store rather than persisting separate completion records.
 - **on_invalid(name)** — an instance of the named artifact type exists but fails validation against its declared schema
-- **on_signal(name)** — an external event (operator action, webhook, scheduler)
 
 Completion is derived from output artifact timestamps. For `on_change` protocols, the output must change content to evidence that the changed input was processed. If the correct response to changed input is "the existing output is still valid," the protocol's capstone should still reflect the verification — for example, by including a review timestamp or updated rationale that changes the content hash. Identical rewrites are invisible to the artifact store.
 
@@ -54,11 +53,11 @@ These compose through two operators:
 - **all_of(conditions...)** — all conditions must be satisfied
 - **any_of(conditions...)** — at least one condition must be satisfied
 
-Nesting is permitted. `all_of(on_artifact("constraints"), any_of(on_signal("approved"), on_artifact("auto-approve")))` means: constraints must exist, and either operator approval or an auto-approve artifact must be present.
+Nesting is permitted. `all_of(on_artifact("constraints"), any_of(on_change("review"), on_artifact("auto-approve")))` means: constraints must exist, and either a review change or an auto-approve artifact must be present.
 
 ## What runa Does
 
-runa is an event-driven runtime. The CLI commands (init, scan, list, status, step, doctor, signal) are windows into its state. The runtime itself is the monitoring loop.
+runa is an event-driven runtime. The CLI commands (init, scan, list, status, step, doctor) are windows into its state. The runtime itself is the monitoring loop.
 
 Given the declarations above, runa provides five runtime capabilities:
 

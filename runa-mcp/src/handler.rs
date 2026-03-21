@@ -651,7 +651,7 @@ mod tests {
             accepts: Vec::new(),
             produces: Vec::new(),
             may_produce: vec!["composed_a".into(), "composed_b".into()],
-            trigger: TriggerCondition::OnSignal { name: "go".into() },
+            trigger: TriggerCondition::OnArtifact { name: "trigger-placeholder".into() },
         };
 
         let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
@@ -677,7 +677,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["log_entries".into()],
             may_produce: Vec::new(),
-            trigger: TriggerCondition::OnSignal { name: "go".into() },
+            trigger: TriggerCondition::OnArtifact { name: "trigger-placeholder".into() },
         };
 
         let result = validate_output_types(&protocol, &store, Some("wu"));
@@ -704,7 +704,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["composed".into()],
             may_produce: Vec::new(),
-            trigger: TriggerCondition::OnSignal { name: "go".into() },
+            trigger: TriggerCondition::OnArtifact { name: "trigger-placeholder".into() },
         };
 
         let result = validate_output_types(&protocol, &store, Some("wu"));
@@ -735,7 +735,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["output_a".into(), "output_b".into()],
             may_produce: Vec::new(),
-            trigger: TriggerCondition::OnSignal { name: "go".into() },
+            trigger: TriggerCondition::OnArtifact { name: "trigger-placeholder".into() },
         };
 
         assert!(validate_output_types(&protocol, &store, Some("wu")).is_ok());
@@ -762,7 +762,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
-            trigger: TriggerCondition::OnSignal { name: "go".into() },
+            trigger: TriggerCondition::OnArtifact { name: "trigger-placeholder".into() },
         };
 
         let result = validate_output_types(&protocol, &store, None);
@@ -791,7 +791,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
-            trigger: TriggerCondition::OnSignal { name: "go".into() },
+            trigger: TriggerCondition::OnArtifact { name: "trigger-placeholder".into() },
         };
 
         assert!(validate_output_types(&protocol, &store, Some("wu")).is_ok());
@@ -827,7 +827,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["output".into()],
             may_produce: vec!["scoped_output".into()],
-            trigger: TriggerCondition::OnSignal { name: "go".into() },
+            trigger: TriggerCondition::OnArtifact { name: "trigger-placeholder".into() },
         };
 
         let handler = RunaHandler::new(

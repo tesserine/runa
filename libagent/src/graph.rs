@@ -465,8 +465,8 @@ mod tests {
             accepts: vec![],
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: vec![],
-            trigger: TriggerCondition::OnSignal {
-                name: "manual".into(),
+            trigger: TriggerCondition::OnArtifact {
+                name: "trigger-placeholder".into(),
             },
         }
     }
@@ -483,8 +483,8 @@ mod tests {
             accepts: vec![],
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: may_produce.iter().map(|s| (*s).into()).collect(),
-            trigger: TriggerCondition::OnSignal {
-                name: "manual".into(),
+            trigger: TriggerCondition::OnArtifact {
+                name: "trigger-placeholder".into(),
             },
         }
     }
@@ -501,8 +501,8 @@ mod tests {
             accepts: accepts.iter().map(|s| (*s).into()).collect(),
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: vec![],
-            trigger: TriggerCondition::OnSignal {
-                name: "manual".into(),
+            trigger: TriggerCondition::OnArtifact {
+                name: "trigger-placeholder".into(),
             },
         }
     }

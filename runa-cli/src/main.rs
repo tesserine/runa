@@ -35,11 +35,6 @@ enum Commands {
     Doctor,
     /// Scan the artifact workspace and reconcile it into the store
     Scan,
-    /// Manage operator-controlled runtime signals
-    Signal {
-        #[command(subcommand)]
-        command: SignalCommand,
-    },
     /// Evaluate protocol readiness and report status
     Status {
         /// Emit machine-readable JSON instead of text output
@@ -56,22 +51,6 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-}
-
-#[derive(Subcommand)]
-enum SignalCommand {
-    /// Ensure the named signal is active
-    Begin {
-        /// Signal name, must match [a-z0-9][a-z0-9_-]*
-        name: String,
-    },
-    /// Ensure the named signal is inactive
-    Clear {
-        /// Signal name, must match [a-z0-9][a-z0-9_-]*
-        name: String,
-    },
-    /// List active signals
-    List,
 }
 
 fn main() {
@@ -165,26 +144,6 @@ fn main() {
             };
 
             if let Err(e) = commands::scan::run(&working_dir, config_override.as_deref()) {
-                eprintln!("error: {e}");
-                process::exit(1);
-            }
-        }
-        Commands::Signal { command } => {
-            let working_dir = match std::env::current_dir() {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    process::exit(1);
-                }
-            };
-
-            let result = match command {
-                SignalCommand::Begin { name } => commands::signal::begin(&working_dir, &name),
-                SignalCommand::Clear { name } => commands::signal::clear(&working_dir, &name),
-                SignalCommand::List => commands::signal::list(&working_dir),
-            };
-
-            if let Err(e) = result {
                 eprintln!("error: {e}");
                 process::exit(1);
             }

@@ -18,11 +18,10 @@ pub enum TriggerResult {
 
 /// Read-only snapshot of the state needed to evaluate trigger conditions.
 ///
-/// Bundles the artifact store with currently active signals. Evaluation is
-/// pure — no side effects.
+/// Bundles the artifact store with scan metadata. Evaluation is pure — no
+/// side effects.
 pub struct TriggerContext<'a> {
     pub store: &'a ArtifactStore,
-    pub active_signals: &'a HashSet<String>,
     pub work_unit: Option<&'a str>,
     pub partially_scanned_types: &'a HashSet<String>,
 }
@@ -100,14 +99,6 @@ pub fn evaluate(
                 TriggerResult::NotSatisfied(format!(
                     "no invalid instances of artifact type '{name}'"
                 ))
-            }
-        }
-
-        TriggerCondition::OnSignal { name } => {
-            if context.active_signals.contains(name) {
-                TriggerResult::Satisfied
-            } else {
-                TriggerResult::NotSatisfied(format!("signal '{name}' is not active"))
             }
         }
 
@@ -202,7 +193,6 @@ mod tests {
         // Leaked to avoid lifetime issues in tests — fine for test code.
         TriggerContext {
             store,
-            active_signals: Box::leak(Box::default()),
             work_unit: None,
             partially_scanned_types: Box::leak(Box::default()),
         }
@@ -325,10 +315,8 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            active_signals: &signals,
             work_unit: None,
             partially_scanned_types: empty_partials(),
         };
@@ -363,10 +351,8 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            active_signals: &signals,
             work_unit: None,
             partially_scanned_types: empty_partials(),
         };
@@ -401,10 +387,8 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            active_signals: &signals,
             work_unit: None,
             partially_scanned_types: empty_partials(),
         };
@@ -452,10 +436,8 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            active_signals: &signals,
             work_unit: None,
             partially_scanned_types: empty_partials(),
         };
@@ -499,10 +481,8 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            active_signals: &signals,
             work_unit: None,
             partially_scanned_types: empty_partials(),
         };
@@ -549,10 +529,8 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            active_signals: &signals,
             work_unit: None,
             partially_scanned_types: empty_partials(),
         };
@@ -579,8 +557,8 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol(
-            TriggerCondition::OnSignal {
-                name: "manual".into(),
+            TriggerCondition::OnArtifact {
+                name: "trigger-placeholder".into(),
             },
             &[],
             &["notes"],
@@ -607,8 +585,8 @@ mod tests {
 
         let partial = HashSet::from(["implementation".to_string()]);
         let protocol = make_protocol(
-            TriggerCondition::OnSignal {
-                name: "manual".into(),
+            TriggerCondition::OnArtifact {
+                name: "trigger-placeholder".into(),
             },
             &["implementation"],
             &[],
@@ -644,8 +622,8 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol(
-            TriggerCondition::OnSignal {
-                name: "manual".into(),
+            TriggerCondition::OnArtifact {
+                name: "trigger-placeholder".into(),
             },
             &["implementation", "summary"],
             &[],
@@ -681,8 +659,8 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol(
-            TriggerCondition::OnSignal {
-                name: "manual".into(),
+            TriggerCondition::OnArtifact {
+                name: "trigger-placeholder".into(),
             },
             &["implementation"],
             &[],
@@ -727,8 +705,8 @@ mod tests {
             .unwrap();
 
         let protocol = make_protocol(
-            TriggerCondition::OnSignal {
-                name: "manual".into(),
+            TriggerCondition::OnArtifact {
+                name: "trigger-placeholder".into(),
             },
             &["implementation", "review"],
             &[],
@@ -763,11 +741,9 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
         let partial = HashSet::from(["implementation".to_string()]);
         let ctx = TriggerContext {
             store: &store,
-            active_signals: &signals,
             work_unit: None,
             partially_scanned_types: &partial,
         };
@@ -860,63 +836,27 @@ mod tests {
         ));
     }
 
-    // --- OnSignal ---
-
-    #[test]
-    fn on_signal_satisfied_when_active() {
-        let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp.path().join("s"), vec!["doc"]);
-
-        let signals = HashSet::from(["deploy".to_string()]);
-        let ctx = TriggerContext {
-            store: &store,
-            active_signals: &signals,
-            work_unit: None,
-            partially_scanned_types: empty_partials(),
-        };
-        let cond = TriggerCondition::OnSignal {
-            name: "deploy".into(),
-        };
-        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
-    }
-
-    #[test]
-    fn on_signal_not_satisfied_when_inactive() {
-        let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp.path().join("s"), vec!["doc"]);
-
-        let ctx = empty_context(&store);
-        let cond = TriggerCondition::OnSignal {
-            name: "deploy".into(),
-        };
-        assert!(matches!(
-            evaluate(&cond, &ctx, "protocol"),
-            TriggerResult::NotSatisfied(_)
-        ));
-    }
-
     // --- AllOf ---
 
     #[test]
     fn all_of_satisfied_when_all_children_satisfied() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "review"]);
         store
             .record("doc", "a", Path::new("a.json"), &json!({"title": "A"}))
             .unwrap();
+        store
+            .record("review", "a", Path::new("r.json"), &json!({"title": "R"}))
+            .unwrap();
 
-        let signals = HashSet::from(["go".to_string()]);
-        let ctx = TriggerContext {
-            store: &store,
-            active_signals: &signals,
-            work_unit: None,
-            partially_scanned_types: empty_partials(),
-        };
+        let ctx = empty_context(&store);
 
         let cond = TriggerCondition::AllOf {
             conditions: vec![
                 TriggerCondition::OnArtifact { name: "doc".into() },
-                TriggerCondition::OnSignal { name: "go".into() },
+                TriggerCondition::OnArtifact {
+                    name: "review".into(),
+                },
             ],
         };
         assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
@@ -925,7 +865,7 @@ mod tests {
     #[test]
     fn all_of_not_satisfied_when_one_child_fails() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "review"]);
         store
             .record("doc", "a", Path::new("a.json"), &json!({"title": "A"}))
             .unwrap();
@@ -935,8 +875,8 @@ mod tests {
         let cond = TriggerCondition::AllOf {
             conditions: vec![
                 TriggerCondition::OnArtifact { name: "doc".into() },
-                TriggerCondition::OnSignal {
-                    name: "missing".into(),
+                TriggerCondition::OnArtifact {
+                    name: "review".into(),
                 },
             ],
         };
@@ -961,20 +901,19 @@ mod tests {
     #[test]
     fn any_of_satisfied_when_one_child_satisfied() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "review"]);
+        store
+            .record("doc", "a", Path::new("a.json"), &json!({"title": "A"}))
+            .unwrap();
 
-        let signals = HashSet::from(["go".to_string()]);
-        let ctx = TriggerContext {
-            store: &store,
-            active_signals: &signals,
-            work_unit: None,
-            partially_scanned_types: empty_partials(),
-        };
+        let ctx = empty_context(&store);
 
         let cond = TriggerCondition::AnyOf {
             conditions: vec![
                 TriggerCondition::OnArtifact { name: "doc".into() },
-                TriggerCondition::OnSignal { name: "go".into() },
+                TriggerCondition::OnArtifact {
+                    name: "review".into(),
+                },
             ],
         };
         assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
@@ -983,14 +922,14 @@ mod tests {
     #[test]
     fn any_of_not_satisfied_when_all_children_fail() {
         let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        let store = make_store(&tmp.path().join("s"), vec!["doc", "review"]);
         let ctx = empty_context(&store);
 
         let cond = TriggerCondition::AnyOf {
             conditions: vec![
                 TriggerCondition::OnArtifact { name: "doc".into() },
-                TriggerCondition::OnSignal {
-                    name: "missing".into(),
+                TriggerCondition::OnArtifact {
+                    name: "review".into(),
                 },
             ],
         };
@@ -1018,29 +957,26 @@ mod tests {
     #[test]
     fn nested_all_of_with_any_of() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "approval"]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "approval", "review"]);
         store
             .record("doc", "a", Path::new("a.json"), &json!({"title": "A"}))
             .unwrap();
+        store
+            .record("review", "a", Path::new("r.json"), &json!({"title": "R"}))
+            .unwrap();
         // "approval" has no instances — OnArtifact for it would fail.
 
-        let signals = HashSet::from(["approved".to_string()]);
-        let ctx = TriggerContext {
-            store: &store,
-            active_signals: &signals,
-            work_unit: None,
-            partially_scanned_types: empty_partials(),
-        };
+        let ctx = empty_context(&store);
 
-        // AllOf(OnArtifact("doc"), AnyOf(OnSignal("approved"), OnArtifact("approval")))
-        // doc is valid, signal "approved" is active → satisfied.
+        // AllOf(OnArtifact("doc"), AnyOf(OnArtifact("review"), OnArtifact("approval")))
+        // doc is valid, review exists → satisfied.
         let cond = TriggerCondition::AllOf {
             conditions: vec![
                 TriggerCondition::OnArtifact { name: "doc".into() },
                 TriggerCondition::AnyOf {
                     conditions: vec![
-                        TriggerCondition::OnSignal {
-                            name: "approved".into(),
+                        TriggerCondition::OnArtifact {
+                            name: "review".into(),
                         },
                         TriggerCondition::OnArtifact {
                             name: "approval".into(),
@@ -1055,22 +991,22 @@ mod tests {
     #[test]
     fn nested_all_of_with_any_of_not_satisfied() {
         let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "approval"]);
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "approval", "review"]);
         store
             .record("doc", "a", Path::new("a.json"), &json!({"title": "A"}))
             .unwrap();
 
         let ctx = empty_context(&store);
 
-        // AllOf(OnArtifact("doc"), AnyOf(OnSignal("approved"), OnArtifact("approval")))
-        // doc is valid but neither signal nor approval artifact → not satisfied.
+        // AllOf(OnArtifact("doc"), AnyOf(OnArtifact("review"), OnArtifact("approval")))
+        // doc is valid but neither review nor approval exists → not satisfied.
         let cond = TriggerCondition::AllOf {
             conditions: vec![
                 TriggerCondition::OnArtifact { name: "doc".into() },
                 TriggerCondition::AnyOf {
                     conditions: vec![
-                        TriggerCondition::OnSignal {
-                            name: "approved".into(),
+                        TriggerCondition::OnArtifact {
+                            name: "review".into(),
                         },
                         TriggerCondition::OnArtifact {
                             name: "approval".into(),
@@ -1108,12 +1044,9 @@ mod tests {
             )
             .unwrap();
 
-        let signals = HashSet::new();
-
         // Scoped to WU-A: only valid instance visible → satisfied.
         let ctx_a = TriggerContext {
             store: &store,
-            active_signals: &signals,
             work_unit: Some("wu-a"),
             partially_scanned_types: empty_partials(),
         };
@@ -1126,7 +1059,6 @@ mod tests {
         // Scoped to WU-B: only invalid instance visible → not satisfied.
         let ctx_b = TriggerContext {
             store: &store,
-            active_signals: &signals,
             work_unit: Some("wu-b"),
             partially_scanned_types: empty_partials(),
         };
@@ -1145,10 +1077,8 @@ mod tests {
             .record("doc", "shared", Path::new("s.json"), &json!({"title": "S"}))
             .unwrap();
 
-        let signals = HashSet::new();
         let ctx = TriggerContext {
             store: &store,
-            active_signals: &signals,
             work_unit: Some("wu-x"),
             partially_scanned_types: empty_partials(),
         };

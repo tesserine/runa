@@ -186,7 +186,6 @@ pub(crate) fn evaluate_protocols(
     loaded: &project::LoadedProject,
     working_dir: &Path,
     scan_findings: &ScanFindings,
-    active_signals: &HashSet<String>,
 ) -> EvaluatedProtocols {
     let (skill_order, cycle) = match loaded.graph.topological_order() {
         Ok(order) => (order, None),
@@ -219,7 +218,6 @@ pub(crate) fn evaluate_protocols(
     let ready_candidates = libagent::discover_ready_candidates(
         &loaded.manifest.protocols,
         &loaded.store,
-        active_signals,
         &skill_order,
         &scan_findings.affected_types,
     );
@@ -278,7 +276,6 @@ pub(crate) fn evaluate_protocols(
 
             let context = TriggerContext {
                 store: &loaded.store,
-                active_signals,
                 work_unit: work_unit.as_deref(),
                 partially_scanned_types: &scan_findings.affected_types,
             };
@@ -534,9 +531,6 @@ fn evaluate_trigger_trust(
         ),
         libagent::TriggerCondition::OnChange { name } => {
             on_change_trigger_eval(condition, protocol, context, name, affected_types)
-        }
-        libagent::TriggerCondition::OnSignal { .. } => {
-            primitive_trigger_eval(condition, protocol, context, false, false, false, None)
         }
         libagent::TriggerCondition::AllOf { conditions } => {
             let children: Vec<_> = conditions

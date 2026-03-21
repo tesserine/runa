@@ -35,7 +35,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 
 [[protocols]]
 name = "ground"
-trigger = { type = "on_signal", name = "begin" }
+trigger = { type = "on_invalid", name = "implementation" }
 "#
 }
 
@@ -140,50 +140,8 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     assert_eq!(protocols[2]["status"], "waiting");
     assert_eq!(
         protocols[2]["unsatisfied_conditions"],
-        serde_json::json!(["on_signal(begin): signal 'begin' is not active"])
+        serde_json::json!(["on_invalid(implementation): no invalid instances of artifact type 'implementation'"])
     );
-}
-
-#[test]
-fn step_succeeds_with_warning_when_signals_file_is_malformed() {
-    let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, manifest_toml()).unwrap();
-
-    let project_dir = dir.path().join("project");
-    fs::create_dir(&project_dir).unwrap();
-    init_project(&project_dir, &manifest_path);
-    fs::write(project_dir.join(".runa/signals.json"), "{not json").unwrap();
-
-    let output = runa_bin()
-        .arg("step")
-        .arg("--dry-run")
-        .arg("--json")
-        .current_dir(&project_dir)
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(
-        value["scan_warnings"],
-        serde_json::json!([
-            "could not parse .runa/signals.json: key must be a string at line 1 column 2; treating as no active signals"
-        ])
-    );
-    assert_eq!(value["execution_plan"], serde_json::json!([]));
-    let ground = value["protocols"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|entry| entry["name"] == "ground")
-        .unwrap();
-    assert_eq!(ground["status"], "waiting");
 }
 
 #[test]
@@ -220,7 +178,7 @@ fn step_dry_run_text_reports_why_when_no_skills_are_ready() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("on_signal(begin): signal 'begin' is not active"),
+        stdout.contains("on_invalid(implementation): no invalid instances of artifact type 'implementation'"),
         "stdout: {stdout}"
     );
 }
@@ -417,13 +375,13 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "first"
 requires = ["b"]
 produces = ["a"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "b" }
 
 [[protocols]]
 name = "second"
 requires = ["a"]
 produces = ["b"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "b" }
 "#,
     )
     .unwrap();
@@ -480,13 +438,13 @@ schema = { type = "object", required = ["title"], properties = { title = { type 
 name = "first"
 requires = ["b"]
 produces = ["a"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "b" }
 
 [[protocols]]
 name = "second"
 requires = ["a"]
 produces = ["b"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "b" }
 "#,
     )
     .unwrap();
@@ -552,13 +510,13 @@ trigger = { type = "on_artifact", name = "seed" }
 name = "first"
 requires = ["b"]
 produces = ["a"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "b" }
 
 [[protocols]]
 name = "second"
 requires = ["a"]
 produces = ["b"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "b" }
 "#,
     )
     .unwrap();
@@ -626,13 +584,13 @@ schema = { type = "object", required = ["done"], properties = { done = { type = 
 name = "first"
 requires = ["b"]
 produces = ["a"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "b" }
 
 [[protocols]]
 name = "second"
 requires = ["a"]
 produces = ["b"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "b" }
 
 [[protocols]]
 name = "publish"
@@ -730,13 +688,13 @@ trigger = { type = "on_artifact", name = "seed" }
 name = "first"
 requires = ["b"]
 produces = ["a"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "b" }
 
 [[protocols]]
 name = "second"
 requires = ["a"]
 produces = ["b"]
-trigger = { type = "on_signal", name = "go" }
+trigger = { type = "on_change", name = "b" }
 "#,
     )
     .unwrap();

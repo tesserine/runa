@@ -36,20 +36,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // 3. Scan workspace.
     let scan_result = scan(&loaded.workspace_dir, &mut loaded.store)?;
 
-    // 4. Load signals.
-    let (active_signals, signal_warnings) = project::load_signals(&runa_dir);
-    for warning in &signal_warnings {
-        eprintln!("warning: {warning}");
-    }
-
-    // 5. Collect partially scanned types.
+    // 4. Collect partially scanned types.
     let partially_scanned: HashSet<String> = scan_result
         .partially_scanned_types
         .iter()
         .map(|p| p.artifact_type.clone())
         .collect();
 
-    // 6. Discover ready candidates.
+    // 5. Discover ready candidates.
     let topo_order = match loaded.graph.topological_order() {
         Ok(order) => order,
         Err(cycle) => {
@@ -63,12 +57,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let candidates = discover_ready_candidates(
         &loaded.manifest.protocols,
         &loaded.store,
-        &active_signals,
         &topo_refs,
         &partially_scanned,
     );
 
-    // 7. Select first viable candidate.
+    // 6. Select first viable candidate.
     let (candidate, protocol) = {
         let mut found = None;
         for c in &candidates {
@@ -109,7 +102,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         candidate.protocol_name, candidate.work_unit
     );
 
-    // 8. Build handler.
+    // 7. Build handler.
     let handler = RunaHandler::new(
         protocol.clone(),
         candidate.work_unit.clone(),
@@ -117,7 +110,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         loaded.workspace_dir.clone(),
     );
 
-    // 9. Serve via stdio transport.
+    // 8. Serve via stdio transport.
     let (stdin, stdout) = io::stdio();
     let service = handler
         .serve((stdin, stdout))
@@ -125,12 +118,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .inspect_err(|e| eprintln!("runa-mcp: server init failed: {e}"))?;
     service.waiting().await?;
 
-    // 10. Re-scan workspace with a fresh store.
+    // 9. Re-scan workspace with a fresh store.
     let store_dir = runa_dir.join(STORE_DIRNAME);
     let mut store = ArtifactStore::new(loaded.manifest.artifact_types.clone(), store_dir)?;
     let post_scan = scan(&loaded.workspace_dir, &mut store)?;
 
-    // 11. Check postconditions.
+    // 10. Check postconditions.
     let work_unit_ref = candidate.work_unit.as_deref();
     let output_type_names: HashSet<&str> = protocol
         .produces
@@ -162,6 +155,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // 12. Exit 0.
+    // 11. Exit 0.
     Ok(())
 }

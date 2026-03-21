@@ -47,15 +47,11 @@ pub fn run(
     json_output: bool,
 ) -> Result<(), StatusError> {
     let mut loaded = project::load(working_dir, config_override).map_err(StatusError::Project)?;
-    let (active_signals, signal_warnings) =
-        project::load_signals(&working_dir.join(project::RUNA_DIR));
     let scan_result =
         libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(StatusError::Scan)?;
     let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
-    let evaluated =
-        protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings, &active_signals);
-    let mut warnings = scan_findings.warnings.clone();
-    warnings.extend(signal_warnings);
+    let evaluated = protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings);
+    let warnings = scan_findings.warnings.clone();
 
     if json_output {
         let payload = StatusJson {
