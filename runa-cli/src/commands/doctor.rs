@@ -1,41 +1,12 @@
-use std::fmt;
 use std::path::Path;
 
-use libagent::{
-    ArtifactFailure, ScanError as StoreScanError, ValidationStatus, enforce_preconditions,
-};
+use libagent::{ArtifactFailure, ValidationStatus, enforce_preconditions};
 
-use crate::project::{self, ProjectError};
-
-#[derive(Debug)]
-pub enum DoctorError {
-    Project(ProjectError),
-    Scan(StoreScanError),
-}
-
-impl fmt::Display for DoctorError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DoctorError::Project(e) => write!(f, "{e}"),
-            DoctorError::Scan(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-impl std::error::Error for DoctorError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            DoctorError::Project(e) => Some(e),
-            DoctorError::Scan(e) => Some(e),
-        }
-    }
-}
+use super::CommandError;
 
 /// Run the doctor command. Returns `true` if healthy, `false` if problems found.
-pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, DoctorError> {
-    let mut loaded = project::load(working_dir, config_override).map_err(DoctorError::Project)?;
-    let scan_result =
-        libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(DoctorError::Scan)?;
+pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<bool, CommandError> {
+    let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
 
     let mut problems = 0;
 

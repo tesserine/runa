@@ -1,41 +1,11 @@
-use std::fmt;
 use std::path::Path;
 
-use libagent::{
-    InvalidArtifact, MalformedArtifact, PartiallyScannedType, ScanError as LibScanError,
-    UnreadableArtifact,
-};
+use libagent::{InvalidArtifact, MalformedArtifact, PartiallyScannedType, UnreadableArtifact};
 
-use crate::project::{self, ProjectError};
+use super::CommandError;
 
-#[derive(Debug)]
-pub enum ScanError {
-    Project(ProjectError),
-    Scan(LibScanError),
-}
-
-impl fmt::Display for ScanError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ScanError::Project(err) => write!(f, "{err}"),
-            ScanError::Scan(err) => write!(f, "{err}"),
-        }
-    }
-}
-
-impl std::error::Error for ScanError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            ScanError::Project(err) => Some(err),
-            ScanError::Scan(err) => Some(err),
-        }
-    }
-}
-
-pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), ScanError> {
-    let mut loaded = project::load(working_dir, config_override).map_err(ScanError::Project)?;
-    let result =
-        libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(ScanError::Scan)?;
+pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), CommandError> {
+    let (loaded, result) = super::load_and_scan(working_dir, config_override)?;
 
     println!("Methodology: {}", loaded.manifest.name);
     println!("Workspace: {}", loaded.workspace_dir.display());
