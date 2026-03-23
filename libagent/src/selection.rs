@@ -25,9 +25,7 @@ pub enum CandidateStatus {
         scan_incomplete_types: Vec<String>,
     },
     /// Trigger not satisfied, or outputs are already current.
-    Waiting {
-        unsatisfied_conditions: Vec<String>,
-    },
+    Waiting { unsatisfied_conditions: Vec<String> },
 }
 
 /// A (protocol, work_unit) pair with its classification and scan trust.
@@ -150,17 +148,19 @@ fn protocol_is_current(
         return false;
     }
 
-    if protocol
-        .produces
-        .iter()
-        .any(|artifact_type| partially_scanned_types.contains(artifact_type.as_str()))
-    {
+    if protocol.produces.iter().any(|artifact_type| {
+        store.scan_gap_affects_work_unit(artifact_type, work_unit)
+            || (partially_scanned_types.contains(artifact_type.as_str())
+                && !store.has_any_scan_gap_for_type(artifact_type))
+    }) {
         return false;
     }
 
     if protocol.may_produce.iter().any(|artifact_type| {
-        partially_scanned_types.contains(artifact_type.as_str())
-            && !store.instances_of(artifact_type, work_unit).is_empty()
+        !store.instances_of(artifact_type, work_unit).is_empty()
+            && (store.scan_gap_affects_work_unit(artifact_type, work_unit)
+                || (partially_scanned_types.contains(artifact_type.as_str())
+                    && !store.has_any_scan_gap_for_type(artifact_type)))
     }) {
         return false;
     }
@@ -444,7 +444,9 @@ fn has_visible_defect(store: &ArtifactStore, artifact_type: &str) -> bool {
         .any(|(_, state)| {
             matches!(
                 state.status,
-                ValidationStatus::Invalid(_) | ValidationStatus::Malformed(_) | ValidationStatus::Stale
+                ValidationStatus::Invalid(_)
+                    | ValidationStatus::Malformed(_)
+                    | ValidationStatus::Stale
             )
         })
 }
@@ -476,9 +478,7 @@ pub fn collect_unsatisfied_conditions(
                 } else {
                     conditions
                         .iter()
-                        .flat_map(|child| {
-                            collect_unsatisfied_conditions(child, protocol, context)
-                        })
+                        .flat_map(|child| collect_unsatisfied_conditions(child, protocol, context))
                         .collect()
                 }
             }
@@ -638,9 +638,11 @@ fn precondition_scan_incomplete_types(
     partially_scanned_types: &HashSet<String>,
 ) -> Vec<String> {
     let mut types = Vec::new();
-    for artifact_type in protocol.requires.iter().chain(protocol.produces.iter()) {
+    for artifact_type in &protocol.requires {
         if partially_scanned_types.contains(artifact_type.as_str())
-            && !types.iter().any(|existing: &String| existing == artifact_type)
+            && !types
+                .iter()
+                .any(|existing: &String| existing == artifact_type)
         {
             types.push(artifact_type.clone());
         }
@@ -863,12 +865,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -908,12 +906,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert!(candidates.is_empty());
     }
@@ -952,12 +946,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -1016,12 +1006,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -1074,12 +1060,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert!(candidates.is_empty());
     }
@@ -1118,12 +1100,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -1155,12 +1133,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
     }
@@ -1202,12 +1176,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         // Must NOT be suppressed: on_change was satisfied because input changed.
         assert_eq!(candidates.len(), 1);
@@ -1256,12 +1226,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
     }
@@ -1312,12 +1278,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         // Must be suppressed: on_change was NOT satisfied, prior outputs valid.
         assert!(candidates.is_empty());
@@ -1376,12 +1338,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         // Must be suppressed: the on_change is in an unsatisfied branch,
         // the trigger fires via on_artifact("constraints"), and postconditions pass.
@@ -1414,8 +1372,7 @@ mod tests {
             },
         );
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert!(candidates.is_empty());
     }
@@ -1448,8 +1405,7 @@ mod tests {
             },
         );
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["fix-lint"], &partial);
+        let candidates = discover_ready_candidates(&[protocol], &store, &["fix-lint"], &partial);
 
         assert!(candidates.is_empty());
     }
@@ -1505,8 +1461,7 @@ mod tests {
             },
         );
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
@@ -1538,8 +1493,7 @@ mod tests {
             },
         );
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -1578,8 +1532,12 @@ mod tests {
             TriggerCondition::OnChange { name: "doc".into() },
         );
 
-        let classified =
-            classify_candidates(&[protocol.clone()], &store, &["review"], &partial);
+        let classified = classify_candidates(
+            std::slice::from_ref(&protocol),
+            &store,
+            &["review"],
+            &partial,
+        );
 
         assert_eq!(classified.len(), 1);
         assert!(matches!(classified[0].status, CandidateStatus::Ready));
@@ -1591,6 +1549,83 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "review");
         assert_eq!(candidates[0].work_unit, None);
+    }
+
+    #[test]
+    fn partially_scanned_on_change_output_only_unsuppresses_matching_work_unit() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "reviewed"]);
+        store
+            .record_with_timestamp(
+                "doc",
+                "a",
+                Path::new("doc-a.json"),
+                &json!({"title": "Draft A", "work_unit": "wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "doc",
+                "b",
+                Path::new("doc-b.json"),
+                &json!({"title": "Draft B", "work_unit": "wu-b"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "reviewed",
+                "a",
+                Path::new("reviewed-a.json"),
+                &json!({"title": "Done A", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "reviewed",
+                "b",
+                Path::new("reviewed-b.json"),
+                &json!({"title": "Done B", "work_unit": "wu-b"}),
+                2000,
+            )
+            .unwrap();
+        store.mark_instance_scan_gap("reviewed", "a");
+
+        let partial = HashSet::from(["reviewed".to_string()]);
+        let protocol = make_protocol(
+            "review",
+            &[],
+            &[],
+            &["reviewed"],
+            &[],
+            TriggerCondition::OnChange { name: "doc".into() },
+        );
+
+        let classified = classify_candidates(
+            std::slice::from_ref(&protocol),
+            &store,
+            &["review"],
+            &partial,
+        );
+
+        assert_eq!(classified.len(), 2);
+        let wu_a = classified
+            .iter()
+            .find(|candidate| candidate.work_unit.as_deref() == Some("wu-a"))
+            .unwrap();
+        let wu_b = classified
+            .iter()
+            .find(|candidate| candidate.work_unit.as_deref() == Some("wu-b"))
+            .unwrap();
+
+        assert!(matches!(wu_a.status, CandidateStatus::Ready));
+        assert!(matches!(wu_b.status, CandidateStatus::Waiting { .. }));
+
+        let candidates = discover_ready_candidates(&[protocol], &store, &["review"], &partial);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
     }
 
     #[test]
@@ -1630,8 +1665,7 @@ mod tests {
             },
         );
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert!(candidates.is_empty());
     }
@@ -1680,8 +1714,7 @@ mod tests {
             },
         );
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -1735,12 +1768,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert!(candidates.is_empty());
     }
@@ -1776,12 +1805,8 @@ mod tests {
         ];
 
         // beta first in topological order.
-        let candidates = discover_ready_candidates(
-            &protocols,
-            &store,
-            &["beta", "alpha"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&protocols, &store, &["beta", "alpha"], &HashSet::new());
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].protocol_name, "beta");
@@ -1834,12 +1859,8 @@ mod tests {
             },
         );
 
-        let candidates = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -1872,8 +1893,7 @@ mod tests {
             },
         );
 
-        let classified =
-            classify_candidates(&[protocol], &store, &["implement"], &HashSet::new());
+        let classified = classify_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(classified.len(), 1);
         assert_eq!(classified[0].protocol_name, "implement");
@@ -1899,8 +1919,7 @@ mod tests {
             },
         );
 
-        let classified =
-            classify_candidates(&[protocol], &store, &["ground"], &HashSet::new());
+        let classified = classify_candidates(&[protocol], &store, &["ground"], &HashSet::new());
 
         assert_eq!(classified.len(), 1);
         assert!(matches!(
@@ -1941,12 +1960,7 @@ mod tests {
             },
         );
 
-        let classified = classify_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let classified = classify_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(classified.len(), 1);
         assert!(matches!(
@@ -1999,12 +2013,7 @@ mod tests {
             },
         );
 
-        let classified = classify_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let classified = classify_candidates(&[protocol], &store, &["implement"], &HashSet::new());
 
         assert_eq!(classified.len(), 1);
         assert!(matches!(
@@ -2046,8 +2055,7 @@ mod tests {
             },
         );
 
-        let classified =
-            classify_candidates(&[protocol], &store, &["implement"], &partial);
+        let classified = classify_candidates(&[protocol], &store, &["implement"], &partial);
 
         assert_eq!(classified.len(), 1);
         assert!(matches!(
@@ -2106,7 +2114,7 @@ mod tests {
         );
 
         let classified = classify_candidates(
-            &[protocol.clone()],
+            std::slice::from_ref(&protocol),
             &store,
             &["implement"],
             &HashSet::new(),
@@ -2117,12 +2125,8 @@ mod tests {
             .map(|c| (c.protocol_name.clone(), c.work_unit.clone()))
             .collect();
 
-        let ready_from_discover = discover_ready_candidates(
-            &[protocol],
-            &store,
-            &["implement"],
-            &HashSet::new(),
-        );
+        let ready_from_discover =
+            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
         let ready_from_discover: Vec<_> = ready_from_discover
             .iter()
             .map(|c| (c.protocol_name.clone(), c.work_unit.clone()))

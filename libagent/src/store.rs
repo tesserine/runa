@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,6 +16,10 @@ pub struct ArtifactStore {
     artifact_types: HashMap<String, ArtifactType>,
     artifacts: HashMap<(String, String), ArtifactState>,
     store_dir: PathBuf,
+    // Populated by scan() for the current process only. These observations are
+    // about scan completeness, not persisted artifact state.
+    type_level_scan_gaps: HashSet<String>,
+    instance_level_scan_gaps: HashSet<(String, String)>,
 }
 
 /// The recorded state of a single artifact instance.
@@ -192,6 +196,8 @@ impl ArtifactStore {
             artifact_types: type_map,
             artifacts,
             store_dir,
+            type_level_scan_gaps: HashSet::new(),
+            instance_level_scan_gaps: HashSet::new(),
         })
     }
 
@@ -376,6 +382,54 @@ impl ArtifactStore {
             })
             .map(|(_, state)| state.last_modified_ms)
             .max()
+    }
+
+    pub(crate) fn clear_scan_gaps(&mut self) {
+        self.type_level_scan_gaps.clear();
+        self.instance_level_scan_gaps.clear();
+    }
+
+    pub(crate) fn mark_type_scan_gap(&mut self, artifact_type: &str) {
+        self.type_level_scan_gaps.insert(artifact_type.to_string());
+    }
+
+    pub(crate) fn mark_instance_scan_gap(&mut self, artifact_type: &str, instance_id: &str) {
+        self.instance_level_scan_gaps
+            .insert((artifact_type.to_string(), instance_id.to_string()));
+    }
+
+    pub(crate) fn has_any_scan_gap_for_type(&self, artifact_type: &str) -> bool {
+        self.type_level_scan_gaps.contains(artifact_type)
+            || self
+                .instance_level_scan_gaps
+                .iter()
+                .any(|(gap_type, _)| gap_type == artifact_type)
+    }
+
+    pub(crate) fn scan_gap_affects_work_unit(
+        &self,
+        artifact_type: &str,
+        work_unit: Option<&str>,
+    ) -> bool {
+        if self.type_level_scan_gaps.contains(artifact_type) {
+            return true;
+        }
+
+        match work_unit {
+            None => self
+                .instance_level_scan_gaps
+                .iter()
+                .any(|(gap_type, _)| gap_type == artifact_type),
+            Some(work_unit) => self
+                .instance_level_scan_gaps
+                .iter()
+                .any(|(gap_type, gap_id)| {
+                    gap_type == artifact_type
+                        && self.get(artifact_type, gap_id).is_some_and(|state| {
+                            matches_work_unit_filter(&state.work_unit, Some(work_unit))
+                        })
+                }),
+        }
     }
 
     /// Look up a registered artifact type by name.

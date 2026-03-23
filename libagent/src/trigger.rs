@@ -140,11 +140,11 @@ pub(crate) fn derived_completion_timestamp(
         return None;
     }
 
-    if protocol
-        .produces
-        .iter()
-        .any(|artifact_type| partially_scanned_types.contains(artifact_type.as_str()))
-    {
+    if protocol.produces.iter().any(|artifact_type| {
+        store.scan_gap_affects_work_unit(artifact_type, work_unit)
+            || (partially_scanned_types.contains(artifact_type.as_str())
+                && !store.has_any_scan_gap_for_type(artifact_type))
+    }) {
         return None;
     }
 
@@ -595,6 +595,49 @@ mod tests {
         assert_eq!(
             derived_completion_timestamp(&protocol, &store, None, &partial),
             None
+        );
+    }
+
+    #[test]
+    fn derived_completion_timestamp_scopes_instance_scan_gaps_by_work_unit() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["implementation"]);
+        store
+            .record_with_timestamp(
+                "implementation",
+                "a",
+                Path::new("impl-a.json"),
+                &json!({"title": "done-a", "work_unit": "wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "implementation",
+                "b",
+                Path::new("impl-b.json"),
+                &json!({"title": "done-b", "work_unit": "wu-b"}),
+                2000,
+            )
+            .unwrap();
+        store.mark_instance_scan_gap("implementation", "a");
+
+        let partial = HashSet::from(["implementation".to_string()]);
+        let protocol = make_protocol(
+            TriggerCondition::OnChange {
+                name: "unused".into(),
+            },
+            &["implementation"],
+            &[],
+        );
+
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, Some("wu-a"), &partial),
+            None
+        );
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, Some("wu-b"), &partial),
+            Some(2000)
         );
     }
 
