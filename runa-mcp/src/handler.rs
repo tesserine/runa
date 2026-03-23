@@ -7,6 +7,7 @@ use rmcp::ServerHandler;
 use rmcp::model::*;
 use rmcp::service::{RequestContext, RoleServer};
 use serde_json::Value;
+use tracing::{info, warn};
 
 use libagent::context::build_context;
 use libagent::validation::validate_artifact;
@@ -46,10 +47,11 @@ impl RunaHandler {
                     && let Some(at) = store.artifact_type(type_name)
                     && schema_requires_work_unit(&at.schema)
                 {
-                    eprintln!(
-                        "runa-mcp: skipping may_produce type '{}': schema requires \
-                         'work_unit' but handler has no work_unit",
-                        type_name,
+                    warn!(
+                        operation = "tool_generation",
+                        outcome = "skipped_requires_work_unit",
+                        artifact_type = %type_name,
+                        "skipping may_produce type because handler has no work_unit"
                     );
                     return false;
                 }
@@ -66,11 +68,12 @@ impl RunaHandler {
             // assume object root with properties/required.
             let root_type = at.schema.get("type").and_then(|t| t.as_str());
             if root_type != Some("object") {
-                eprintln!(
-                    "runa-mcp: skipping artifact type '{}': non-object schema root type '{}' \
-                     is not supported for MCP tool generation",
-                    type_name,
-                    root_type.unwrap_or("<missing>"),
+                warn!(
+                    operation = "tool_generation",
+                    outcome = "skipped_non_object_schema",
+                    artifact_type = %type_name,
+                    schema_root_type = %root_type.unwrap_or("<missing>"),
+                    "skipping artifact type with unsupported schema root"
                 );
                 continue;
             }
@@ -78,11 +81,11 @@ impl RunaHandler {
             // Reject composed schemas: composition keywords prevent reliable
             // work_unit stripping and injection.
             if has_composition_keywords(&at.schema) {
-                eprintln!(
-                    "runa-mcp: skipping artifact type '{}': schema uses composition keywords \
-                     (allOf/anyOf/oneOf/$ref); composed schemas are not supported \
-                     for MCP tool generation",
-                    type_name,
+                warn!(
+                    operation = "tool_generation",
+                    outcome = "skipped_composed_schema",
+                    artifact_type = %type_name,
+                    "skipping artifact type with composed schema"
                 );
                 continue;
             }
@@ -375,6 +378,15 @@ impl ServerHandler for RunaHandler {
             .store
             .record(tool_name, &instance_id, &artifact_path, &data)
             .map_err(|e| McpError::internal_error(format!("store error: {e}"), None))?;
+
+        info!(
+            operation = "tool_call",
+            outcome = "artifact_written",
+            artifact_type = %tool_name,
+            instance_id = %instance_id,
+            work_unit = ?self.work_unit,
+            "artifact written to workspace"
+        );
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Produced {tool_name}/{instance_id}.json"

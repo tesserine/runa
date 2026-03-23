@@ -14,9 +14,27 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for workspace structure, data flow, modul
 runa init --methodology path/to/manifest.toml [--artifacts-dir path/to/workspace]
 ```
 
-Parses the methodology manifest, validates its structure, and creates a `.runa/` directory with `config.toml` (operator configuration: methodology path, optional artifact workspace directory), `state.toml` (runtime state: initialization timestamp, runa version), `.runa/workspace/` (default artifact workspace), and `.runa/store/` (internal artifact state store). Reports the artifact type and protocol counts on success.
+Parses the methodology manifest, validates its structure, and creates a `.runa/` directory with `config.toml` (operator configuration: methodology path, optional artifact workspace directory, optional logging settings), `state.toml` (runtime state: initialization timestamp, runa version), `.runa/workspace/` (default artifact workspace), and `.runa/store/` (internal artifact state store). Reports the artifact type and protocol counts on success.
 
 Commands that load a project manifest support `--config <PATH>` to override the config file location. The `RUNA_CONFIG` env var serves the same purpose. For `init`, `--config` controls where the config file is written; for manifest-loading commands, it controls where the config file is read from.
+
+## Logging
+
+Runtime diagnostics use `tracing` on stderr. Command output remains on stdout.
+
+- Default logging is quiet on successful runs (`warn` and above, human-readable text)
+- `RUST_LOG` overrides the active filter for both `runa` and `runa-mcp`
+- `config.toml` can provide logging defaults when `RUST_LOG` is unset
+
+Optional config snippet:
+
+```toml
+[logging]
+format = "json"   # "text" (default) or "json"
+filter = "info"   # any tracing env-filter directive
+```
+
+`format = "json"` switches stderr events to machine-readable JSON. This does not change stdout command output.
 
 ```bash
 runa list
@@ -72,6 +90,7 @@ When the session ends, the server re-scans the workspace and checks postconditio
 Environment variables:
 - `RUNA_WORKING_DIR` — Project directory (defaults to current directory)
 - `RUNA_CONFIG` — Config file override (same as `--config` in the CLI)
+- `RUST_LOG` — Tracing filter override for stderr diagnostics
 
 ## Build
 

@@ -35,6 +35,12 @@ fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) 
     );
 }
 
+fn append_logging_config(project_dir: &std::path::Path, logging_toml: &str) {
+    let config_path = project_dir.join(".runa/config.toml");
+    let existing = fs::read_to_string(&config_path).unwrap();
+    fs::write(config_path, format!("{existing}\n{logging_toml}")).unwrap();
+}
+
 #[test]
 fn scan_formats_output_and_succeeds_with_findings() {
     let dir = tempfile::tempdir().unwrap();
@@ -88,6 +94,38 @@ fn scan_formats_output_and_succeeds_with_findings() {
     assert!(
         stdout.contains("Unrecognized directories:"),
         "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn scan_keeps_stderr_quiet_by_default_on_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(workspace.join("constraints/good.json"), r#"{"title":"ok"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -226,4 +264,128 @@ fn scan_reports_partially_scanned_types_and_suppresses_removals() {
     );
     assert!(!stdout.contains("Removed:"), "stdout: {stdout}");
     assert!(store_dir.join("kept.json").exists());
+}
+
+#[test]
+fn scan_emits_human_readable_logs_when_info_filter_is_configured() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    append_logging_config(
+        &project_dir,
+        r#"[logging]
+filter = "info"
+"#,
+    );
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(workspace.join("constraints/good.json"), r#"{"title":"ok"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("scan"), "stderr: {stderr}");
+    assert!(stderr.contains("INFO"), "stderr: {stderr}");
+    assert!(stderr.contains("operation=\"scan\""), "stderr: {stderr}");
+    assert!(stderr.contains("outcome=\"completed\""), "stderr: {stderr}");
+}
+
+#[test]
+fn scan_emits_json_logs_when_json_format_is_configured() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    append_logging_config(
+        &project_dir,
+        r#"[logging]
+format = "json"
+filter = "info"
+"#,
+    );
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(workspace.join("constraints/good.json"), r#"{"title":"ok"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let event: serde_json::Value = serde_json::from_str(stderr.trim()).unwrap();
+    assert_eq!(event["level"], "INFO");
+    assert_eq!(event["fields"]["operation"], "scan");
+    assert_eq!(event["fields"]["outcome"], "completed");
+}
+
+#[test]
+fn scan_logs_errors_with_env_defaults_when_config_is_missing() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let output = runa_bin()
+        .arg("scan")
+        .env("RUST_LOG", "error")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("ERROR"), "stderr: {stderr}");
+    assert!(stderr.contains("command=\"scan\""), "stderr: {stderr}");
+    assert!(stderr.contains("no config found"), "stderr: {stderr}");
+}
+
+#[test]
+fn scan_logs_errors_with_env_defaults_when_config_is_malformed() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    fs::create_dir(project_dir.join(".runa")).unwrap();
+    fs::write(project_dir.join(".runa/config.toml"), "{ not toml").unwrap();
+
+    let output = runa_bin()
+        .arg("scan")
+        .env("RUST_LOG", "error")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("ERROR"), "stderr: {stderr}");
+    assert!(stderr.contains("command=\"scan\""), "stderr: {stderr}");
+    assert!(
+        stderr.contains("failed to parse config"),
+        "stderr: {stderr}"
+    );
 }

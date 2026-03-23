@@ -170,7 +170,12 @@ impl ArtifactStore {
             let type_name = type_entry.file_name().to_string_lossy().into_owned();
 
             if !type_map.contains_key(&type_name) {
-                eprintln!("warning: skipping unknown artifact type '{type_name}' in store");
+                tracing::warn!(
+                    operation = "store_load",
+                    outcome = "skipped_unknown_artifact_type",
+                    artifact_type = %type_name,
+                    "skipping unknown artifact type in store"
+                );
                 continue;
             }
 
