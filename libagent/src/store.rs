@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -213,7 +212,13 @@ impl ArtifactStore {
         path: &Path,
         data: &Value,
     ) -> Result<(), StoreError> {
-        self.record_with_timestamp(artifact_type, instance_id, path, data, current_time_ms())
+        self.record_with_timestamp(
+            artifact_type,
+            instance_id,
+            path,
+            data,
+            crate::util::current_time_ms(),
+        )
     }
 
     /// Record a malformed artifact file using a raw-byte content hash.
@@ -231,7 +236,7 @@ impl ArtifactStore {
             path,
             raw_bytes,
             error,
-            current_time_ms(),
+            crate::util::current_time_ms(),
             None,
         )
     }
@@ -542,13 +547,6 @@ impl ArtifactStore {
         std::fs::rename(&tmp_path, &file_path).map_err(StoreError::Io)?;
         Ok(())
     }
-}
-
-fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before UNIX epoch")
-        .as_millis() as u64
 }
 
 #[cfg(test)]

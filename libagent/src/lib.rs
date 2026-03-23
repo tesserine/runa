@@ -27,6 +27,7 @@ pub mod store;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 pub mod trigger;
+pub(crate) mod util;
 pub mod validation;
 pub use enforcement::{
     ArtifactFailure, EnforcementError, Phase, Relationship, enforce_postconditions,
