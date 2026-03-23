@@ -46,9 +46,17 @@ pub struct ResolvedLoggingConfig {
 }
 
 pub fn resolve_logging_config(config: Option<&LoggingConfig>) -> ResolvedLoggingConfig {
-    let filter = std::env::var("RUST_LOG")
-        .ok()
+    let env_filter = std::env::var("RUST_LOG").ok();
+    resolve_logging_config_with_env(env_filter.as_deref(), config)
+}
+
+pub(crate) fn resolve_logging_config_with_env(
+    env_filter: Option<&str>,
+    config: Option<&LoggingConfig>,
+) -> ResolvedLoggingConfig {
+    let filter = env_filter
         .filter(|value| !value.is_empty())
+        .map(String::from)
         .or_else(|| config.and_then(|logging| logging.filter.clone()))
         .unwrap_or_else(|| DEFAULT_FILTER.to_string());
 
@@ -115,7 +123,7 @@ impl TracingHandle {
             .reload(build_filter(&resolved.filter))
             .map_err(|err| LoggingError::Reload(err.to_string()))?;
         self.format
-            .store(format_code(resolved.format), Ordering::Relaxed);
+            .store(format_code(resolved.format), Ordering::Release);
         Ok(())
     }
 }
@@ -139,7 +147,7 @@ impl<'a> MakeWriter<'a> for ActiveFormatWriter {
     type Writer = Box<dyn Write + Send + 'a>;
 
     fn make_writer(&'a self) -> Self::Writer {
-        if self.format.load(Ordering::Relaxed) == format_code(self.active_format) {
+        if self.format.load(Ordering::Acquire) == format_code(self.active_format) {
             Box::new(io::stderr())
         } else {
             Box::new(NullWriter)
@@ -160,7 +168,15 @@ impl Write for NullWriter {
 }
 
 fn build_filter(spec: &str) -> EnvFilter {
-    EnvFilter::try_new(spec).unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER))
+    EnvFilter::try_new(spec).unwrap_or_else(|err| {
+        tracing::warn!(
+            spec = spec,
+            error = %err,
+            fallback = DEFAULT_FILTER,
+            "configured log filter is invalid, falling back to default"
+        );
+        EnvFilter::new(DEFAULT_FILTER)
+    })
 }
 
 fn format_code(format: LogFormat) -> u8 {
@@ -178,11 +194,7 @@ mod tests {
 
     #[test]
     fn resolve_logging_config_defaults_to_warn_text() {
-        unsafe {
-            std::env::remove_var("RUST_LOG");
-        }
-
-        let resolved = resolve_logging_config(None);
+        let resolved = resolve_logging_config_with_env(None, None);
 
         assert_eq!(resolved.format, LogFormat::Text);
         assert_eq!(resolved.filter, "warn");
@@ -190,20 +202,38 @@ mod tests {
 
     #[test]
     fn resolve_logging_config_prefers_env_over_config_filter() {
-        unsafe {
-            std::env::set_var("RUST_LOG", "error");
-        }
         let config = LoggingConfig {
             format: LogFormat::Json,
             filter: Some("info".to_string()),
         };
 
-        let resolved = resolve_logging_config(Some(&config));
+        let resolved = resolve_logging_config_with_env(Some("error"), Some(&config));
 
         assert_eq!(resolved.format, LogFormat::Json);
         assert_eq!(resolved.filter, "error");
-        unsafe {
-            std::env::remove_var("RUST_LOG");
-        }
+    }
+
+    #[test]
+    fn resolve_logging_config_ignores_empty_env_filter() {
+        let config = LoggingConfig {
+            format: LogFormat::Text,
+            filter: Some("debug".to_string()),
+        };
+
+        let resolved = resolve_logging_config_with_env(Some(""), Some(&config));
+
+        assert_eq!(resolved.filter, "debug");
+    }
+
+    #[test]
+    fn resolve_logging_config_uses_config_filter_when_env_absent() {
+        let config = LoggingConfig {
+            format: LogFormat::Text,
+            filter: Some("trace".to_string()),
+        };
+
+        let resolved = resolve_logging_config_with_env(None, Some(&config));
+
+        assert_eq!(resolved.filter, "trace");
     }
 }
