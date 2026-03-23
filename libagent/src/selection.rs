@@ -1555,11 +1555,21 @@ mod tests {
     fn partially_scanned_on_change_output_only_unsuppresses_matching_work_unit() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["doc", "reviewed"]);
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let doc_a = workspace.join("doc-a.json");
+        let doc_b = workspace.join("doc-b.json");
+        let reviewed_a = workspace.join("reviewed-a.json");
+        let reviewed_b = workspace.join("reviewed-b.json");
+        std::fs::write(&doc_a, r#"{"title":"Draft A","work_unit":"wu-a"}"#).unwrap();
+        std::fs::write(&doc_b, r#"{"title":"Draft B","work_unit":"wu-b"}"#).unwrap();
+        std::fs::write(&reviewed_a, r#"{"title":"Done A","work_unit":"wu-a"}"#).unwrap();
+        std::fs::write(&reviewed_b, r#"{"title":"Done B","work_unit":"wu-b"}"#).unwrap();
         store
             .record_with_timestamp(
                 "doc",
                 "a",
-                Path::new("doc-a.json"),
+                &doc_a,
                 &json!({"title": "Draft A", "work_unit": "wu-a"}),
                 1000,
             )
@@ -1568,7 +1578,7 @@ mod tests {
             .record_with_timestamp(
                 "doc",
                 "b",
-                Path::new("doc-b.json"),
+                &doc_b,
                 &json!({"title": "Draft B", "work_unit": "wu-b"}),
                 1000,
             )
@@ -1577,7 +1587,7 @@ mod tests {
             .record_with_timestamp(
                 "reviewed",
                 "a",
-                Path::new("reviewed-a.json"),
+                &reviewed_a,
                 &json!({"title": "Done A", "work_unit": "wu-a"}),
                 2000,
             )
@@ -1586,12 +1596,13 @@ mod tests {
             .record_with_timestamp(
                 "reviewed",
                 "b",
-                Path::new("reviewed-b.json"),
+                &reviewed_b,
                 &json!({"title": "Done B", "work_unit": "wu-b"}),
                 2000,
             )
             .unwrap();
-        store.mark_instance_scan_gap("reviewed", "a");
+        let observed_mtime = store.get("reviewed", "a").unwrap().source_last_modified_ms;
+        store.mark_instance_scan_gap("reviewed", "a", observed_mtime);
 
         let partial = HashSet::from(["reviewed".to_string()]);
         let protocol = make_protocol(
