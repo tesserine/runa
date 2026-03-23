@@ -427,17 +427,8 @@ fn on_change_trigger_eval(
         trusted = false;
         scan_types.push(input_type.to_string());
     }
-
-    let affected_outputs: Vec<String> = protocol
-        .produces
-        .iter()
-        .filter(|artifact_type| affected_types.contains(artifact_type.as_str()))
-        .cloned()
-        .collect();
-    if !affected_outputs.is_empty() {
-        trusted = false;
-        append_unique(&mut scan_types, affected_outputs);
-    }
+    // Partially scanned outputs only make freshness suppression untrustworthy.
+    // They must not make the trigger itself untrustworthy or block reruns.
 
     TriggerEvaluation {
         satisfied,
@@ -1553,6 +1544,53 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
         assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+    }
+
+    #[test]
+    fn partially_scanned_on_change_output_stays_ready() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc", "reviewed"]);
+        store
+            .record(
+                "doc",
+                "draft",
+                Path::new("draft.json"),
+                &json!({"title": "Draft"}),
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "reviewed",
+                "done",
+                Path::new("done.json"),
+                &json!({"title": "Done"}),
+                2000,
+            )
+            .unwrap();
+
+        let partial = HashSet::from(["reviewed".to_string()]);
+        let protocol = make_protocol(
+            "review",
+            &[],
+            &[],
+            &["reviewed"],
+            &[],
+            TriggerCondition::OnChange { name: "doc".into() },
+        );
+
+        let classified =
+            classify_candidates(&[protocol.clone()], &store, &["review"], &partial);
+
+        assert_eq!(classified.len(), 1);
+        assert!(matches!(classified[0].status, CandidateStatus::Ready));
+        assert!(classified[0].trigger_satisfied);
+        assert!(classified[0].scan_trust.trusted);
+        assert!(classified[0].scan_trust.incomplete_types.is_empty());
+
+        let candidates = discover_ready_candidates(&[protocol], &store, &["review"], &partial);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "review");
+        assert_eq!(candidates[0].work_unit, None);
     }
 
     #[test]
