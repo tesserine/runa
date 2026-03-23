@@ -330,9 +330,7 @@ mod tests {
             accepts: accepts.iter().map(|s| s.to_string()).collect(),
             produces: produces.iter().map(|s| s.to_string()).collect(),
             may_produce: may_produce.iter().map(|s| s.to_string()).collect(),
-            trigger: TriggerCondition::OnChange {
-                name: name.into(),
-            },
+            trigger: TriggerCondition::OnChange { name: name.into() },
         }
     }
 

@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
@@ -117,7 +116,7 @@ struct TypeScanState {
 }
 
 pub fn scan(workspace_dir: &Path, store: &mut ArtifactStore) -> Result<ScanResult, ScanError> {
-    let scan_timestamp_ms = current_time_ms();
+    let scan_timestamp_ms = crate::util::current_time_ms();
     let known_types: HashSet<String> = store
         .artifact_type_names()
         .into_iter()
@@ -504,13 +503,6 @@ fn classify_disposition(
     }
 }
 
-fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before UNIX epoch")
-        .as_millis() as u64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -810,6 +802,13 @@ mod tests {
         write_file(&unreadable_path, r#"{"title":"ok"}"#);
         std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o0)).unwrap();
 
+        // Root ignores file permissions, so the unreadable simulation won't work.
+        if std::fs::read(&unreadable_path).is_ok() {
+            std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+            return;
+        }
+
         let store_dir = tmp.path().join("store");
         let mut store = make_store(&store_dir, vec!["report"]);
         store
@@ -850,6 +849,13 @@ mod tests {
         let unreadable_path = workspace.join("report/item.json");
         write_file(&unreadable_path, r#"{"title":"ok"}"#);
         std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o0)).unwrap();
+
+        // Root ignores file permissions, so the unreadable simulation won't work.
+        if std::fs::read(&unreadable_path).is_ok() {
+            std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+            return;
+        }
 
         let store_dir = tmp.path().join("store");
         let mut store = make_store(&store_dir, vec!["report"]);
