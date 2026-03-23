@@ -92,7 +92,7 @@ impl RunaHandler {
 
             tools.push(Tool::new(
                 (*type_name).clone(),
-                format!("Produce a {type_name} artifact"),
+                format!("Validate and write a {type_name} artifact to the workspace"),
                 Arc::new(schema_obj),
             ));
             tool_schemas.insert((*type_name).clone(), at.schema.clone());
