@@ -19,7 +19,7 @@ pub fn render_context_prompt(context: &ContextInjection) -> GetPromptResult {
         .filter(|i| i.relationship == ArtifactRelationship::Requires)
         .collect();
     if !required.is_empty() {
-        sections.push("\n## Required Inputs".to_string());
+        sections.push("\n## What you've been given".to_string());
         for input in required {
             sections.push(render_input(input));
         }
@@ -32,14 +32,14 @@ pub fn render_context_prompt(context: &ContextInjection) -> GetPromptResult {
         .filter(|i| i.relationship == ArtifactRelationship::Accepts)
         .collect();
     if !available.is_empty() {
-        sections.push("\n## Available Inputs".to_string());
+        sections.push("\n## Additional context".to_string());
         for input in available {
             sections.push(render_input(input));
         }
     }
 
-    // Expected Outputs
-    sections.push("\n## Expected Outputs".to_string());
+    // Delivery instructions
+    sections.push("\n## What you need to deliver".to_string());
     if !context.expected_outputs.produces.is_empty() {
         let list = context.expected_outputs.produces.join(", ");
         sections.push(format!("\nYou must produce: {list}"));
@@ -48,6 +48,11 @@ pub fn render_context_prompt(context: &ContextInjection) -> GetPromptResult {
         let list = context.expected_outputs.may_produce.join(", ");
         sections.push(format!("You may also produce: {list}"));
     }
+    sections.push(
+        "\nTo deliver each output, call the tool with the matching name \
+         and fill in the required fields."
+            .to_string(),
+    );
 
     let text = sections.join("\n");
 
