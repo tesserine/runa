@@ -30,14 +30,7 @@ impl fmt::Display for LoggingError {
     }
 }
 
-impl std::error::Error for LoggingError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            LoggingError::SetGlobalDefault(_) => None,
-            LoggingError::Reload(_) => None,
-        }
-    }
-}
+impl std::error::Error for LoggingError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedLoggingConfig {

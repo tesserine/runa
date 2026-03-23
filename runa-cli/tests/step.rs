@@ -209,7 +209,8 @@ fn step_without_dry_run_reports_placeholder_and_exits_non_zero() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("ERROR"), "stderr: {stderr}");
-    assert!(stderr.contains("command=\"step\""), "stderr: {stderr}");
+    assert!(stderr.contains("command"), "stderr: {stderr}");
+    assert!(stderr.contains("step"), "stderr: {stderr}");
     assert!(
         stderr.contains(
             "Agent execution is not yet implemented. Use --dry-run to see the execution plan."

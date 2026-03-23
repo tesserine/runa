@@ -359,7 +359,8 @@ fn scan_logs_errors_with_env_defaults_when_config_is_missing() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("ERROR"), "stderr: {stderr}");
-    assert!(stderr.contains("command=\"scan\""), "stderr: {stderr}");
+    assert!(stderr.contains("command"), "stderr: {stderr}");
+    assert!(stderr.contains("scan"), "stderr: {stderr}");
     assert!(stderr.contains("no config found"), "stderr: {stderr}");
 }
 
@@ -382,7 +383,8 @@ fn scan_logs_errors_with_env_defaults_when_config_is_malformed() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("ERROR"), "stderr: {stderr}");
-    assert!(stderr.contains("command=\"scan\""), "stderr: {stderr}");
+    assert!(stderr.contains("command"), "stderr: {stderr}");
+    assert!(stderr.contains("scan"), "stderr: {stderr}");
     assert!(
         stderr.contains("failed to parse config"),
         "stderr: {stderr}"

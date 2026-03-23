@@ -6,7 +6,7 @@ use std::process;
 use std::{io, io::Write};
 
 use clap::{Parser, Subcommand};
-use tracing::{error, info};
+use tracing::error;
 
 #[derive(Parser)]
 #[command(name = "runa", version)]
@@ -110,12 +110,6 @@ fn main() {
                 config_override_ref,
             ) {
                 Ok(summary) => {
-                    info!(
-                        operation = "command",
-                        command = "init",
-                        outcome = "completed",
-                        "command completed"
-                    );
                     println!(
                         "Initialized runa project with methodology '{}'",
                         summary.methodology_name

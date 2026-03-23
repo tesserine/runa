@@ -122,14 +122,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         match found {
             Some(pair) => pair,
-            None => {
-                warn!(
-                    operation = "candidate_selection",
-                    outcome = "no_viable_candidates",
-                    "no viable protocol candidates found"
-                );
-                process::exit(1);
-            }
+            None => return Err("no viable protocol candidates found".into()),
         }
     };
 
