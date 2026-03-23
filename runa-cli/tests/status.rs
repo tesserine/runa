@@ -1476,7 +1476,7 @@ trigger = { type = "on_change", name = "doc" }
 
 #[cfg(unix)]
 #[test]
-fn status_limits_partial_output_reruns_to_the_matching_work_unit() {
+fn status_unscopes_partial_output_reruns_across_all_work_units() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1580,19 +1580,10 @@ trigger = { type = "on_change", name = "doc" }
         .collect();
 
     assert_eq!(reviews.len(), 2, "{value:#}");
-    let ready = reviews
-        .iter()
-        .find(|protocol| protocol["status"] == "ready")
-        .unwrap();
-    let waiting = reviews
-        .iter()
-        .find(|protocol| protocol["status"] == "waiting")
-        .unwrap();
-
-    assert_eq!(ready["work_unit"], "wu-a");
-    assert_eq!(ready["trigger"], "satisfied");
-    assert_eq!(waiting["work_unit"], "wu-b");
-    assert_eq!(waiting["trigger"], "not_satisfied");
+    assert!(
+        reviews.iter().all(|protocol| protocol["status"] == "ready"),
+        "{value:#}"
+    );
 }
 
 #[cfg(unix)]

@@ -219,10 +219,9 @@ pub(crate) fn evaluate_protocols(
                     .collect();
                 for f in &precondition_failures {
                     let fe = failure_entry(f);
-                    if !failures
-                        .iter()
-                        .any(|existing| existing.artifact_type == fe.artifact_type && existing.reason == fe.reason)
-                    {
+                    if !failures.iter().any(|existing| {
+                        existing.artifact_type == fe.artifact_type && existing.reason == fe.reason
+                    }) {
                         failures.push(fe);
                     }
                 }

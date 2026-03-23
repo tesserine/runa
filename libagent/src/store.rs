@@ -19,7 +19,7 @@ pub struct ArtifactStore {
     // Populated by scan() for the current process only. These observations are
     // about scan completeness, not persisted artifact state.
     type_level_scan_gaps: HashSet<String>,
-    instance_level_scan_gaps: HashMap<(String, String), InstanceScanGap>,
+    instance_level_scan_gaps: HashSet<(String, String)>,
 }
 
 /// The recorded state of a single artifact instance.
@@ -36,17 +36,9 @@ pub struct ArtifactState {
     /// Schema hash in the format `"sha256:<hex>"`.
     #[serde(default)]
     pub schema_hash: String,
-    /// Filesystem mtime of the source file when it was last read successfully.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_last_modified_ms: Option<u64>,
     /// Work unit this artifact belongs to, extracted from artifact JSON at record time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_unit: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct InstanceScanGap {
-    source_last_modified_ms: Option<u64>,
 }
 
 /// Validation status of an artifact instance.
@@ -151,11 +143,6 @@ pub(crate) fn raw_content_hash(bytes: &[u8]) -> String {
     format!("sha256:{result:x}")
 }
 
-pub(crate) fn file_modified_ms(path: &Path) -> Option<u64> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    Some(modified.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64)
-}
-
 fn matches_work_unit_filter(state_wu: &Option<String>, filter: Option<&str>) -> bool {
     match filter {
         None => true,
@@ -210,7 +197,7 @@ impl ArtifactStore {
             artifacts,
             store_dir,
             type_level_scan_gaps: HashSet::new(),
-            instance_level_scan_gaps: HashMap::new(),
+            instance_level_scan_gaps: HashSet::new(),
         })
     }
 
@@ -324,7 +311,6 @@ impl ArtifactStore {
 
         let mut updated = existing;
         updated.path = path.to_path_buf();
-        updated.source_last_modified_ms = file_modified_ms(path);
         self.persist(artifact_type, instance_id, &updated)?;
         self.artifacts.insert(key, updated);
         Ok(())
@@ -407,18 +393,9 @@ impl ArtifactStore {
         self.type_level_scan_gaps.insert(artifact_type.to_string());
     }
 
-    pub(crate) fn mark_instance_scan_gap(
-        &mut self,
-        artifact_type: &str,
-        instance_id: &str,
-        source_last_modified_ms: Option<u64>,
-    ) {
-        self.instance_level_scan_gaps.insert(
-            (artifact_type.to_string(), instance_id.to_string()),
-            InstanceScanGap {
-                source_last_modified_ms,
-            },
-        );
+    pub(crate) fn mark_instance_scan_gap(&mut self, artifact_type: &str, instance_id: &str) {
+        self.instance_level_scan_gaps
+            .insert((artifact_type.to_string(), instance_id.to_string()));
     }
 
     pub(crate) fn has_any_scan_gap_for_type(&self, artifact_type: &str) -> bool {
@@ -426,48 +403,19 @@ impl ArtifactStore {
             || self
                 .instance_level_scan_gaps
                 .iter()
-                .any(|((gap_type, _), _)| gap_type == artifact_type)
+                .any(|(gap_type, _)| gap_type == artifact_type)
     }
 
     pub(crate) fn scan_gap_affects_work_unit(
         &self,
         artifact_type: &str,
-        work_unit: Option<&str>,
+        _work_unit: Option<&str>,
     ) -> bool {
-        if self.type_level_scan_gaps.contains(artifact_type) {
-            return true;
-        }
-
-        match work_unit {
-            None => self
+        self.type_level_scan_gaps.contains(artifact_type)
+            || self
                 .instance_level_scan_gaps
-                .keys()
-                .any(|(gap_type, _)| gap_type == artifact_type),
-            Some(work_unit) => {
-                self.instance_level_scan_gaps
-                    .iter()
-                    .any(|((gap_type, gap_id), gap)| {
-                        if gap_type != artifact_type {
-                            return false;
-                        }
-
-                        let Some(state) = self.get(artifact_type, gap_id) else {
-                            return true;
-                        };
-                        let Some(stored_mtime) = state.source_last_modified_ms else {
-                            return true;
-                        };
-                        let Some(observed_mtime) = gap.source_last_modified_ms else {
-                            return true;
-                        };
-                        if stored_mtime != observed_mtime {
-                            return true;
-                        }
-
-                        matches_work_unit_filter(&state.work_unit, Some(work_unit))
-                    })
-            }
-        }
+                .iter()
+                .any(|(gap_type, _)| gap_type == artifact_type)
     }
 
     /// Look up a registered artifact type by name.
@@ -508,7 +456,6 @@ impl ArtifactStore {
             last_modified_ms: timestamp_ms,
             content_hash: raw_content_hash(raw_bytes),
             schema_hash,
-            source_last_modified_ms: file_modified_ms(path),
             work_unit,
         };
         self.record_inner(artifact_type, instance_id, state)
@@ -562,7 +509,6 @@ impl ArtifactStore {
             last_modified_ms: timestamp_ms,
             content_hash: hash,
             schema_hash: schema_hash(&at.schema),
-            source_last_modified_ms: file_modified_ms(path),
             work_unit,
         })
     }
@@ -1240,7 +1186,30 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
 
-        store.mark_instance_scan_gap("report", "hidden", None);
+        store.mark_instance_scan_gap("report", "hidden");
+
+        assert!(store.scan_gap_affects_work_unit("report", Some("wu-a")));
+        assert!(store.scan_gap_affects_work_unit("report", Some("wu-b")));
+    }
+
+    #[test]
+    fn scan_gap_with_store_record_affects_all_scoped_work_units() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let known_path = workspace.join("known.json");
+        std::fs::write(&known_path, r#"{"title":"ok","work_unit":"wu-a"}"#).unwrap();
+
+        store
+            .record(
+                "report",
+                "known",
+                &known_path,
+                &json!({"title": "ok", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store.mark_instance_scan_gap("report", "known");
 
         assert!(store.scan_gap_affects_work_unit("report", Some("wu-a")));
         assert!(store.scan_gap_affects_work_unit("report", Some("wu-b")));

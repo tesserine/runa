@@ -599,20 +599,14 @@ mod tests {
     }
 
     #[test]
-    fn derived_completion_timestamp_scopes_instance_scan_gaps_by_work_unit() {
+    fn derived_completion_timestamp_unscopes_instance_scan_gaps_across_work_units() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["implementation"]);
-        let workspace = tmp.path().join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let impl_a = workspace.join("impl-a.json");
-        let impl_b = workspace.join("impl-b.json");
-        std::fs::write(&impl_a, r#"{"title":"done-a","work_unit":"wu-a"}"#).unwrap();
-        std::fs::write(&impl_b, r#"{"title":"done-b","work_unit":"wu-b"}"#).unwrap();
         store
             .record_with_timestamp(
                 "implementation",
                 "a",
-                &impl_a,
+                Path::new("impl-a.json"),
                 &json!({"title": "done-a", "work_unit": "wu-a"}),
                 1000,
             )
@@ -621,16 +615,12 @@ mod tests {
             .record_with_timestamp(
                 "implementation",
                 "b",
-                &impl_b,
+                Path::new("impl-b.json"),
                 &json!({"title": "done-b", "work_unit": "wu-b"}),
                 2000,
             )
             .unwrap();
-        let observed_mtime = store
-            .get("implementation", "a")
-            .unwrap()
-            .source_last_modified_ms;
-        store.mark_instance_scan_gap("implementation", "a", observed_mtime);
+        store.mark_instance_scan_gap("implementation", "a");
 
         let partial = HashSet::from(["implementation".to_string()]);
         let protocol = make_protocol(
@@ -647,7 +637,7 @@ mod tests {
         );
         assert_eq!(
             derived_completion_timestamp(&protocol, &store, Some("wu-b"), &partial),
-            Some(2000)
+            None
         );
     }
 

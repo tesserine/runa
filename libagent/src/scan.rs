@@ -6,8 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use crate::store::{
-    ArtifactState, ArtifactStore, StoreError, ValidationStatus, content_hash, file_modified_ms,
-    raw_content_hash,
+    ArtifactState, ArtifactStore, StoreError, ValidationStatus, content_hash, raw_content_hash,
 };
 use crate::validation::Violation;
 
@@ -268,11 +267,9 @@ fn scan_type_dir(
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(err) => {
-                let source_last_modified_ms = file_modified_ms(&path);
                 mark_instance_partially_scanned(
                     artifact_type,
                     &instance_id,
-                    source_last_modified_ms,
                     type_scan_state,
                     store,
                 );
@@ -331,7 +328,6 @@ fn mark_type_partially_scanned(
 fn mark_instance_partially_scanned(
     artifact_type: &str,
     instance_id: &str,
-    source_last_modified_ms: Option<u64>,
     type_scan_state: &mut TypeScanState,
     store: &mut ArtifactStore,
 ) {
@@ -342,7 +338,7 @@ fn mark_instance_partially_scanned(
         .partially_scanned_types
         .entry(artifact_type.to_string())
         .or_insert(0) += 1;
-    store.mark_instance_scan_gap(artifact_type, instance_id, source_last_modified_ms);
+    store.mark_instance_scan_gap(artifact_type, instance_id);
 }
 
 fn handle_json_artifact(
@@ -405,12 +401,8 @@ fn handle_json_artifact(
                 .get("work_unit")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let source_last_modified_ms = file_modified_ms(artifact.path);
-            if (existing_state.work_unit.is_none() && data_work_unit.is_some())
-                || existing_state.source_last_modified_ms != source_last_modified_ms
-            {
-                // Backfill: pre-upgrade state lacks work_unit or source mtime that the
-                // readable artifact provides.
+            if existing_state.work_unit.is_none() && data_work_unit.is_some() {
+                // Backfill: pre-upgrade state lacks work_unit that the readable artifact provides.
                 store
                     .record_with_timestamp(
                         artifact.artifact_type,
@@ -508,23 +500,7 @@ fn handle_malformed_artifact(
             result.revalidated.push(artifact.as_ref());
         }
         ScanDisposition::Unchanged => {
-            let refresh_source_mtime = existing
-                .map(|state| state.source_last_modified_ms != file_modified_ms(artifact.path))
-                .unwrap_or(false);
-            if refresh_source_mtime {
-                let existing_state = existing.expect("unchanged artifact must already exist");
-                store
-                    .record_malformed_with_timestamp(
-                        artifact.artifact_type,
-                        artifact.instance_id,
-                        artifact.path,
-                        bytes,
-                        error.clone(),
-                        existing_state.last_modified_ms,
-                        previous_work_unit.clone(),
-                    )
-                    .map_err(ScanError::Store)?;
-            } else if existing.is_some_and(|state| state.path != artifact.path) {
+            if existing.is_some_and(|state| state.path != artifact.path) {
                 store
                     .update_path(artifact.artifact_type, artifact.instance_id, artifact.path)
                     .map_err(ScanError::Store)?;
@@ -852,7 +828,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn unreadable_file_is_reported_and_existing_state_is_preserved() {
+    fn unreadable_file_is_reported_and_affects_all_work_units() {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = TempDir::new().unwrap();
@@ -879,33 +855,6 @@ mod tests {
         );
         assert_eq!(state.path, original_state.path);
         assert_eq!(state.last_modified_ms, original_state.last_modified_ms);
-        assert!(store.scan_gap_affects_work_unit("report", Some("wu-a")));
-        assert!(!store.scan_gap_affects_work_unit("report", Some("wu-b")));
-
-        std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unreadable_file_with_changed_source_mtime_affects_all_work_units() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let tmp = TempDir::new().unwrap();
-        let workspace = tmp.path().join("workspace");
-        let unreadable_path = workspace.join("report/item.json");
-        let store_dir = tmp.path().join("store");
-        let mut store = make_store(&store_dir, vec!["report"]);
-
-        write_file(&unreadable_path, r#"{"title":"ok","work_unit":"wu-a"}"#);
-        scan(&workspace, &mut store).unwrap();
-
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        write_file(&unreadable_path, r#"{"title":"ok","work_unit":"wu-b"}"#);
-        std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o0)).unwrap();
-
-        let result = scan(&workspace, &mut store).unwrap();
-
-        assert_eq!(result.unreadable.len(), 1);
         assert!(store.scan_gap_affects_work_unit("report", Some("wu-a")));
         assert!(store.scan_gap_affects_work_unit("report", Some("wu-b")));
 
