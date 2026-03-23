@@ -826,7 +826,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path().join("workspace");
         let unreadable_path = workspace.join("report/item.json");
-        write_file(&unreadable_path, r#"{"title":"ok"}"#);
+        let store_dir = tmp.path().join("store");
+        let mut store = make_store(&store_dir, vec!["report"]);
+        write_file(&unreadable_path, r#"{"title":"ok","work_unit":"wu-a"}"#);
+        scan(&workspace, &mut store).unwrap();
+        let original_state = store.get("report", "item").unwrap().clone();
         std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o0)).unwrap();
 
         // Root ignores file permissions, so the unreadable simulation won't work.
@@ -835,12 +839,6 @@ mod tests {
                 .unwrap();
             return;
         }
-        let store_dir = tmp.path().join("store");
-        let mut store = make_store(&store_dir, vec!["report"]);
-        write_file(&unreadable_path, r#"{"title":"ok","work_unit":"wu-a"}"#);
-        scan(&workspace, &mut store).unwrap();
-        let original_state = store.get("report", "item").unwrap().clone();
-        std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o0)).unwrap();
 
         let result = scan(&workspace, &mut store).unwrap();
         let state = store.get("report", "item").unwrap();
