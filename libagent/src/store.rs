@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -15,6 +15,10 @@ pub struct ArtifactStore {
     artifact_types: HashMap<String, ArtifactType>,
     artifacts: HashMap<(String, String), ArtifactState>,
     store_dir: PathBuf,
+    // Populated by scan() for the current process only. These observations are
+    // about scan completeness, not persisted artifact state.
+    type_level_scan_gaps: HashSet<String>,
+    instance_level_scan_gaps: HashSet<(String, String)>,
 }
 
 /// The recorded state of a single artifact instance.
@@ -191,6 +195,8 @@ impl ArtifactStore {
             artifact_types: type_map,
             artifacts,
             store_dir,
+            type_level_scan_gaps: HashSet::new(),
+            instance_level_scan_gaps: HashSet::new(),
         })
     }
 
@@ -381,6 +387,40 @@ impl ArtifactStore {
             })
             .map(|(_, state)| state.last_modified_ms)
             .max()
+    }
+
+    pub(crate) fn clear_scan_gaps(&mut self) {
+        self.type_level_scan_gaps.clear();
+        self.instance_level_scan_gaps.clear();
+    }
+
+    pub(crate) fn mark_type_scan_gap(&mut self, artifact_type: &str) {
+        self.type_level_scan_gaps.insert(artifact_type.to_string());
+    }
+
+    pub(crate) fn mark_instance_scan_gap(&mut self, artifact_type: &str, instance_id: &str) {
+        self.instance_level_scan_gaps
+            .insert((artifact_type.to_string(), instance_id.to_string()));
+    }
+
+    pub(crate) fn has_any_scan_gap_for_type(&self, artifact_type: &str) -> bool {
+        self.type_level_scan_gaps.contains(artifact_type)
+            || self
+                .instance_level_scan_gaps
+                .iter()
+                .any(|(gap_type, _)| gap_type == artifact_type)
+    }
+
+    pub(crate) fn scan_gap_affects_work_unit(
+        &self,
+        artifact_type: &str,
+        _work_unit: Option<&str>,
+    ) -> bool {
+        self.type_level_scan_gaps.contains(artifact_type)
+            || self
+                .instance_level_scan_gaps
+                .iter()
+                .any(|(gap_type, _)| gap_type == artifact_type)
     }
 
     /// Look up a registered artifact type by name.
@@ -1137,6 +1177,40 @@ mod tests {
             store.get("report", "r1").unwrap().work_unit,
             Some("wu-1".to_string())
         );
+    }
+
+    #[test]
+    fn scan_gap_without_store_record_affects_all_scoped_work_units() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        store.mark_instance_scan_gap("report", "hidden");
+
+        assert!(store.scan_gap_affects_work_unit("report", Some("wu-a")));
+        assert!(store.scan_gap_affects_work_unit("report", Some("wu-b")));
+    }
+
+    #[test]
+    fn scan_gap_with_store_record_affects_all_scoped_work_units() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let known_path = workspace.join("known.json");
+        std::fs::write(&known_path, r#"{"title":"ok","work_unit":"wu-a"}"#).unwrap();
+
+        store
+            .record(
+                "report",
+                "known",
+                &known_path,
+                &json!({"title": "ok", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store.mark_instance_scan_gap("report", "known");
+
+        assert!(store.scan_gap_affects_work_unit("report", Some("wu-a")));
+        assert!(store.scan_gap_affects_work_unit("report", Some("wu-b")));
     }
 
     #[test]

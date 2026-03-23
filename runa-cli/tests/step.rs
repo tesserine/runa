@@ -140,7 +140,9 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     assert_eq!(protocols[2]["status"], "waiting");
     assert_eq!(
         protocols[2]["unsatisfied_conditions"],
-        serde_json::json!(["on_invalid(implementation): no invalid instances of artifact type 'implementation'"])
+        serde_json::json!([
+            "on_invalid(implementation): no invalid instances of artifact type 'implementation'"
+        ])
     );
 }
 
@@ -178,7 +180,9 @@ fn step_dry_run_text_reports_why_when_no_skills_are_ready() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("on_invalid(implementation): no invalid instances of artifact type 'implementation'"),
+        stdout.contains(
+            "on_invalid(implementation): no invalid instances of artifact type 'implementation'"
+        ),
         "stdout: {stdout}"
     );
 }

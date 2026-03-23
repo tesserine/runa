@@ -213,7 +213,9 @@ fn status_json_reports_ordered_skills_and_status_specific_fields() {
     assert_eq!(protocols[2]["trigger"], "not_satisfied");
     assert_eq!(
         protocols[2]["unsatisfied_conditions"],
-        serde_json::json!(["on_invalid(implementation): no invalid instances of artifact type 'implementation'"])
+        serde_json::json!([
+            "on_invalid(implementation): no invalid instances of artifact type 'implementation'"
+        ])
     );
     assert!(protocols[2].get("inputs").is_none());
     assert!(protocols[2].get("precondition_failures").is_none());
@@ -318,7 +320,6 @@ trigger = { type = "all_of", conditions = [
             "on_artifact(implementation): artifact type 'implementation' has invalid, malformed, or stale instances",
             "on_invalid(constraints): no invalid instances of artifact type 'constraints'"
         ])
-
     );
 }
 
@@ -1155,6 +1156,123 @@ trigger = { type = "on_change", name = "doc" }
     assert!(review.get("precondition_failures").is_none());
 }
 
+#[cfg(unix)]
+#[test]
+fn status_unscopes_new_unreadable_outputs_across_all_work_units() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "doc"
+schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
+
+[[artifact_types]]
+name = "reviewed"
+schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
+
+[[protocols]]
+name = "review"
+produces = ["reviewed"]
+trigger = { type = "on_change", name = "doc" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("doc")).unwrap();
+    fs::create_dir_all(workspace.join("reviewed")).unwrap();
+    fs::write(
+        workspace.join("doc/a.json"),
+        r#"{"title":"draft-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("doc/b.json"),
+        r#"{"title":"draft-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let first_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        first_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first_scan.stderr)
+    );
+
+    fs::write(
+        workspace.join("reviewed/a.json"),
+        r#"{"title":"done-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("reviewed/b.json"),
+        r#"{"title":"done-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let second_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        second_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&second_scan.stderr)
+    );
+
+    let unreadable_output = workspace.join("reviewed/hidden.json");
+    fs::write(
+        &unreadable_output,
+        r#"{"title":"hidden","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let reviews: Vec<_> = value["protocols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|protocol| protocol["name"] == "review")
+        .collect();
+
+    assert_eq!(reviews.len(), 2, "{value:#}");
+    assert!(
+        reviews.iter().all(|protocol| protocol["status"] == "ready"),
+        "{value:#}"
+    );
+}
+
 #[test]
 fn status_reports_per_work_unit_on_change_readiness_when_freshness_is_mixed() {
     let dir = tempfile::tempdir().unwrap();
@@ -1353,6 +1471,235 @@ trigger = { type = "on_change", name = "doc" }
         serde_json::json!([
             "on_change(doc): artifact type 'doc' has not changed since protocol outputs were last updated"
         ])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn status_unscopes_partial_output_reruns_across_all_work_units() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "doc"
+schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
+
+[[artifact_types]]
+name = "reviewed"
+schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
+
+[[protocols]]
+name = "review"
+produces = ["reviewed"]
+trigger = { type = "on_change", name = "doc" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("doc")).unwrap();
+    fs::create_dir_all(workspace.join("reviewed")).unwrap();
+    fs::write(
+        workspace.join("doc/a.json"),
+        r#"{"title":"draft-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("doc/b.json"),
+        r#"{"title":"draft-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let first_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        first_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first_scan.stderr)
+    );
+
+    fs::write(
+        workspace.join("reviewed/a.json"),
+        r#"{"title":"done-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("reviewed/b.json"),
+        r#"{"title":"done-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let second_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        second_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&second_scan.stderr)
+    );
+
+    let unreadable_output = workspace.join("reviewed/a.json");
+    fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let reviews: Vec<_> = value["protocols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|protocol| protocol["name"] == "review")
+        .collect();
+
+    assert_eq!(reviews.len(), 2, "{value:#}");
+    assert!(
+        reviews.iter().all(|protocol| protocol["status"] == "ready"),
+        "{value:#}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn status_unscopes_partial_outputs_when_the_stored_work_unit_is_unverifiable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "doc"
+schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
+
+[[artifact_types]]
+name = "reviewed"
+schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
+
+[[protocols]]
+name = "review"
+produces = ["reviewed"]
+trigger = { type = "on_change", name = "doc" }
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("doc")).unwrap();
+    fs::create_dir_all(workspace.join("reviewed")).unwrap();
+    fs::write(
+        workspace.join("doc/a.json"),
+        r#"{"title":"draft-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("doc/b.json"),
+        r#"{"title":"draft-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let first_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        first_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first_scan.stderr)
+    );
+
+    fs::write(
+        workspace.join("reviewed/a.json"),
+        r#"{"title":"done-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("reviewed/b.json"),
+        r#"{"title":"done-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let second_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        second_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&second_scan.stderr)
+    );
+
+    let unreadable_output = workspace.join("reviewed/a.json");
+    fs::write(
+        &unreadable_output,
+        r#"{"title":"done-a","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+    fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let reviews: Vec<_> = value["protocols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|protocol| protocol["name"] == "review")
+        .collect();
+
+    assert_eq!(reviews.len(), 2, "{value:#}");
+    assert!(
+        reviews.iter().all(|protocol| protocol["status"] == "ready"),
+        "{value:#}"
     );
 }
 

@@ -117,6 +117,7 @@ struct TypeScanState {
 
 pub fn scan(workspace_dir: &Path, store: &mut ArtifactStore) -> Result<ScanResult, ScanError> {
     let scan_timestamp_ms = crate::util::current_time_ms();
+    store.clear_scan_gaps();
     let known_types: HashSet<String> = store
         .artifact_type_names()
         .into_iter()
@@ -213,7 +214,7 @@ fn scan_type_dir(
     let entries = match std::fs::read_dir(type_dir) {
         Ok(entries) => entries,
         Err(err) => {
-            mark_type_partially_scanned(artifact_type, type_scan_state);
+            mark_type_partially_scanned(artifact_type, type_scan_state, store);
             result.unreadable.push(UnreadableArtifact {
                 path: type_dir.to_path_buf(),
                 error: err.to_string(),
@@ -226,7 +227,7 @@ fn scan_type_dir(
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
-                mark_type_partially_scanned(artifact_type, type_scan_state);
+                mark_type_partially_scanned(artifact_type, type_scan_state, store);
                 result.unreadable.push(UnreadableArtifact {
                     path: type_dir.to_path_buf(),
                     error: err.to_string(),
@@ -238,7 +239,7 @@ fn scan_type_dir(
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(err) => {
-                mark_type_partially_scanned(artifact_type, type_scan_state);
+                mark_type_partially_scanned(artifact_type, type_scan_state, store);
                 result.unreadable.push(UnreadableArtifact {
                     path,
                     error: err.to_string(),
@@ -265,7 +266,12 @@ fn scan_type_dir(
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(err) => {
-                mark_type_partially_scanned(artifact_type, type_scan_state);
+                mark_instance_partially_scanned(
+                    artifact_type,
+                    &instance_id,
+                    type_scan_state,
+                    store,
+                );
                 result.unreadable.push(UnreadableArtifact {
                     path: path.clone(),
                     error: err.to_string(),
@@ -303,7 +309,11 @@ fn scan_type_dir(
     Ok(())
 }
 
-fn mark_type_partially_scanned(artifact_type: &str, type_scan_state: &mut TypeScanState) {
+fn mark_type_partially_scanned(
+    artifact_type: &str,
+    type_scan_state: &mut TypeScanState,
+    store: &mut ArtifactStore,
+) {
     type_scan_state
         .skipped_types
         .insert(artifact_type.to_string());
@@ -311,6 +321,23 @@ fn mark_type_partially_scanned(artifact_type: &str, type_scan_state: &mut TypeSc
         .partially_scanned_types
         .entry(artifact_type.to_string())
         .or_insert(0) += 1;
+    store.mark_type_scan_gap(artifact_type);
+}
+
+fn mark_instance_partially_scanned(
+    artifact_type: &str,
+    instance_id: &str,
+    type_scan_state: &mut TypeScanState,
+    store: &mut ArtifactStore,
+) {
+    type_scan_state
+        .skipped_types
+        .insert(artifact_type.to_string());
+    *type_scan_state
+        .partially_scanned_types
+        .entry(artifact_type.to_string())
+        .or_insert(0) += 1;
+    store.mark_instance_scan_gap(artifact_type, instance_id);
 }
 
 fn handle_json_artifact(
@@ -374,7 +401,7 @@ fn handle_json_artifact(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             if existing_state.work_unit.is_none() && data_work_unit.is_some() {
-                // Backfill: pre-upgrade state lacks work_unit that the artifact JSON provides.
+                // Backfill: pre-upgrade state lacks work_unit that the readable artifact provides.
                 store
                     .record_with_timestamp(
                         artifact.artifact_type,
@@ -793,13 +820,17 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn unreadable_file_is_reported_and_existing_state_is_preserved() {
+    fn unreadable_file_is_reported_and_affects_all_work_units() {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path().join("workspace");
         let unreadable_path = workspace.join("report/item.json");
-        write_file(&unreadable_path, r#"{"title":"ok"}"#);
+        let store_dir = tmp.path().join("store");
+        let mut store = make_store(&store_dir, vec!["report"]);
+        write_file(&unreadable_path, r#"{"title":"ok","work_unit":"wu-a"}"#);
+        scan(&workspace, &mut store).unwrap();
+        let original_state = store.get("report", "item").unwrap().clone();
         std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o0)).unwrap();
 
         // Root ignores file permissions, so the unreadable simulation won't work.
@@ -808,18 +839,6 @@ mod tests {
                 .unwrap();
             return;
         }
-
-        let store_dir = tmp.path().join("store");
-        let mut store = make_store(&store_dir, vec!["report"]);
-        store
-            .record_with_timestamp(
-                "report",
-                "item",
-                Path::new("old/report/item.json"),
-                &json!({"title": "ok"}),
-                1234,
-            )
-            .unwrap();
 
         let result = scan(&workspace, &mut store).unwrap();
         let state = store.get("report", "item").unwrap();
@@ -833,8 +852,10 @@ mod tests {
                 unreadable_entries: 1,
             }]
         );
-        assert_eq!(state.path, Path::new("old/report/item.json"));
-        assert_eq!(state.last_modified_ms, 1234);
+        assert_eq!(state.path, original_state.path);
+        assert_eq!(state.last_modified_ms, original_state.last_modified_ms);
+        assert!(store.scan_gap_affects_work_unit("report", Some("wu-a")));
+        assert!(store.scan_gap_affects_work_unit("report", Some("wu-b")));
 
         std::fs::set_permissions(&unreadable_path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }

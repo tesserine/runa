@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use libagent::{TriggerContext, TriggerResult, enforce_preconditions, evaluate_trigger};
 use serde::Serialize;
 
 use crate::project;
@@ -80,12 +79,6 @@ pub(crate) struct ScanFindings {
     pub(crate) warnings: Vec<String>,
 }
 
-struct TriggerEvaluation {
-    satisfied: bool,
-    trusted: bool,
-    scan_types: Vec<String>,
-}
-
 pub(crate) struct EvaluatedProtocols {
     pub(crate) cycle: Option<libagent::CycleError>,
     pub(crate) ready: Vec<ProtocolEntry>,
@@ -104,46 +97,6 @@ impl EvaluatedProtocols {
     pub(crate) fn json_protocols(&self) -> Vec<ProtocolJson> {
         self.ordered_entries().cloned().map(protocol_json).collect()
     }
-}
-
-fn failure_entries_from_types(artifact_types: Vec<String>) -> Vec<FailureEntry> {
-    artifact_types
-        .into_iter()
-        .map(|artifact_type| FailureEntry {
-            artifact_type,
-            reason: "scan_incomplete",
-        })
-        .collect()
-}
-
-fn append_unique_failures(target: &mut Vec<FailureEntry>, additional: Vec<FailureEntry>) {
-    for failure in additional {
-        if !target.iter().any(|existing| {
-            existing.artifact_type == failure.artifact_type && existing.reason == failure.reason
-        }) {
-            target.push(failure);
-        }
-    }
-}
-
-fn precondition_scan_failures(
-    protocol: &libagent::ProtocolDeclaration,
-    affected_types: &HashSet<String>,
-) -> Vec<FailureEntry> {
-    let mut failures = Vec::new();
-    for artifact_type in protocol.requires.iter().chain(protocol.produces.iter()) {
-        if affected_types.contains(artifact_type.as_str())
-            && !failures
-                .iter()
-                .any(|failure: &FailureEntry| failure.artifact_type == *artifact_type)
-        {
-            failures.push(FailureEntry {
-                artifact_type: artifact_type.clone(),
-                reason: "scan_incomplete",
-            });
-        }
-    }
-    failures
 }
 
 pub(crate) fn collect_scan_findings(
@@ -215,28 +168,34 @@ pub(crate) fn evaluate_protocols(
         .map(|protocol| (protocol.name.as_str(), protocol))
         .collect();
 
-    let ready_candidates = libagent::discover_ready_candidates(
+    let classified = libagent::classify_candidates(
         &loaded.manifest.protocols,
         &loaded.store,
         &skill_order,
         &scan_findings.affected_types,
     );
-    let ready_set: HashSet<(String, Option<String>)> = ready_candidates
-        .iter()
-        .map(|candidate| (candidate.protocol_name.clone(), candidate.work_unit.clone()))
-        .collect();
 
-    let mut ready: Vec<ProtocolEntry> = ready_candidates
-        .iter()
-        .map(|candidate| {
-            let protocol = skill_map
-                .get(candidate.protocol_name.as_str())
-                .expect("ready candidate protocol must exist in manifest");
-            ProtocolEntry {
-                name: protocol.name.clone(),
+    let mut ready = Vec::new();
+    let mut blocked = Vec::new();
+    let mut waiting = Vec::new();
+
+    for candidate in classified {
+        let Some(protocol) = skill_map.get(candidate.protocol_name.as_str()) else {
+            continue;
+        };
+
+        let trigger = if candidate.trigger_satisfied {
+            TriggerState::Satisfied
+        } else {
+            TriggerState::NotSatisfied
+        };
+
+        let entry = match candidate.status {
+            libagent::CandidateStatus::Ready => ProtocolEntry {
+                name: candidate.protocol_name,
                 work_unit: candidate.work_unit.clone(),
                 status: ProtocolStatus::Ready,
-                trigger: TriggerState::Satisfied,
+                trigger,
                 inputs: collect_inputs(
                     protocol,
                     &loaded.store,
@@ -246,127 +205,53 @@ pub(crate) fn evaluate_protocols(
                 ),
                 precondition_failures: Vec::new(),
                 unsatisfied_conditions: Vec::new(),
-            }
-        })
-        .collect();
-    let mut blocked = Vec::new();
-    let mut waiting = Vec::new();
-
-    for name in skill_order {
-        let Some(protocol) = skill_map.get(name) else {
-            continue;
-        };
-
-        let protocol_scan_failures =
-            failure_entries_from_types(libagent::selection::protocol_scan_incomplete_types(
-                protocol,
-                &scan_findings.affected_types,
-            ));
-        let readiness_scan_failures =
-            precondition_scan_failures(protocol, &scan_findings.affected_types);
-
-        for work_unit in libagent::selection::protocol_work_units(
-            protocol,
-            &loaded.store,
-            &scan_findings.affected_types,
-        ) {
-            if ready_set.contains(&(protocol.name.clone(), work_unit.clone())) {
-                continue;
-            }
-
-            let context = TriggerContext {
-                store: &loaded.store,
-                work_unit: work_unit.as_deref(),
-                partially_scanned_types: &scan_findings.affected_types,
-            };
-            let trigger_eval = evaluate_trigger_trust(
-                &protocol.trigger,
-                protocol,
-                &context,
-                &scan_findings.affected_types,
-            );
-            let trigger_state = if trigger_eval.satisfied {
-                TriggerState::Satisfied
-            } else {
-                TriggerState::NotSatisfied
-            };
-            let scan_failures =
-                scan_incomplete_failures(protocol, scan_findings, &trigger_eval.scan_types);
-
-            let entry = if trigger_eval.satisfied {
-                let mut precondition_failures = protocol_scan_failures.clone();
-                append_unique_failures(&mut precondition_failures, scan_failures);
-                if let Err(err) =
-                    enforce_preconditions(protocol, &loaded.store, work_unit.as_deref())
-                {
-                    append_unique_failures(
-                        &mut precondition_failures,
-                        err.failures.iter().map(failure_entry).collect(),
-                    );
-                }
-
-                if precondition_failures.is_empty() {
-                    ProtocolEntry {
-                        name: protocol.name.clone(),
-                        work_unit: work_unit.clone(),
-                        status: ProtocolStatus::Waiting,
-                        trigger: TriggerState::Satisfied,
-                        inputs: Vec::new(),
-                        precondition_failures: Vec::new(),
-                        unsatisfied_conditions: vec!["outputs are current".to_string()],
-                    }
-                } else {
-                    ProtocolEntry {
-                        name: protocol.name.clone(),
-                        work_unit: work_unit.clone(),
-                        status: ProtocolStatus::Blocked,
-                        trigger: TriggerState::Satisfied,
-                        inputs: Vec::new(),
-                        precondition_failures,
-                        unsatisfied_conditions: Vec::new(),
+            },
+            libagent::CandidateStatus::Blocked {
+                precondition_failures,
+                scan_incomplete_types,
+            } => {
+                let mut failures: Vec<FailureEntry> = scan_incomplete_types
+                    .into_iter()
+                    .map(|artifact_type| FailureEntry {
+                        artifact_type,
+                        reason: "scan_incomplete",
+                    })
+                    .collect();
+                for f in &precondition_failures {
+                    let fe = failure_entry(f);
+                    if !failures.iter().any(|existing| {
+                        existing.artifact_type == fe.artifact_type && existing.reason == fe.reason
+                    }) {
+                        failures.push(fe);
                     }
                 }
-            } else if scan_failures.is_empty() && readiness_scan_failures.is_empty() {
                 ProtocolEntry {
-                    name: protocol.name.clone(),
-                    work_unit: work_unit.clone(),
-                    status: ProtocolStatus::Waiting,
-                    trigger: trigger_state,
-                    inputs: Vec::new(),
-                    precondition_failures: Vec::new(),
-                    unsatisfied_conditions: collect_unsatisfied_conditions(
-                        &protocol.trigger,
-                        protocol,
-                        &context,
-                    ),
-                }
-            } else {
-                let mut precondition_failures = readiness_scan_failures.clone();
-                append_unique_failures(&mut precondition_failures, scan_failures);
-                if let Err(err) =
-                    enforce_preconditions(protocol, &loaded.store, work_unit.as_deref())
-                {
-                    append_unique_failures(
-                        &mut precondition_failures,
-                        err.failures.iter().map(failure_entry).collect(),
-                    );
-                }
-                ProtocolEntry {
-                    name: protocol.name.clone(),
-                    work_unit: work_unit.clone(),
+                    name: candidate.protocol_name,
+                    work_unit: candidate.work_unit,
                     status: ProtocolStatus::Blocked,
-                    trigger: trigger_state,
+                    trigger,
                     inputs: Vec::new(),
-                    precondition_failures,
+                    precondition_failures: failures,
                     unsatisfied_conditions: Vec::new(),
                 }
-            };
-
-            match entry.status {
-                ProtocolStatus::Ready => ready.push(entry),
-                ProtocolStatus::Blocked => blocked.push(entry),
-                ProtocolStatus::Waiting => waiting.push(entry),
             }
+            libagent::CandidateStatus::Waiting {
+                unsatisfied_conditions,
+            } => ProtocolEntry {
+                name: candidate.protocol_name,
+                work_unit: candidate.work_unit,
+                status: ProtocolStatus::Waiting,
+                trigger,
+                inputs: Vec::new(),
+                precondition_failures: Vec::new(),
+                unsatisfied_conditions,
+            },
+        };
+
+        match entry.status {
+            ProtocolStatus::Ready => ready.push(entry),
+            ProtocolStatus::Blocked => blocked.push(entry),
+            ProtocolStatus::Waiting => waiting.push(entry),
         }
     }
 
@@ -478,291 +363,11 @@ fn failure_entry(failure: &libagent::ArtifactFailure) -> FailureEntry {
     }
 }
 
-fn scan_incomplete_failures(
-    protocol: &libagent::ProtocolDeclaration,
-    scan_findings: &ScanFindings,
-    trigger_scan_types: &[String],
-) -> Vec<FailureEntry> {
-    let mut artifact_types = trigger_scan_types.to_vec();
-
-    for artifact_type in &protocol.requires {
-        if scan_findings
-            .affected_types
-            .contains(artifact_type.as_str())
-            && !artifact_types.contains(artifact_type)
-        {
-            artifact_types.push(artifact_type.clone());
-        }
-    }
-
-    artifact_types
-        .into_iter()
-        .map(|artifact_type| FailureEntry {
-            artifact_type,
-            reason: "scan_incomplete",
-        })
-        .collect()
-}
-
-fn evaluate_trigger_trust(
-    condition: &libagent::TriggerCondition,
-    protocol: &libagent::ProtocolDeclaration,
-    context: &TriggerContext<'_>,
-    affected_types: &HashSet<String>,
-) -> TriggerEvaluation {
-    match condition {
-        libagent::TriggerCondition::OnArtifact { name } => primitive_trigger_eval(
-            condition,
-            protocol,
-            context,
-            affected_types.contains(name.as_str()),
-            !has_visible_defect(context.store, name),
-            true,
-            Some(name.clone()),
-        ),
-        libagent::TriggerCondition::OnInvalid { name } => primitive_trigger_eval(
-            condition,
-            protocol,
-            context,
-            affected_types.contains(name.as_str()),
-            true,
-            false,
-            Some(name.clone()),
-        ),
-        libagent::TriggerCondition::OnChange { name } => {
-            on_change_trigger_eval(condition, protocol, context, name, affected_types)
-        }
-        libagent::TriggerCondition::AllOf { conditions } => {
-            let children: Vec<_> = conditions
-                .iter()
-                .map(|child| evaluate_trigger_trust(child, protocol, context, affected_types))
-                .collect();
-
-            if children.iter().all(|child| child.satisfied) {
-                let mut scan_types = Vec::new();
-                let mut trusted = true;
-                for child in &children {
-                    if !child.trusted {
-                        trusted = false;
-                        append_unique(&mut scan_types, child.scan_types.clone());
-                    }
-                }
-                TriggerEvaluation {
-                    satisfied: true,
-                    trusted,
-                    scan_types,
-                }
-            } else if children
-                .iter()
-                .any(|child| !child.satisfied && child.trusted)
-            {
-                TriggerEvaluation {
-                    satisfied: false,
-                    trusted: true,
-                    scan_types: Vec::new(),
-                }
-            } else {
-                let mut scan_types = Vec::new();
-                for child in &children {
-                    if !child.trusted {
-                        append_unique(&mut scan_types, child.scan_types.clone());
-                    }
-                }
-                TriggerEvaluation {
-                    satisfied: false,
-                    trusted: false,
-                    scan_types,
-                }
-            }
-        }
-        libagent::TriggerCondition::AnyOf { conditions } => {
-            if conditions.is_empty() {
-                return TriggerEvaluation {
-                    satisfied: false,
-                    trusted: true,
-                    scan_types: Vec::new(),
-                };
-            }
-
-            let children: Vec<_> = conditions
-                .iter()
-                .map(|child| evaluate_trigger_trust(child, protocol, context, affected_types))
-                .collect();
-
-            if children
-                .iter()
-                .any(|child| child.satisfied && child.trusted)
-            {
-                TriggerEvaluation {
-                    satisfied: true,
-                    trusted: true,
-                    scan_types: Vec::new(),
-                }
-            } else if children.iter().any(|child| child.satisfied) {
-                let mut scan_types = Vec::new();
-                for child in &children {
-                    if child.satisfied && !child.trusted {
-                        append_unique(&mut scan_types, child.scan_types.clone());
-                    }
-                }
-                TriggerEvaluation {
-                    satisfied: true,
-                    trusted: false,
-                    scan_types,
-                }
-            } else if children
-                .iter()
-                .all(|child| !child.satisfied && child.trusted)
-            {
-                TriggerEvaluation {
-                    satisfied: false,
-                    trusted: true,
-                    scan_types: Vec::new(),
-                }
-            } else {
-                let mut scan_types = Vec::new();
-                for child in &children {
-                    if !child.satisfied && !child.trusted {
-                        append_unique(&mut scan_types, child.scan_types.clone());
-                    }
-                }
-                TriggerEvaluation {
-                    satisfied: false,
-                    trusted: false,
-                    scan_types,
-                }
-            }
-        }
-    }
-}
-
-fn primitive_trigger_eval(
-    condition: &libagent::TriggerCondition,
-    protocol: &libagent::ProtocolDeclaration,
-    context: &TriggerContext<'_>,
-    affected: bool,
-    untrustworthy_when_not_satisfied: bool,
-    untrustworthy_when_satisfied: bool,
-    artifact_type: Option<String>,
-) -> TriggerEvaluation {
-    let satisfied = matches!(
-        evaluate_trigger(condition, protocol, context),
-        TriggerResult::Satisfied
-    );
-
-    let untrusted = if affected {
-        if satisfied {
-            untrustworthy_when_satisfied
-        } else {
-            untrustworthy_when_not_satisfied
-        }
-    } else {
-        false
-    };
-
-    TriggerEvaluation {
-        satisfied,
-        trusted: !untrusted,
-        scan_types: if untrusted {
-            artifact_type.into_iter().collect()
-        } else {
-            Vec::new()
-        },
-    }
-}
-
-fn on_change_trigger_eval(
-    condition: &libagent::TriggerCondition,
-    protocol: &libagent::ProtocolDeclaration,
-    context: &TriggerContext<'_>,
-    input_type: &str,
-    affected_types: &HashSet<String>,
-) -> TriggerEvaluation {
-    let satisfied = matches!(
-        evaluate_trigger(condition, protocol, context),
-        TriggerResult::Satisfied
-    );
-
-    let mut trusted = true;
-    let mut scan_types = Vec::new();
-
-    if affected_types.contains(input_type) && !satisfied {
-        trusted = false;
-        scan_types.push(input_type.to_string());
-    }
-
-    let affected_outputs: Vec<String> = protocol
-        .produces
-        .iter()
-        .filter(|artifact_type| affected_types.contains(artifact_type.as_str()))
-        .cloned()
-        .collect();
-    if !affected_outputs.is_empty() {
-        trusted = false;
-        append_unique(&mut scan_types, affected_outputs);
-    }
-
-    TriggerEvaluation {
-        satisfied,
-        trusted,
-        scan_types,
-    }
-}
-
-fn has_visible_defect(store: &libagent::ArtifactStore, artifact_type: &str) -> bool {
-    store
-        .instances_of(artifact_type, None)
-        .iter()
-        .any(|(_, state)| {
-            matches!(
-                state.status,
-                libagent::ValidationStatus::Invalid(_)
-                    | libagent::ValidationStatus::Malformed(_)
-                    | libagent::ValidationStatus::Stale
-            )
-        })
-}
-
-fn append_unique(target: &mut Vec<String>, values: Vec<String>) {
-    for value in values {
-        if !target.contains(&value) {
-            target.push(value);
-        }
-    }
-}
-
 fn artifact_type_from_path(path: &Path, workspace_dir: &Path) -> Option<String> {
     let relative = path.strip_prefix(workspace_dir).ok()?;
     let mut components = relative.components();
     let first = components.next()?;
     Some(PathBuf::from(first.as_os_str()).display().to_string())
-}
-
-fn collect_unsatisfied_conditions(
-    condition: &libagent::TriggerCondition,
-    protocol: &libagent::ProtocolDeclaration,
-    context: &TriggerContext<'_>,
-) -> Vec<String> {
-    match evaluate_trigger(condition, protocol, context) {
-        TriggerResult::Satisfied => Vec::new(),
-        TriggerResult::NotSatisfied(reason) => match condition {
-            libagent::TriggerCondition::AllOf { conditions } => conditions
-                .iter()
-                .flat_map(|child| collect_unsatisfied_conditions(child, protocol, context))
-                .collect(),
-            libagent::TriggerCondition::AnyOf { conditions } => {
-                if conditions.is_empty() {
-                    vec![format!("{condition}: {reason}")]
-                } else {
-                    conditions
-                        .iter()
-                        .flat_map(|child| collect_unsatisfied_conditions(child, protocol, context))
-                        .collect()
-                }
-            }
-            _ => vec![format!("{condition}: {reason}")],
-        },
-    }
 }
 
 fn protocol_json(entry: ProtocolEntry) -> ProtocolJson {

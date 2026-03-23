@@ -43,6 +43,7 @@ runa status [--json]
 ```
 
 Evaluates every protocol after an implicit scan and classifies it as `READY`, `BLOCKED`, or `WAITING`. Text output groups protocols in that order and shows the current inputs, precondition failures, or unsatisfied trigger conditions that explain each status. If the scan was only partial, status surfaces `Scan warnings` and blocks protocols whose required artifact types could not be fully reconciled with reason `scan_incomplete`; partially scanned accepted artifact types are omitted from reported inputs. `--json` emits `{ "version": 2, "methodology": "...", "scan_warnings": [...], "protocols": [...] }`, with a flat ordered `protocols` array containing `name`, `status`, `trigger`, and the status-specific fields `inputs`, `precondition_failures`, or `unsatisfied_conditions`. Exits 0 when status evaluation succeeds, even if some protocols are blocked or waiting.
+Unreadable produced artifacts do not block protocols directly, but they do conservatively disable freshness suppression for every work unit of that output type until a clean scan restores trustworthy completion evidence.
 
 ```bash
 runa step --dry-run [--json]
@@ -51,6 +52,7 @@ runa step --dry-run [--json]
 Builds an operator-facing execution plan after an implicit scan. The execution plan contains `READY` protocols that can be placed in a valid execution order, and each plan entry includes the protocol name, the human-readable trigger that activated it, and a serialized agent-facing context injection payload. The context payload contains the protocol name, all valid required and available accepted inputs with text paths, content hashes, and relationships, plus expected outputs split into `produces` and `may_produce`.
 
 If the graph contains a hard dependency cycle, `step` reports the cycle as a warning and excludes the cyclic protocols from `execution_plan`; non-cyclic READY protocols still appear when they are orderable. Text output prints the execution plan and the same grouped protocol status view used by `runa status`, so operators can still see blocked and waiting reasons when nothing is runnable. `--json` emits `{ "version": 2, "methodology": "...", "scan_warnings": [...], "cycle": ["..."] | null, "execution_plan": [...], "protocols": [...] }`, where `protocols` reuses the same status entries as `runa status --json`. `runa step` without `--dry-run` is not implemented yet; it prints a placeholder message and exits with code 1.
+Like `runa status`, unreadable produced artifacts conservatively keep all work units of that output type eligible for rerun rather than attempting to scope freshness loss to a single instance.
 
 ## MCP Server
 
