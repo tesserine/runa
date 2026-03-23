@@ -49,7 +49,7 @@ pub fn render_context_prompt(context: &ContextInjection) -> GetPromptResult {
         sections.push(format!("You may also produce: {list}"));
     }
     sections.push(
-        "\nTo deliver each output, call the tool with the matching name \
+        "\nTo deliver each required output, call the tool with the matching name \
          and fill in the required fields."
             .to_string(),
     );
@@ -150,6 +150,7 @@ fn humanize_key(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libagent::context::ExpectedOutputs;
     use serde_json::json;
 
     #[test]
@@ -212,5 +213,28 @@ mod tests {
         assert!(prose.contains("1."));
         assert!(prose.contains("**Name:** reject-missing-field"));
         assert!(prose.contains("**Criterion:** returns 400"));
+    }
+
+    #[test]
+    fn render_context_prompt_scopes_tool_guidance_to_required_outputs() {
+        let prompt = render_context_prompt(&ContextInjection {
+            protocol: "implement".into(),
+            inputs: Vec::new(),
+            expected_outputs: ExpectedOutputs {
+                produces: vec!["implementation".into()],
+                may_produce: vec!["notes".into()],
+            },
+        });
+
+        let text = match &prompt.messages[0].content {
+            rmcp::model::PromptMessageContent::Text { text } => text.as_str(),
+            other => panic!("expected text prompt content, got {other:?}"),
+        };
+
+        assert!(text.contains("You must produce: implementation"));
+        assert!(text.contains("You may also produce: notes"));
+        assert!(text.contains(
+            "To deliver each required output, call the tool with the matching name and fill in the required fields."
+        ));
     }
 }
