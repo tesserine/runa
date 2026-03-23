@@ -69,10 +69,7 @@ pub fn configure_tracing(config: Option<&LoggingConfig>) -> Result<(), LoggingEr
 
     let handle = TracingHandle::new(&resolved)?;
     match TRACING_HANDLE.set(handle) {
-        Ok(()) => TRACING_HANDLE
-            .get()
-            .expect("tracing handle set")
-            .reload(&resolved),
+        Ok(()) => Ok(()),
         Err(existing) => existing.reload(&resolved),
     }
 }
@@ -88,7 +85,16 @@ impl TracingHandle {
         let text_writer = ActiveFormatWriter::new(format.clone(), LogFormat::Text);
         let json_writer = ActiveFormatWriter::new(format.clone(), LogFormat::Json);
 
-        let (filter_layer, filter) = reload::Layer::new(build_filter(&resolved.filter));
+        // Validate filter before subscriber installation. If invalid, use the
+        // default and defer the warning until the subscriber is installed.
+        let (initial_filter, fallback_warning) = match EnvFilter::try_new(&resolved.filter) {
+            Ok(f) => (f, None),
+            Err(err) => (
+                EnvFilter::new(DEFAULT_FILTER),
+                Some((resolved.filter.clone(), err.to_string())),
+            ),
+        };
+        let (filter_layer, filter) = reload::Layer::new(initial_filter);
 
         let text_layer = tracing_fmt::layer()
             .with_writer(text_writer)
@@ -107,6 +113,15 @@ impl TracingHandle {
             .with(json_layer);
         tracing::subscriber::set_global_default(subscriber)
             .map_err(|err| LoggingError::SetGlobalDefault(err.to_string()))?;
+
+        if let Some((spec, error)) = fallback_warning {
+            tracing::warn!(
+                spec = %spec,
+                error = %error,
+                fallback = DEFAULT_FILTER,
+                "configured log filter is invalid, falling back to default"
+            );
+        }
 
         Ok(Self { format, filter })
     }
