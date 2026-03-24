@@ -52,8 +52,12 @@ pub enum ManifestError {
     Io(std::io::Error),
     /// Failed to parse TOML or map it to the manifest structure.
     Parse(toml::de::Error),
+    /// Artifact type name is unsafe as a layout-derived path component.
+    InvalidArtifactTypeName(String),
     /// Two artifact types share the same name.
     DuplicateArtifactType(String),
+    /// Protocol name is unsafe as a layout-derived path component.
+    InvalidProtocolName(String),
     /// Two protocols share the same name.
     DuplicateProtocolName(String),
     /// Schema file missing at its conventional location.
@@ -79,9 +83,17 @@ impl fmt::Display for ManifestError {
         match self {
             ManifestError::Io(e) => write!(f, "failed to read manifest: {e}"),
             ManifestError::Parse(e) => write!(f, "invalid manifest: {e}"),
+            ManifestError::InvalidArtifactTypeName(name) => write!(
+                f,
+                "invalid artifact type name '{name}': names must not contain '/', '\\', or '..'"
+            ),
             ManifestError::DuplicateArtifactType(name) => {
                 write!(f, "duplicate artifact type name: {name}")
             }
+            ManifestError::InvalidProtocolName(name) => write!(
+                f,
+                "invalid protocol name '{name}': names must not contain '/', '\\', or '..'"
+            ),
             ManifestError::DuplicateProtocolName(name) => {
                 write!(f, "duplicate protocol name: {name}")
             }
@@ -150,11 +162,12 @@ impl From<toml::de::Error> for ManifestError {
 
 /// Parse a manifest from a file path.
 ///
-/// Reads the file, parses TOML into a `Manifest`, validates name uniqueness,
-/// then resolves the methodology layout convention: loads schema content from
-/// `schemas/{artifact_type_name}.schema.json` and validates instruction file
-/// existence at `protocols/{protocol_name}/PROTOCOL.md`, both relative to the
-/// manifest directory.
+/// Reads the file, parses TOML into a `Manifest`, validates declared artifact
+/// type and protocol names are unique and safe as layout-derived path
+/// components, then resolves the methodology layout convention: loads schema
+/// content from `schemas/{artifact_type_name}.schema.json` and validates
+/// instruction file existence at `protocols/{protocol_name}/PROTOCOL.md`, both
+/// relative to the manifest directory.
 pub fn parse(path: &Path) -> Result<Manifest, ManifestError> {
     let content = std::fs::read_to_string(path)?;
     let mut manifest = from_str(&content)?;
@@ -214,9 +227,9 @@ fn resolve_methodology_layout(
 /// Parse a manifest from a TOML string.
 ///
 /// Deserializes the TOML into a `Manifest` and validates that artifact type
-/// names and protocol names are unique. Schema content and instruction paths
-/// are not resolved — use `parse` for a complete manifest with filesystem
-/// resolution.
+/// names and protocol names are unique and safe as layout-derived path
+/// components. Schema content and instruction paths are not resolved — use
+/// `parse` for a complete manifest with filesystem resolution.
 pub fn from_str(content: &str) -> Result<Manifest, ManifestError> {
     let raw: RawManifest = toml::from_str(content)?;
     let manifest = Manifest {
@@ -250,6 +263,7 @@ pub fn from_str(content: &str) -> Result<Manifest, ManifestError> {
 fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
     let mut seen = HashSet::new();
     for at in &manifest.artifact_types {
+        validate_layout_name(&at.name, NameKind::ArtifactType)?;
         if !seen.insert(&at.name) {
             return Err(ManifestError::DuplicateArtifactType(at.name.clone()));
         }
@@ -257,11 +271,28 @@ fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
 
     let mut seen = HashSet::new();
     for protocol in &manifest.protocols {
+        validate_layout_name(&protocol.name, NameKind::Protocol)?;
         if !seen.insert(&protocol.name) {
             return Err(ManifestError::DuplicateProtocolName(protocol.name.clone()));
         }
     }
 
+    Ok(())
+}
+
+#[derive(Copy, Clone)]
+enum NameKind {
+    ArtifactType,
+    Protocol,
+}
+
+fn validate_layout_name(name: &str, kind: NameKind) -> Result<(), ManifestError> {
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(match kind {
+            NameKind::ArtifactType => ManifestError::InvalidArtifactTypeName(name.to_string()),
+            NameKind::Protocol => ManifestError::InvalidProtocolName(name.to_string()),
+        });
+    }
     Ok(())
 }
 
@@ -271,19 +302,11 @@ mod tests {
     use crate::model::TriggerCondition;
 
     /// Create a methodology layout in `dir` with schema and protocol instruction files.
-    fn write_layout(
-        dir: &Path,
-        schemas: &[(&str, &str)],
-        protocols: &[&str],
-    ) {
+    fn write_layout(dir: &Path, schemas: &[(&str, &str)], protocols: &[&str]) {
         let schemas_dir = dir.join("schemas");
         std::fs::create_dir_all(&schemas_dir).unwrap();
         for (name, content) in schemas {
-            std::fs::write(
-                schemas_dir.join(format!("{name}.schema.json")),
-                content,
-            )
-            .unwrap();
+            std::fs::write(schemas_dir.join(format!("{name}.schema.json")), content).unwrap();
         }
         for protocol_name in protocols {
             let protocol_dir = dir.join("protocols").join(protocol_name);
@@ -362,9 +385,7 @@ name = "constraints"
         let dir = tempfile::tempdir().unwrap();
         write_layout(
             dir.path(),
-            &[
-                ("report", r#"{"type": "object", "required": ["title"]}"#),
-            ],
+            &[("report", r#"{"type": "object", "required": ["title"]}"#)],
             &["generate"],
         );
 
@@ -526,6 +547,64 @@ trigger = { type = "on_change", name = "x" }
     }
 
     #[test]
+    fn parse_rejects_artifact_type_names_with_unsafe_path_components() {
+        for invalid_name in ["foo/bar", r"foo\bar", "foo..bar"] {
+            let toml = format!(
+                r#"
+name = "unsafe-artifact"
+
+[[artifact_types]]
+name = '{invalid_name}'
+
+[[protocols]]
+name = "generate"
+produces = ["safe-output"]
+trigger = {{ type = "on_change", name = "safe-output" }}
+"#
+            );
+
+            let err = from_str(&toml).unwrap_err();
+            assert!(
+                err.to_string().contains("artifact type name"),
+                "expected artifact type name validation error for {invalid_name:?}, got: {err}"
+            );
+            assert!(
+                err.to_string().contains(invalid_name),
+                "expected invalid artifact type name in error for {invalid_name:?}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rejects_protocol_names_with_unsafe_path_components() {
+        for invalid_name in ["foo/bar", r"foo\bar", "foo..bar"] {
+            let toml = format!(
+                r#"
+name = "unsafe-protocol"
+
+[[artifact_types]]
+name = "report"
+
+[[protocols]]
+name = '{invalid_name}'
+produces = ["report"]
+trigger = {{ type = "on_change", name = "report" }}
+"#
+            );
+
+            let err = from_str(&toml).unwrap_err();
+            assert!(
+                err.to_string().contains("protocol name"),
+                "expected protocol name validation error for {invalid_name:?}, got: {err}"
+            );
+            assert!(
+                err.to_string().contains(invalid_name),
+                "expected invalid protocol name in error for {invalid_name:?}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn parse_nested_trigger_conditions() {
         let toml = r#"
 name = "nested"
@@ -579,12 +658,10 @@ conditions = [
         let dir = tempfile::tempdir().unwrap();
         write_layout(
             dir.path(),
-            &[
-                (
-                    "thing",
-                    r#"{"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}}"#,
-                ),
-            ],
+            &[(
+                "thing",
+                r#"{"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}}"#,
+            )],
             &["make-thing"],
         );
 
@@ -644,11 +721,7 @@ trigger = { type = "on_change", name = "report" }
         let dir = tempfile::tempdir().unwrap();
         write_layout(dir.path(), &[], &["make-thing"]);
         // Write invalid JSON to the schema file.
-        std::fs::write(
-            dir.path().join("schemas/thing.schema.json"),
-            "{not json",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("schemas/thing.schema.json"), "{not json").unwrap();
 
         let toml = r#"
 name = "bad-json"
@@ -679,11 +752,7 @@ trigger = { type = "on_change", name = "report" }
     fn parse_missing_instruction_file() {
         let dir = tempfile::tempdir().unwrap();
         // Create schema but no instruction file.
-        write_layout(
-            dir.path(),
-            &[("thing", r#"{"type": "object"}"#)],
-            &[],
-        );
+        write_layout(dir.path(), &[("thing", r#"{"type": "object"}"#)], &[]);
 
         let toml = r#"
 name = "missing-instructions"
@@ -707,6 +776,66 @@ trigger = { type = "on_change", name = "report" }
             } => assert_eq!(protocol, "make-thing"),
             other => panic!("expected InstructionFileNotFound, got: {other}"),
         }
+    }
+
+    #[test]
+    fn parse_rejects_unsafe_artifact_names_before_schema_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        write_layout(dir.path(), &[], &["generate"]);
+
+        let toml = r#"
+name = "unsafe-layout"
+
+[[artifact_types]]
+name = "../escaped"
+
+[[protocols]]
+name = "generate"
+produces = ["../escaped"]
+trigger = { type = "on_change", name = "../escaped" }
+"#;
+        let manifest_path = dir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, toml).unwrap();
+
+        let err = parse(&manifest_path).unwrap_err();
+        assert!(
+            err.to_string().contains("artifact type name"),
+            "expected invalid artifact type name error, got: {err}"
+        );
+        assert!(
+            !matches!(err, ManifestError::SchemaNotFound { .. }),
+            "unsafe artifact name should fail before schema lookup"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_unsafe_protocol_names_before_instruction_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        write_layout(dir.path(), &[("report", r#"{"type": "object"}"#)], &[]);
+
+        let toml = r#"
+name = "unsafe-layout"
+
+[[artifact_types]]
+name = "report"
+
+[[protocols]]
+name = "../escaped"
+produces = ["report"]
+trigger = { type = "on_change", name = "report" }
+"#;
+        let manifest_path = dir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, toml).unwrap();
+
+        let err = parse(&manifest_path).unwrap_err();
+        assert!(
+            err.to_string().contains("protocol name"),
+            "expected invalid protocol name error, got: {err}"
+        );
+        assert!(
+            !matches!(err, ManifestError::InstructionFileNotFound { .. }),
+            "unsafe protocol name should fail before instruction lookup"
+        );
     }
 
     #[test]

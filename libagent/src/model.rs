@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 /// runa reads it, builds the dependency graph, and begins monitoring.
 ///
 /// Format: TOML. See `manifest::parse` for reading from files.
+/// TOML serialization of this runtime model is not a supported operation:
+/// `manifest::parse` populates schema content from the methodology layout
+/// convention, and that derived state is intentionally not accepted back
+/// through the TOML manifest parser.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     /// Methodology name.

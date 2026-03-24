@@ -14,7 +14,7 @@ Three crates, Rust 2024 edition, resolver v3:
 
 These are library capabilities exposed by libagent and consumed by both the CLI and the MCP server.
 
-1. **TOML manifest → model types.** `manifest::parse` reads a methodology manifest file, deserializes TOML into `Manifest` (containing `ArtifactType` and `ProtocolDeclaration` vectors), validates name uniqueness, then resolves the methodology layout convention: loads schema content from `schemas/{name}.schema.json` and validates instruction file existence at `protocols/{name}/PROTOCOL.md`, both relative to the manifest directory.
+1. **TOML manifest → model types.** `manifest::parse` reads a methodology manifest file, deserializes TOML into `Manifest` (containing `ArtifactType` and `ProtocolDeclaration` vectors), validates artifact type names and protocol names are unique and safe as layout-derived path components, then resolves the methodology layout convention: loads schema content from `schemas/{name}.schema.json` and validates instruction file existence at `protocols/{name}/PROTOCOL.md`, both relative to the manifest directory.
 
 2. **Skill declarations → dependency graph.** `DependencyGraph::build` takes `&[ProtocolDeclaration]` and computes edges from requires/accepts → produces/may_produce relationships. Provides topological ordering (Kahn's algorithm), cycle detection (falls back to hard-edges-only on combined-graph cycle), and blocked-protocol identification.
 
@@ -38,7 +38,7 @@ Core types: `Manifest`, `ArtifactType`, `ProtocolDeclaration`, `TriggerCondition
 
 ### `manifest.rs`
 
-TOML parsing, structural validation, and methodology layout resolution. `from_str` deserializes a TOML string into raw types and converts to model types with unresolved schemas (`Value::Null`) and no instruction paths. `parse` reads from a file path, calls `from_str`, then resolves the methodology layout convention — loading schema JSON from `schemas/{artifact_type_name}.schema.json` and validating instruction file existence at `protocols/{protocol_name}/PROTOCOL.md`. Both validate that artifact type names and protocol names are unique within the manifest. The TOML format uses `deny_unknown_fields` on artifact type declarations, rejecting old-format manifests that include explicit `schema` fields.
+TOML parsing, structural validation, and methodology layout resolution. `from_str` deserializes a TOML string into raw types and converts to model types with unresolved schemas (`Value::Null`) and no instruction paths. `parse` reads from a file path, calls `from_str`, then resolves the methodology layout convention — loading schema JSON from `schemas/{artifact_type_name}.schema.json` and validating instruction file existence at `protocols/{protocol_name}/PROTOCOL.md`. Both validate that artifact type names and protocol names are unique within the manifest and safe as single path components, rejecting names containing `/`, `\`, or `..` before any filesystem lookup. The TOML format uses `deny_unknown_fields` on artifact type declarations, rejecting old-format manifests that include explicit `schema` fields.
 
 ### `validation.rs`
 
