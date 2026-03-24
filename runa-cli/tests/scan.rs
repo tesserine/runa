@@ -345,6 +345,45 @@ filter = "info"
 }
 
 #[test]
+fn scan_rust_log_overrides_config_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = dir.path().join("manifest.toml");
+    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    append_logging_config(
+        &project_dir,
+        r#"[logging]
+filter = "info"
+"#,
+    );
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(workspace.join("constraints/good.json"), r#"{"title":"ok"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("scan")
+        .env("RUST_LOG", "error")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "RUST_LOG=error should suppress info-level events from config filter: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn scan_logs_errors_with_env_defaults_when_config_is_missing() {
     let dir = tempfile::tempdir().unwrap();
 

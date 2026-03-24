@@ -34,7 +34,7 @@ format = "json"   # "text" (default) or "json"
 filter = "info"   # any tracing env-filter directive
 ```
 
-`format = "json"` switches stderr events to machine-readable JSON. This does not change stdout command output.
+`format = "json"` switches stderr events to machine-readable JSON. This does not change stdout command output. `RUST_LOG` controls the filter only; output format is always determined by `config.logging.format` (defaulting to `text`).
 
 ```bash
 runa list
