@@ -27,6 +27,7 @@ pub struct ExpectedOutputs {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextInjection {
     pub protocol: String,
+    pub instructions: String,
     pub inputs: Vec<ArtifactRef>,
     pub expected_outputs: ExpectedOutputs,
 }
@@ -55,6 +56,7 @@ pub fn build_context(
 
     ContextInjection {
         protocol: protocol.name.clone(),
+        instructions: protocol.instructions.clone().unwrap_or_default(),
         inputs,
         expected_outputs: ExpectedOutputs {
             produces: protocol.produces.clone(),
@@ -124,11 +126,12 @@ mod tests {
             trigger: crate::TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
-            instructions: None,
+            instructions: Some("# implement\n".into()),
         };
 
         let context = build_context(&protocol, &store, None);
         assert_eq!(context.protocol, "implement");
+        assert_eq!(context.instructions, "# implement\n");
         assert_eq!(
             context.expected_outputs,
             ExpectedOutputs {
@@ -196,6 +199,7 @@ mod tests {
 
         let context = build_context(&protocol, &store, None);
         assert_eq!(context.inputs.len(), 1);
+        assert_eq!(context.instructions, "");
         assert_eq!(context.inputs[0].artifact_type, "constraints");
         assert_eq!(
             context.inputs[0].relationship,

@@ -34,11 +34,11 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 ### `model.rs`
 
-Core types: `Manifest`, `ArtifactType`, `ProtocolDeclaration`, `TriggerCondition`. `ProtocolDeclaration` includes an `instructions: Option<PathBuf>` field populated by `manifest::parse` from the methodology layout convention (`None` from `from_str`). `TriggerCondition` is a tagged enum (`#[serde(tag = "type", rename_all = "snake_case")]`) with five variants: `OnArtifact`, `OnChange`, `OnInvalid`, `AllOf`, `AnyOf`. `AllOf`/`AnyOf` hold `Vec<TriggerCondition>` for arbitrary nesting depth.
+Core types: `Manifest`, `ArtifactType`, `ProtocolDeclaration`, `TriggerCondition`. `ProtocolDeclaration` includes an `instructions: Option<String>` field populated by `manifest::parse` with the protocol's `PROTOCOL.md` content (`None` from `from_str`). `TriggerCondition` is a tagged enum (`#[serde(tag = "type", rename_all = "snake_case")]`) with five variants: `OnArtifact`, `OnChange`, `OnInvalid`, `AllOf`, `AnyOf`. `AllOf`/`AnyOf` hold `Vec<TriggerCondition>` for arbitrary nesting depth.
 
 ### `manifest.rs`
 
-TOML parsing, structural validation, and methodology layout resolution. `from_str` deserializes a TOML string into raw types and converts to model types with unresolved schemas (`Value::Null`) and no instruction paths. `parse` reads from a file path, calls `from_str`, then resolves the methodology layout convention — loading schema JSON from `schemas/{artifact_type_name}.schema.json` and validating instruction file existence at `protocols/{protocol_name}/PROTOCOL.md`. Both validate that artifact type names and protocol names are unique within the manifest and safe as single path components, rejecting names containing `/`, `\`, or `..` before any filesystem lookup. The TOML format uses `deny_unknown_fields` on artifact type declarations, rejecting old-format manifests that include explicit `schema` fields.
+TOML parsing, structural validation, and methodology layout resolution. `from_str` deserializes a TOML string into raw types and converts to model types with unresolved schemas (`Value::Null`) and no instruction content. `parse` reads from a file path, calls `from_str`, then resolves the methodology layout convention — loading schema JSON from `schemas/{artifact_type_name}.schema.json` and loading instruction text from `protocols/{protocol_name}/PROTOCOL.md`. Both validate that artifact type names and protocol names are unique within the manifest and safe as single path components, rejecting names containing `/`, `\`, or `..` before any filesystem lookup. The TOML format uses `deny_unknown_fields` on artifact type declarations, rejecting old-format manifests that include explicit `schema` fields.
 
 ### `validation.rs`
 
@@ -54,7 +54,7 @@ Dependency graph built from protocol declarations. Edges derive from artifact re
 
 ### `context.rs`
 
-Stable agent-facing context injection contract. `build_context` gathers all valid required artifacts and all valid available accepted artifacts for a protocol into ordered `ArtifactRef` entries carrying `artifact_type`, `instance_id`, lossy text `path`, `content_hash`, and `relationship` (`requires` or `accepts`). `ExpectedOutputs` exposes `produces` and `may_produce` artifact type names without embedding trigger/operator details.
+Stable agent-facing context injection contract. `build_context` gathers all valid required artifacts and all valid available accepted artifacts for a protocol into ordered `ArtifactRef` entries carrying `artifact_type`, `instance_id`, lossy text `path`, `content_hash`, and `relationship` (`requires` or `accepts`). It also copies the preloaded protocol instruction content into the payload. `ExpectedOutputs` exposes `produces` and `may_produce` artifact type names without embedding trigger/operator details.
 
 ### `store.rs`
 
@@ -102,7 +102,7 @@ Runtime loop: loads the project, scans the workspace, discovers ready candidates
 
 ### `context.rs`
 
-Natural language context prompt renderer. Transforms `ContextInjection` into a `GetPromptResult` with prose-rendered artifact content. JSON objects become labeled key-value sections with humanized keys, arrays become numbered lists, and nested structures are indented. Artifact read/parse errors are rendered inline rather than failing the prompt.
+Natural language context prompt renderer. Transforms `ContextInjection` into a `GetPromptResult` with the protocol heading, a protocol-instructions section, prose-rendered artifact content, and output guidance. JSON objects become labeled key-value sections with humanized keys, arrays become numbered lists, and nested structures are indented. Artifact read/parse errors are rendered inline rather than failing the prompt.
 
 ## `.runa/` Directory Layout
 
@@ -161,7 +161,7 @@ Exits 0 for successful status evaluation regardless of whether protocols are rea
 
 ### `runa step --dry-run [--json]`
 
-Runs the same implicit scan and shared candidate classification used by `runa status`, then builds an execution plan from the `READY` `(protocol, work_unit)` pairs that can be placed in a valid execution order. Candidate discovery, trigger evaluation, and freshness suppression use the same work-unit-scoped selection logic as `runa-mcp`, so `step --dry-run` previews the same ready work that MCP would attempt to serve. Plan entries preserve graph order for the non-cyclic frontier and include the protocol name, optional `work_unit`, the trigger condition string, and the JSON-serialized `libagent::context::ContextInjection` payload. If a hard dependency cycle exists, `step` reports the cycle as a warning, excludes the cycle participants from the plan, and still includes any unrelated orderable READY protocols. Text output prints the execution plan followed by the grouped READY/BLOCKED/WAITING view. JSON output adds an `execution_plan` array plus an optional `cycle` path while reusing the same `protocols` status entries and `scan_warnings` envelope fields as `runa status`. `runa step` without `--dry-run` is a deliberate stub: it prints `Agent execution is not yet implemented. Use --dry-run to see the execution plan.` and exits with code 1.
+Runs the same implicit scan and shared candidate classification used by `runa status`, then builds an execution plan from the `READY` `(protocol, work_unit)` pairs that can be placed in a valid execution order. Candidate discovery, trigger evaluation, and freshness suppression use the same work-unit-scoped selection logic as `runa-mcp`, so `step --dry-run` previews the same ready work that MCP would attempt to serve. Plan entries preserve graph order for the non-cyclic frontier and include the protocol name, optional `work_unit`, the trigger condition string, and the JSON-serialized `libagent::context::ContextInjection` payload, including preloaded protocol instructions. If a hard dependency cycle exists, `step` reports the cycle as a warning, excludes the cycle participants from the plan, and still includes any unrelated orderable READY protocols. Text output prints the execution plan followed by the grouped READY/BLOCKED/WAITING view. JSON output adds an `execution_plan` array plus an optional `cycle` path while reusing the same `protocols` status entries and `scan_warnings` envelope fields as `runa status`. `runa step` without `--dry-run` is a deliberate stub: it prints `Agent execution is not yet implemented. Use --dry-run to see the execution plan.` and exits with code 1.
 
 ## Key Design Patterns
 

@@ -40,9 +40,18 @@ trigger = { type = "on_invalid", name = "implementation" }
 
 fn methodology_schemas() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("constraints", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
-        ("prior-art", r#"{"type":"object","required":["source"],"properties":{"source":{"type":"string"}}}"#),
-        ("implementation", r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#),
+        (
+            "constraints",
+            r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+        ),
+        (
+            "prior-art",
+            r#"{"type":"object","required":["source"],"properties":{"source":{"type":"string"}}}"#,
+        ),
+        (
+            "implementation",
+            r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+        ),
     ]
 }
 
@@ -118,6 +127,10 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     assert_eq!(execution_plan[0]["protocol"], "implement");
     assert_eq!(execution_plan[0]["trigger"], "on_artifact(constraints)");
     assert_eq!(execution_plan[0]["context"]["protocol"], "implement");
+    assert_eq!(
+        execution_plan[0]["context"]["instructions"],
+        "# implement\n"
+    );
     assert_eq!(
         execution_plan[0]["context"]["expected_outputs"],
         serde_json::json!({
@@ -207,6 +220,58 @@ fn step_dry_run_text_reports_why_when_no_skills_are_ready() {
 }
 
 #[test]
+fn step_dry_run_text_shows_preloaded_protocol_instructions_for_ready_protocols() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("prior-art")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("prior-art/survey-1.json"),
+        r#"{"source":"notes"}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"protocol\": \"implement\""),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"instructions\": \"# implement\\n\""),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
 fn step_without_dry_run_reports_placeholder_and_exits_non_zero() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
@@ -262,8 +327,14 @@ requires = ["implementation"]
 trigger = { type = "on_artifact", name = "constraints" }
 "#,
         &[
-            ("constraints", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
-            ("implementation", r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#),
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "implementation",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
         ],
         &["verify"],
     );
@@ -418,8 +489,14 @@ produces = ["b"]
 trigger = { type = "on_change", name = "b" }
 "#,
         &[
-            ("a", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
-            ("b", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
+            (
+                "a",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "b",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
         ],
         &["first", "second"],
     );
@@ -482,8 +559,14 @@ produces = ["b"]
 trigger = { type = "on_change", name = "b" }
 "#,
         &[
-            ("a", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
-            ("b", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
+            (
+                "a",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "b",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
         ],
         &["first", "second"],
     );
@@ -517,7 +600,8 @@ trigger = { type = "on_change", name = "b" }
 #[test]
 fn step_dry_run_keeps_non_cyclic_ready_skills_in_plan_when_cycle_exists() {
     let dir = tempfile::tempdir().unwrap();
-    let title_schema = r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#;
+    let title_schema =
+        r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#;
     let manifest_path = common::write_methodology(
         dir.path(),
         r#"
@@ -557,7 +641,10 @@ trigger = { type = "on_change", name = "b" }
             ("seed", title_schema),
             ("a", title_schema),
             ("b", title_schema),
-            ("result", r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#),
+            (
+                "result",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
         ],
         &["independent", "first", "second"],
     );
@@ -603,7 +690,8 @@ trigger = { type = "on_change", name = "b" }
 #[test]
 fn step_dry_run_keeps_ready_skills_downstream_of_cycle_when_inputs_exist() {
     let dir = tempfile::tempdir().unwrap();
-    let title_schema = r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#;
+    let title_schema =
+        r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#;
     let manifest_path = common::write_methodology(
         dir.path(),
         r#"
@@ -639,7 +727,10 @@ trigger = { type = "on_artifact", name = "a" }
         &[
             ("a", title_schema),
             ("b", title_schema),
-            ("result", r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#),
+            (
+                "result",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
         ],
         &["first", "second", "publish"],
     );
@@ -689,7 +780,8 @@ trigger = { type = "on_artifact", name = "a" }
 #[test]
 fn step_dry_run_preserves_dependency_order_for_ready_skills_with_unrelated_cycle() {
     let dir = tempfile::tempdir().unwrap();
-    let title_schema = r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#;
+    let title_schema =
+        r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#;
     let manifest_path = common::write_methodology(
         dir.path(),
         r#"
@@ -737,7 +829,10 @@ trigger = { type = "on_change", name = "b" }
         &[
             ("root", title_schema),
             ("seed", title_schema),
-            ("result", r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#),
+            (
+                "result",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
             ("a", title_schema),
             ("b", title_schema),
         ],
@@ -794,10 +889,7 @@ name = "review"
 produces = ["reviewed"]
 trigger = { type = "on_change", name = "doc" }
 "#,
-        &[
-            ("doc", wu_schema),
-            ("reviewed", wu_schema),
-        ],
+        &[("doc", wu_schema), ("reviewed", wu_schema)],
         &["review"],
     );
 

@@ -36,7 +36,10 @@ trigger = { type = "on_artifact", name = "design-doc" }
 }
 
 const SCHEMAS: &[(&str, &str)] = &[
-    ("constraints", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
+    (
+        "constraints",
+        r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+    ),
     ("design-doc", r#"{"type":"object"}"#),
 ];
 

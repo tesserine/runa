@@ -10,7 +10,7 @@ use crate::model::{ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition
 // Raw TOML deserialization types
 //
 // These mirror the model types but represent only what appears in the TOML
-// manifest. Schema content and instruction paths are derived from the
+// manifest. Schema content and protocol instructions are derived from the
 // methodology layout convention during `parse()`, not declared in TOML.
 // ---------------------------------------------------------------------------
 
@@ -176,7 +176,7 @@ pub fn parse(path: &Path) -> Result<Manifest, ManifestError> {
     Ok(manifest)
 }
 
-/// Resolve schema content and instruction paths from the methodology layout
+/// Resolve schema content and protocol instructions from the methodology layout
 /// convention.
 fn resolve_methodology_layout(
     manifest: &mut Manifest,
@@ -212,13 +212,17 @@ fn resolve_methodology_layout(
             .join("protocols")
             .join(&protocol.name)
             .join("PROTOCOL.md");
-        if !instruction_path.is_file() {
-            return Err(ManifestError::InstructionFileNotFound {
-                protocol: protocol.name.clone(),
-                expected_path: instruction_path,
-            });
-        }
-        protocol.instructions = Some(instruction_path);
+        let content = std::fs::read_to_string(&instruction_path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ManifestError::InstructionFileNotFound {
+                    protocol: protocol.name.clone(),
+                    expected_path: instruction_path.clone(),
+                }
+            } else {
+                ManifestError::Io(e)
+            }
+        })?;
+        protocol.instructions = Some(content);
     }
 
     Ok(())
@@ -228,13 +232,13 @@ fn resolve_methodology_layout(
 ///
 /// Deserializes the TOML into a `Manifest` and validates that artifact type
 /// names and protocol names are unique and safe as layout-derived path
-/// components. Schema content and instruction paths are not resolved — use
+/// components. Schema content and protocol instructions are not resolved — use
 /// `parse` for a complete manifest with filesystem resolution.
 ///
 /// The returned `Manifest` is an intermediate runtime shape for the parsing
 /// pipeline, not a fully resolved methodology registration: every artifact
 /// type schema is left as `serde_json::Value::Null`, every protocol
-/// instruction path is `None`, and the result is therefore not suitable for
+/// instruction field is `None`, and the result is therefore not suitable for
 /// artifact validation or protocol execution without a subsequent
 /// filesystem-backed `parse`.
 pub fn from_str(content: &str) -> Result<Manifest, ManifestError> {
@@ -424,9 +428,9 @@ trigger = { type = "on_change", name = "report" }
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["required"][0], "title");
 
-        // Instruction path resolved from convention.
+        // Instruction content loaded from convention path.
         let instructions = manifest.protocols[0].instructions.as_ref().unwrap();
-        assert!(instructions.ends_with("protocols/generate/PROTOCOL.md"));
+        assert_eq!(instructions, "# generate\n");
     }
 
     #[test]
@@ -932,9 +936,6 @@ trigger = { type = "on_change", name = "report" }
         let manifest = parse(&manifest_path).unwrap();
         assert_eq!(manifest.artifact_types[0].schema["type"], "object");
         let instructions = manifest.protocols[0].instructions.as_ref().unwrap();
-        assert!(
-            instructions.starts_with(&methodology_dir),
-            "instruction path {instructions:?} should be under methodology dir"
-        );
+        assert_eq!(instructions, "# generate\n");
     }
 }

@@ -18,11 +18,7 @@ pub fn write_methodology(
     let schemas_dir = dir.join("schemas");
     fs::create_dir_all(&schemas_dir).unwrap();
     for (name, content) in schemas {
-        fs::write(
-            schemas_dir.join(format!("{name}.schema.json")),
-            content,
-        )
-        .unwrap();
+        fs::write(schemas_dir.join(format!("{name}.schema.json")), content).unwrap();
     }
 
     for protocol_name in protocols {

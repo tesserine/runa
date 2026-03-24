@@ -1,7 +1,5 @@
-use std::fmt;
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// A methodology's complete registration with the runa runtime.
 ///
@@ -58,11 +56,11 @@ pub struct ProtocolDeclaration {
     pub may_produce: Vec<String>,
     /// Condition that activates this protocol.
     pub trigger: TriggerCondition,
-    /// Filesystem path to the protocol's instruction content.
-    /// Derived from the methodology layout convention by `manifest::parse`.
+    /// Protocol instruction content loaded from the methodology layout
+    /// convention by `manifest::parse`.
     /// `None` when produced by `manifest::from_str` (no filesystem access).
     #[serde(skip)]
-    pub instructions: Option<PathBuf>,
+    pub instructions: Option<String>,
 }
 
 /// Defines when the runtime should activate a protocol.

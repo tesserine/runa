@@ -12,6 +12,11 @@ pub fn render_context_prompt(context: &ContextInjection) -> GetPromptResult {
     let mut sections = Vec::new();
     sections.push(format!("# Protocol: {}", context.protocol));
 
+    if !context.instructions.is_empty() {
+        sections.push("\n## Protocol instructions".to_string());
+        sections.push(context.instructions.clone());
+    }
+
     // Required Inputs
     let required: Vec<_> = context
         .inputs
@@ -219,6 +224,7 @@ mod tests {
     fn render_context_prompt_scopes_tool_guidance_to_required_outputs() {
         let prompt = render_context_prompt(&ContextInjection {
             protocol: "implement".into(),
+            instructions: "# Follow the protocol\n".into(),
             inputs: Vec::new(),
             expected_outputs: ExpectedOutputs {
                 produces: vec!["implementation".into()],
@@ -231,6 +237,8 @@ mod tests {
             other => panic!("expected text prompt content, got {other:?}"),
         };
 
+        assert!(text.contains("## Protocol instructions"));
+        assert!(text.contains("# Follow the protocol"));
         assert!(text.contains("You must produce: implementation"));
         assert!(text.contains("You may also produce: notes"));
         assert!(text.contains(

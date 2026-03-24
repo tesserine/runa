@@ -71,7 +71,7 @@ Given the declarations above, runa provides five runtime capabilities:
 
 **Enforcement.** A protocol cannot execute if its `requires` artifacts are missing or invalid. A protocol's execution is incomplete if its `produces` artifacts are missing or invalid. These are hard constraints the runtime enforces regardless of what the methodology intends.
 
-**Context injection.** When a protocol is ready to execute, runa resolves which artifact instances the protocol needs — all valid `requires` instances and all available valid `accepts` instances — and delivers them as the protocol's input context alongside the expected output artifact types. The protocol receives its inputs without querying the store directly.
+**Context injection.** When a protocol is ready to execute, runa resolves which artifact instances the protocol needs — all valid `requires` instances and all available valid `accepts` instances — and delivers them as the protocol's input context alongside the protocol's instruction content and expected output artifact types. The protocol receives its inputs without querying the store directly.
 
 ## What runa Does Not Do
 
@@ -92,7 +92,7 @@ The interface contract defines conventional locations for methodology content re
 
 These conventions are part of the interface contract — the same layer that defines manifest format, field names, and trigger condition types. A valid methodology conforms to this layout. runa derives paths from names it already has; the manifest does not include explicit path fields.
 
-Both schema files and instruction files must exist at their conventional locations when the manifest is parsed. Missing files are parse errors, caught before any runtime operation. Schema files are read and parsed at parse time. Instruction files are validated for existence at parse time; content reading is a separate concern.
+Both schema files and instruction files must exist at their conventional locations when the manifest is parsed. Missing files are parse errors, caught before any runtime operation. Schema files are read and parsed at parse time. Instruction files are also read at parse time and stored on the resolved protocol declarations.
 Unsafe artifact type or protocol names are also parse errors, rejected before runa attempts any layout-derived filesystem lookup.
 
 ## Methodology Registration
@@ -103,4 +103,4 @@ A methodology registers with runa through a manifest file and the layout convent
 - The methodology's protocols and their declarations (instruction content is at conventional paths)
 - No other configuration
 
-The manifest and its accompanying layout are the methodology's only interface with the runtime. runa reads the manifest, resolves schemas and instruction files from the layout convention, builds the graph, and begins monitoring.
+The manifest and its accompanying layout are the methodology's only interface with the runtime. runa reads the manifest, resolves schemas and instruction content from the layout convention, builds the graph, and begins monitoring.

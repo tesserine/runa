@@ -53,11 +53,26 @@ trigger = { type = "on_artifact", name = "implementation" }
 }
 
 const SCHEMAS: &[(&str, &str)] = &[
-    ("constraints", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
-    ("prior-art", r#"{"type":"object","required":["source"],"properties":{"source":{"type":"string"}}}"#),
-    ("design-doc", r#"{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"}}}"#),
-    ("notes", r#"{"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}"#),
-    ("implementation", r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#),
+    (
+        "constraints",
+        r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+    ),
+    (
+        "prior-art",
+        r#"{"type":"object","required":["source"],"properties":{"source":{"type":"string"}}}"#,
+    ),
+    (
+        "design-doc",
+        r#"{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"}}}"#,
+    ),
+    (
+        "notes",
+        r#"{"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}"#,
+    ),
+    (
+        "implementation",
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+    ),
 ];
 
 const PROTOCOLS: &[&str] = &["research", "implement", "verify"];
@@ -127,8 +142,7 @@ fn assert_context_inputs(inputs: &serde_json::Value, expected: &[(&str, &str, Pa
 #[test]
 fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path =
-        common::write_methodology(dir.path(), manifest_toml(), SCHEMAS, PROTOCOLS);
+    let manifest_path = common::write_methodology(dir.path(), manifest_toml(), SCHEMAS, PROTOCOLS);
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -266,6 +280,7 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
     assert_eq!(first_plan.len(), 1, "{first_step:#}");
     assert_eq!(first_plan[0]["protocol"], "research");
     assert_eq!(first_plan[0]["trigger"], "on_artifact(constraints)");
+    assert_eq!(first_plan[0]["context"]["instructions"], "# research\n");
     assert_eq!(
         first_plan[0]["context"]["expected_outputs"],
         serde_json::json!({
