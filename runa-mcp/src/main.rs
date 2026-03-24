@@ -183,6 +183,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             artifact_types = ?partial_output_types,
             "post-session scan incomplete for output types"
         );
+        // Unconditional: postcondition outcomes must reach the operator
+        // even when tracing filters suppress warn-level events.
         eprintln!(
             "runa-mcp: post-session scan incomplete for output types {partial_output_types:?} of '{}' work_unit={:?}",
             protocol.name, candidate.work_unit
@@ -203,6 +205,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             work_unit = ?candidate.work_unit,
             "postconditions not met"
         );
+        // Unconditional: postcondition outcomes must reach the operator
+        // even when tracing filters suppress warn-level events.
         eprintln!(
             "runa-mcp: postconditions not met for '{}' work_unit={:?}",
             protocol.name, candidate.work_unit
