@@ -199,7 +199,7 @@ fn resolve_methodology_layout(
             .join("protocols")
             .join(&protocol.name)
             .join("PROTOCOL.md");
-        if !instruction_path.exists() {
+        if !instruction_path.is_file() {
             return Err(ManifestError::InstructionFileNotFound {
                 protocol: protocol.name.clone(),
                 expected_path: instruction_path,

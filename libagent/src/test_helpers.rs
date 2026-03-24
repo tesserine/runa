@@ -44,6 +44,9 @@ pub fn make_store(dir: &Path, types: Vec<&str>) -> ArtifactStore {
 
 /// Write a methodology layout in `dir`: manifest TOML, schema files, and
 /// protocol instruction files. Returns the manifest file path.
+///
+/// Duplicated in `runa-cli/tests/common/mod.rs` — CLI integration tests
+/// cannot access this helper (`#[cfg(test)]` internal). Keep both in sync.
 pub fn write_methodology(
     dir: &Path,
     manifest_toml: &str,

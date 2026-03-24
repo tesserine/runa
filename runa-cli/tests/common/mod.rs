@@ -3,6 +3,9 @@ use std::path::{Path, PathBuf};
 
 /// Write a methodology layout in `dir`: manifest TOML, schema files, and
 /// protocol instruction files. Returns the manifest file path.
+///
+/// Duplicated from `libagent/src/test_helpers.rs` — CLI integration tests
+/// cannot access that helper (`#[cfg(test)]` internal). Keep both in sync.
 pub fn write_methodology(
     dir: &Path,
     manifest_toml: &str,
