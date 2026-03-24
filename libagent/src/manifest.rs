@@ -230,6 +230,13 @@ fn resolve_methodology_layout(
 /// names and protocol names are unique and safe as layout-derived path
 /// components. Schema content and instruction paths are not resolved — use
 /// `parse` for a complete manifest with filesystem resolution.
+///
+/// The returned `Manifest` is an intermediate runtime shape for the parsing
+/// pipeline, not a fully resolved methodology registration: every artifact
+/// type schema is left as `serde_json::Value::Null`, every protocol
+/// instruction path is `None`, and the result is therefore not suitable for
+/// artifact validation or protocol execution without a subsequent
+/// filesystem-backed `parse`.
 pub fn from_str(content: &str) -> Result<Manifest, ManifestError> {
     let raw: RawManifest = toml::from_str(content)?;
     let manifest = Manifest {
