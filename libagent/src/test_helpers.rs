@@ -59,11 +59,7 @@ pub fn write_methodology(
     let schemas_dir = dir.join("schemas");
     std::fs::create_dir_all(&schemas_dir).unwrap();
     for (name, content) in schemas {
-        std::fs::write(
-            schemas_dir.join(format!("{name}.schema.json")),
-            content,
-        )
-        .unwrap();
+        std::fs::write(schemas_dir.join(format!("{name}.schema.json")), content).unwrap();
     }
 
     for protocol_name in protocols {

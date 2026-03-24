@@ -37,7 +37,10 @@ trigger = { type = "on_artifact", name = "design-doc" }
 
 fn methodology_schemas() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("constraints", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
+        (
+            "constraints",
+            r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+        ),
         ("design-doc", r#"{"type":"object"}"#),
     ]
 }

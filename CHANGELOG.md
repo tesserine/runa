@@ -14,6 +14,10 @@ Semantic Versioning.
   instruction file existence is validated at `protocols/{protocol_name}/PROTOCOL.md`,
   both relative to the manifest directory. The manifest TOML no longer includes
   explicit `schema` fields on artifact type declarations.
+- Preload protocol instruction content during manifest parsing and include it in
+  the shared context payload used by `runa step --dry-run` and the MCP context
+  prompt, so agents receive the exact self-contained instructions that real
+  execution uses.
 
 ### Fixed
 

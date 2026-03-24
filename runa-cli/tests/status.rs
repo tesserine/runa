@@ -40,9 +40,18 @@ trigger = { type = "on_invalid", name = "implementation" }
 
 fn manifest_toml_schemas() -> &'static [(&'static str, &'static str)] {
     &[
-        ("constraints", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-        ("prior-art", r#"{"type": "object", "required": ["source"], "properties": {"source": {"type": "string"}}}"#),
-        ("implementation", r#"{"type": "object", "required": ["done"], "properties": {"done": {"type": "boolean"}}}"#),
+        (
+            "constraints",
+            r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+        ),
+        (
+            "prior-art",
+            r#"{"type": "object", "required": ["source"], "properties": {"source": {"type": "string"}}}"#,
+        ),
+        (
+            "implementation",
+            r#"{"type": "object", "required": ["done"], "properties": {"done": {"type": "boolean"}}}"#,
+        ),
     ]
 }
 
@@ -270,8 +279,14 @@ trigger = { type = "all_of", conditions = [
 ] }
 "#,
         &[
-            ("constraints", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-            ("implementation", r#"{"type": "object", "required": ["done"], "properties": {"done": {"type": "boolean"}}}"#),
+            (
+                "constraints",
+                r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+            ),
+            (
+                "implementation",
+                r#"{"type": "object", "required": ["done"], "properties": {"done": {"type": "boolean"}}}"#,
+            ),
         ],
         &["verify", "release"],
     );
@@ -542,9 +557,10 @@ name = "implement"
 requires = ["constraints"]
 trigger = { type = "on_invalid", name = "constraints" }
 "#,
-        &[
-            ("constraints", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-        ],
+        &[(
+            "constraints",
+            r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+        )],
         &["implement"],
     );
 
@@ -618,8 +634,14 @@ requires = ["constraints", "implementation"]
 trigger = { type = "on_artifact", name = "constraints" }
 "#,
         &[
-            ("constraints", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-            ("implementation", r#"{"type": "object", "required": ["done"], "properties": {"done": {"type": "boolean"}}}"#),
+            (
+                "constraints",
+                r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+            ),
+            (
+                "implementation",
+                r#"{"type": "object", "required": ["done"], "properties": {"done": {"type": "boolean"}}}"#,
+            ),
         ],
         &["verify"],
     );
@@ -705,9 +727,10 @@ name = "report"
 name = "repair"
 trigger = { type = "on_artifact", name = "report" }
 "#,
-        &[
-            ("report", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-        ],
+        &[(
+            "report",
+            r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+        )],
         &["repair"],
     );
 
@@ -838,9 +861,10 @@ name = "report"
 name = "repair"
 trigger = { type = "on_invalid", name = "report" }
 "#,
-        &[
-            ("report", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-        ],
+        &[(
+            "report",
+            r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+        )],
         &["repair"],
     );
 
@@ -911,8 +935,14 @@ trigger = { type = "any_of", conditions = [
 ] }
 "#,
         &[
-            ("constraints", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-            ("report", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+            (
+                "constraints",
+                r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+            ),
+            (
+                "report",
+                r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+            ),
         ],
         &["implement"],
     );
@@ -978,9 +1008,10 @@ name = "report"
 name = "publish"
 trigger = { type = "on_artifact", name = "report" }
 "#,
-        &[
-            ("report", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-        ],
+        &[(
+            "report",
+            r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+        )],
         &["publish"],
     );
 
@@ -1051,8 +1082,14 @@ name = "review"
 trigger = { type = "on_change", name = "doc" }
 "#,
         &[
-            ("report", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-            ("doc", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+            (
+                "report",
+                r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+            ),
+            (
+                "doc",
+                r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+            ),
         ],
         &["repair", "review"],
     );
@@ -1146,8 +1183,14 @@ produces = ["reviewed"]
 trigger = { type = "on_change", name = "doc" }
 "#,
         &[
-            ("doc", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-            ("reviewed", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+            (
+                "doc",
+                r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+            ),
+            (
+                "reviewed",
+                r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+            ),
         ],
         &["review"],
     );
@@ -1215,8 +1258,14 @@ produces = ["reviewed"]
 trigger = { type = "on_change", name = "doc" }
 "#,
         &[
-            ("doc", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
-            ("reviewed", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
+            (
+                "doc",
+                r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#,
+            ),
+            (
+                "reviewed",
+                r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#,
+            ),
         ],
         &["review"],
     );
@@ -1330,8 +1379,14 @@ produces = ["reviewed"]
 trigger = { type = "on_change", name = "doc" }
 "#,
         &[
-            ("doc", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
-            ("reviewed", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
+            (
+                "doc",
+                r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#,
+            ),
+            (
+                "reviewed",
+                r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#,
+            ),
         ],
         &["review"],
     );
@@ -1459,9 +1514,18 @@ may_produce = ["review-notes"]
 trigger = { type = "on_change", name = "doc" }
 "#,
         &[
-            ("doc", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-            ("reviewed", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-            ("review-notes", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+            (
+                "doc",
+                r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+            ),
+            (
+                "reviewed",
+                r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+            ),
+            (
+                "review-notes",
+                r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+            ),
         ],
         &["review"],
     );
@@ -1536,8 +1600,14 @@ produces = ["reviewed"]
 trigger = { type = "on_change", name = "doc" }
 "#,
         &[
-            ("doc", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
-            ("reviewed", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
+            (
+                "doc",
+                r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#,
+            ),
+            (
+                "reviewed",
+                r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#,
+            ),
         ],
         &["review"],
     );
@@ -1649,8 +1719,14 @@ produces = ["reviewed"]
 trigger = { type = "on_change", name = "doc" }
 "#,
         &[
-            ("doc", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
-            ("reviewed", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
+            (
+                "doc",
+                r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#,
+            ),
+            (
+                "reviewed",
+                r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#,
+            ),
         ],
         &["review"],
     );
@@ -1763,9 +1839,10 @@ name = "implement"
 requires = ["constraints"]
 trigger = { type = "on_artifact", name = "constraints" }
 "#,
-        &[
-            ("constraints", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-        ],
+        &[(
+            "constraints",
+            r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+        )],
         &["implement"],
     );
 
@@ -1833,9 +1910,10 @@ name = "report"
 name = "publish"
 trigger = { type = "on_artifact", name = "report" }
 "#,
-        &[
-            ("report", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
-        ],
+        &[(
+            "report",
+            r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+        )],
         &["publish"],
     );
 
