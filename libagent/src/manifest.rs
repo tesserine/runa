@@ -294,7 +294,12 @@ enum NameKind {
 }
 
 fn validate_layout_name(name: &str, kind: NameKind) -> Result<(), ManifestError> {
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
+    if name.is_empty()
+        || name == "."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+    {
         return Err(match kind {
             NameKind::ArtifactType => ManifestError::InvalidArtifactTypeName(name.to_string()),
             NameKind::Protocol => ManifestError::InvalidProtocolName(name.to_string()),
@@ -584,7 +589,7 @@ trigger = {{ type = "on_change", name = "safe-output" }}
 
     #[test]
     fn parse_rejects_protocol_names_with_unsafe_path_components() {
-        for invalid_name in ["foo/bar", r"foo\bar", "foo..bar"] {
+        for invalid_name in ["", ".", "foo/bar", r"foo\bar", "foo..bar"] {
             let toml = format!(
                 r#"
 name = "unsafe-protocol"
@@ -842,6 +847,38 @@ trigger = { type = "on_change", name = "report" }
         assert!(
             !matches!(err, ManifestError::InstructionFileNotFound { .. }),
             "unsafe protocol name should fail before instruction lookup"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_dot_protocol_name_before_instruction_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("protocols")).unwrap();
+        std::fs::write(dir.path().join("protocols/PROTOCOL.md"), "# unrelated\n").unwrap();
+        write_layout(dir.path(), &[("report", r#"{"type": "object"}"#)], &[]);
+
+        let toml = r#"
+name = "unsafe-layout"
+
+[[artifact_types]]
+name = "report"
+
+[[protocols]]
+name = "."
+produces = ["report"]
+trigger = { type = "on_change", name = "report" }
+"#;
+        let manifest_path = dir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, toml).unwrap();
+
+        let err = parse(&manifest_path).unwrap_err();
+        assert!(
+            err.to_string().contains("protocol name"),
+            "expected invalid protocol name error, got: {err}"
+        );
+        assert!(
+            !matches!(err, ManifestError::InstructionFileNotFound { .. }),
+            "dot protocol name should fail before instruction lookup"
         );
     }
 
