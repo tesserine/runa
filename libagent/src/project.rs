@@ -33,6 +33,18 @@ impl LoggingConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AgentConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+}
+
+impl AgentConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 /// On-disk format for `.runa/config.toml` — operator configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
@@ -41,6 +53,8 @@ pub struct Config {
     pub artifacts_dir: Option<String>,
     #[serde(default, skip_serializing_if = "LoggingConfig::is_default")]
     pub logging: LoggingConfig,
+    #[serde(default, skip_serializing_if = "AgentConfig::is_default")]
+    pub agent: AgentConfig,
 }
 
 /// On-disk format for `.runa/state.toml` — initialization metadata managed by runa.
@@ -268,6 +282,7 @@ trigger = { type = "on_change", name = "constraints" }
             methodology_path: canonical.display().to_string(),
             artifacts_dir: None,
             logging: LoggingConfig::default(),
+            agent: AgentConfig::default(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -329,6 +344,7 @@ trigger = { type = "on_change", name = "constraints" }
             methodology_path: canonical.display().to_string(),
             artifacts_dir: None,
             logging: LoggingConfig::default(),
+            agent: AgentConfig::default(),
         };
         fs::write(&external_config_path, toml::to_string(&config).unwrap()).unwrap();
 
@@ -353,6 +369,7 @@ trigger = { type = "on_change", name = "constraints" }
             methodology_path: canonical.display().to_string(),
             artifacts_dir: Some("custom-artifacts".to_string()),
             logging: LoggingConfig::default(),
+            agent: AgentConfig::default(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -402,6 +419,7 @@ trigger = { type = "on_change", name = "constraints" }
             methodology_path: canonical.display().to_string(),
             artifacts_dir: None,
             logging: LoggingConfig::default(),
+            agent: AgentConfig::default(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -482,6 +500,7 @@ methodology_path = "/tmp/methodology.toml"
 
         assert_eq!(config.logging.format, LogFormat::Text);
         assert_eq!(config.logging.filter, None);
+        assert_eq!(config.agent.command, None);
     }
 
     #[test]
@@ -499,5 +518,24 @@ filter = "info"
 
         assert_eq!(config.logging.format, LogFormat::Json);
         assert_eq!(config.logging.filter.as_deref(), Some("info"));
+        assert_eq!(config.agent.command, None);
+    }
+
+    #[test]
+    fn config_with_agent_table_parses_command() {
+        let config: Config = toml::from_str(
+            r#"
+methodology_path = "/tmp/methodology.toml"
+
+[agent]
+command = ["codex", "exec"]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.agent.command,
+            Some(vec!["codex".to_string(), "exec".to_string()])
+        );
     }
 }

@@ -18,6 +18,9 @@ Semantic Versioning.
   the shared context payload used by `runa step --dry-run` and the MCP context
   prompt, so agents receive the exact self-contained instructions that real
   execution uses.
+- Allow `runa step` to execute a configured `[agent].command` by sending each
+  planned protocol payload as pretty-printed JSON on stdin, while keeping
+  `--dry-run` as the exact execution preview surface.
 
 ### Fixed
 

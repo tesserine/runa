@@ -1,20 +1,33 @@
 use std::fmt;
+use std::io;
+use std::io::Write;
 use std::path::Path;
+use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
 
 use libagent::context::{ArtifactRelationship, ContextInjection};
 use serde::Serialize;
+use tracing::{info, warn};
 
 use super::CommandError;
 use crate::commands::protocol_eval;
-
-const NOT_IMPLEMENTED_MESSAGE: &str =
-    "Agent execution is not yet implemented. Use --dry-run to see the execution plan.";
 
 #[derive(Debug)]
 pub enum StepError {
     Command(CommandError),
     Json(serde_json::Error),
-    NotImplemented,
+    AgentCommandNotConfigured,
+    JsonRequiresDryRun,
+    AgentCommandIo {
+        command: String,
+        stage: &'static str,
+        source: io::Error,
+    },
+    AgentCommandFailed {
+        command: String,
+        protocol: String,
+        work_unit: Option<String>,
+        status: String,
+    },
 }
 
 impl fmt::Display for StepError {
@@ -22,7 +35,36 @@ impl fmt::Display for StepError {
         match self {
             StepError::Command(err) => write!(f, "{err}"),
             StepError::Json(err) => write!(f, "{err}"),
-            StepError::NotImplemented => write!(f, "{NOT_IMPLEMENTED_MESSAGE}"),
+            StepError::AgentCommandNotConfigured => write!(
+                f,
+                "no agent command configured in config.toml; add [agent] command = [\"binary\", ...]"
+            ),
+            StepError::JsonRequiresDryRun => {
+                write!(f, "--json is only supported with --dry-run")
+            }
+            StepError::AgentCommandIo {
+                command,
+                stage,
+                source,
+            } => write!(
+                f,
+                "agent command '{command}' failed during {stage}: {source}"
+            ),
+            StepError::AgentCommandFailed {
+                command,
+                protocol,
+                work_unit,
+                status,
+            } => match work_unit {
+                Some(work_unit) => write!(
+                    f,
+                    "agent command '{command}' failed for protocol '{protocol}' (work_unit={work_unit}): {status}"
+                ),
+                None => write!(
+                    f,
+                    "agent command '{command}' failed for protocol '{protocol}': {status}"
+                ),
+            },
         }
     }
 }
@@ -32,7 +74,10 @@ impl std::error::Error for StepError {
         match self {
             StepError::Command(err) => Some(err),
             StepError::Json(err) => Some(err),
-            StepError::NotImplemented => None,
+            StepError::AgentCommandNotConfigured => None,
+            StepError::JsonRequiresDryRun => None,
+            StepError::AgentCommandIo { source, .. } => Some(source),
+            StepError::AgentCommandFailed { .. } => None,
         }
     }
 }
@@ -63,21 +108,11 @@ struct PlanEntry {
     context: ContextInjection,
 }
 
-pub fn run(
-    working_dir: &Path,
-    config_override: Option<&Path>,
-    dry_run: bool,
-    json_output: bool,
-) -> Result<(), StepError> {
-    if !dry_run {
-        return Err(StepError::NotImplemented);
-    }
-
-    let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
-    let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
-    let evaluated = protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings);
-    let warnings = scan_findings.warnings.clone();
-
+fn build_execution_plan(
+    loaded: &crate::project::LoadedProject,
+    scan_findings: &protocol_eval::ScanFindings,
+    evaluated: &protocol_eval::EvaluatedProtocols,
+) -> Vec<PlanEntry> {
     let protocol_map: std::collections::HashMap<&str, &libagent::ProtocolDeclaration> = loaded
         .manifest
         .protocols
@@ -90,7 +125,8 @@ pub fn run(
         .as_ref()
         .map(|cycle| cycle.path.iter().map(|name| name.as_str()).collect())
         .unwrap_or_default();
-    let execution_plan: Vec<PlanEntry> = evaluated
+
+    evaluated
         .ready
         .iter()
         .filter(|entry| !cycle_participants.contains(entry.name.as_str()))
@@ -116,7 +152,152 @@ pub fn run(
                 context,
             }
         })
-        .collect();
+        .collect()
+}
+
+fn format_command(command: &[String]) -> String {
+    command.join(" ")
+}
+
+fn format_exit_status(status: ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!("exited with status {code}"),
+        None => "terminated without an exit code".to_string(),
+    }
+}
+
+fn execute_plan(
+    working_dir: &Path,
+    agent_command: &[String],
+    execution_plan: &[PlanEntry],
+) -> Result<(), StepError> {
+    let command_display = format_command(agent_command);
+    for entry in execution_plan {
+        info!(
+            operation = "agent_execution",
+            outcome = "starting",
+            protocol = %entry.protocol,
+            work_unit = ?entry.work_unit,
+            command = %command_display,
+            "starting agent command"
+        );
+
+        let mut child = ProcessCommand::new(&agent_command[0]);
+        child
+            .args(&agent_command[1..])
+            .current_dir(working_dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+
+        let mut child = child.spawn().map_err(|source| StepError::AgentCommandIo {
+            command: command_display.clone(),
+            stage: "spawn",
+            source,
+        })?;
+
+        {
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| StepError::AgentCommandIo {
+                    command: command_display.clone(),
+                    stage: "stdin_open",
+                    source: io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "child stdin was not available",
+                    ),
+                })?;
+            serde_json::to_writer_pretty(&mut *stdin, entry).map_err(StepError::Json)?;
+            stdin
+                .write_all(b"\n")
+                .map_err(|source| StepError::AgentCommandIo {
+                    command: command_display.clone(),
+                    stage: "stdin_write",
+                    source,
+                })?;
+        }
+
+        let status = child.wait().map_err(|source| StepError::AgentCommandIo {
+            command: command_display.clone(),
+            stage: "wait",
+            source,
+        })?;
+
+        if !status.success() {
+            warn!(
+                operation = "agent_execution",
+                outcome = "failed",
+                protocol = %entry.protocol,
+                work_unit = ?entry.work_unit,
+                command = %command_display,
+                status = %format_exit_status(status),
+                "agent command failed"
+            );
+            return Err(StepError::AgentCommandFailed {
+                command: command_display.clone(),
+                protocol: entry.protocol.clone(),
+                work_unit: entry.work_unit.clone(),
+                status: format_exit_status(status),
+            });
+        }
+
+        info!(
+            operation = "agent_execution",
+            outcome = "succeeded",
+            protocol = %entry.protocol,
+            work_unit = ?entry.work_unit,
+            command = %command_display,
+            "agent command succeeded"
+        );
+    }
+
+    Ok(())
+}
+
+pub fn run(
+    working_dir: &Path,
+    config_override: Option<&Path>,
+    dry_run: bool,
+    json_output: bool,
+) -> Result<(), StepError> {
+    let agent_command = if dry_run {
+        None
+    } else {
+        if json_output {
+            return Err(StepError::JsonRequiresDryRun);
+        }
+        let config = crate::project::read_config(working_dir, config_override)
+            .map_err(CommandError::from)
+            .map_err(StepError::from)?;
+        let command = config.agent.command.filter(|command| {
+            !command.is_empty() && !command.first().is_some_and(|part| part.is_empty())
+        });
+        if command.is_none() {
+            return Err(StepError::AgentCommandNotConfigured);
+        }
+        command
+    };
+
+    let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
+    let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
+    let evaluated = protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings);
+    let warnings = scan_findings.warnings.clone();
+    let execution_plan = build_execution_plan(&loaded, &scan_findings, &evaluated);
+
+    if !dry_run {
+        if execution_plan.is_empty() {
+            println!("No READY protocols.");
+            return Ok(());
+        }
+        return execute_plan(
+            working_dir,
+            agent_command
+                .as_ref()
+                .expect("live execution requires agent command"),
+            &execution_plan,
+        );
+    }
 
     if json_output {
         let payload = StepJson {
