@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::process::Command;
 
@@ -11,13 +13,16 @@ name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "ground"
 produces = ["constraints"]
 trigger = { type = "on_change", name = "constraints" }
 "#
+}
+
+fn constraints_schema() -> &'static str {
+    r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#
 }
 
 fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) {
@@ -44,8 +49,12 @@ fn append_logging_config(project_dir: &std::path::Path, logging_toml: &str) {
 #[test]
 fn scan_formats_output_and_succeeds_with_findings() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        valid_manifest_toml(),
+        &[("constraints", constraints_schema())],
+        &["ground"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -100,8 +109,12 @@ fn scan_formats_output_and_succeeds_with_findings() {
 #[test]
 fn scan_keeps_stderr_quiet_by_default_on_success() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        valid_manifest_toml(),
+        &[("constraints", constraints_schema())],
+        &["ground"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -132,8 +145,12 @@ fn scan_keeps_stderr_quiet_by_default_on_success() {
 #[test]
 fn scan_returns_non_zero_on_workspace_io_failure() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        valid_manifest_toml(),
+        &[("constraints", constraints_schema())],
+        &["ground"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -160,8 +177,12 @@ fn scan_returns_non_zero_on_workspace_io_failure() {
 #[test]
 fn scan_returns_non_zero_when_workspace_is_missing_and_store_has_state() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        valid_manifest_toml(),
+        &[("constraints", constraints_schema())],
+        &["ground"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -207,8 +228,12 @@ fn scan_reports_partially_scanned_types_and_suppresses_removals() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        valid_manifest_toml(),
+        &[("constraints", constraints_schema())],
+        &["ground"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -269,8 +294,12 @@ fn scan_reports_partially_scanned_types_and_suppresses_removals() {
 #[test]
 fn scan_emits_human_readable_logs_when_info_filter_is_configured() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        valid_manifest_toml(),
+        &[("constraints", constraints_schema())],
+        &["ground"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -307,8 +336,12 @@ filter = "info"
 #[test]
 fn scan_emits_json_logs_when_json_format_is_configured() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        valid_manifest_toml(),
+        &[("constraints", constraints_schema())],
+        &["ground"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -347,8 +380,12 @@ filter = "info"
 #[test]
 fn scan_rust_log_overrides_config_filter() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        valid_manifest_toml(),
+        &[("constraints", constraints_schema())],
+        &["ground"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();

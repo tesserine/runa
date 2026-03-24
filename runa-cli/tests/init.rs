@@ -1,4 +1,5 @@
-use std::fs;
+mod common;
+
 use std::process::Command;
 
 fn runa_bin() -> Command {
@@ -11,11 +12,9 @@ name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object" }
 
 [[artifact_types]]
 name = "design-doc"
-schema = { type = "object" }
 
 [[protocols]]
 name = "ground"
@@ -35,14 +34,21 @@ trigger = { type = "on_artifact", name = "design-doc" }
 "#
 }
 
+const SCHEMAS: &[(&str, &str)] = &[
+    ("constraints", r#"{"type":"object"}"#),
+    ("design-doc", r#"{"type":"object"}"#),
+];
+
+const PROTOCOLS: &[&str] = &["ground", "design", "review"];
+
 #[test]
 fn init_creates_runa_directory() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path =
+        common::write_methodology(dir.path(), valid_manifest_toml(), SCHEMAS, PROTOCOLS);
 
     let project_dir = dir.path().join("project");
-    fs::create_dir(&project_dir).unwrap();
+    std::fs::create_dir(&project_dir).unwrap();
 
     let output = runa_bin()
         .arg("init")
@@ -91,11 +97,11 @@ fn init_fails_with_nonexistent_methodology() {
 #[test]
 fn init_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path =
+        common::write_methodology(dir.path(), valid_manifest_toml(), SCHEMAS, PROTOCOLS);
 
     let project_dir = dir.path().join("project");
-    fs::create_dir(&project_dir).unwrap();
+    std::fs::create_dir(&project_dir).unwrap();
 
     let output1 = runa_bin()
         .arg("init")

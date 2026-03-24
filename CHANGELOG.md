@@ -7,6 +7,14 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Define methodology layout standard in the interface contract. Schema content
+  is derived from `schemas/{artifact_type_name}.schema.json` and protocol
+  instruction file existence is validated at `protocols/{protocol_name}/PROTOCOL.md`,
+  both relative to the manifest directory. The manifest TOML no longer includes
+  explicit `schema` fields on artifact type declarations.
+
 ### Fixed
 
 - Make the MCP context prompt and output tool descriptions explicitly

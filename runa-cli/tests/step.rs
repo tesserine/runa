@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::process::Command;
 
@@ -11,15 +13,12 @@ name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "prior-art"
-schema = { type = "object", required = ["source"], properties = { source = { type = "string" } } }
 
 [[artifact_types]]
 name = "implementation"
-schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
 [[protocols]]
 name = "implement"
@@ -37,6 +36,18 @@ trigger = { type = "on_artifact", name = "constraints" }
 name = "ground"
 trigger = { type = "on_invalid", name = "implementation" }
 "#
+}
+
+fn methodology_schemas() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("constraints", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
+        ("prior-art", r#"{"type":"object","required":["source"],"properties":{"source":{"type":"string"}}}"#),
+        ("implementation", r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#),
+    ]
+}
+
+fn methodology_protocols() -> Vec<&'static str> {
+    vec!["implement", "verify", "ground"]
 }
 
 fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) {
@@ -57,8 +68,12 @@ fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) 
 #[test]
 fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -149,8 +164,12 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
 #[test]
 fn step_dry_run_text_reports_why_when_no_skills_are_ready() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -190,8 +209,12 @@ fn step_dry_run_text_reports_why_when_no_skills_are_ready() {
 #[test]
 fn step_without_dry_run_reports_placeholder_and_exits_non_zero() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -222,27 +245,28 @@ fn step_without_dry_run_reports_placeholder_and_exits_non_zero() {
 #[test]
 fn step_dry_run_reports_blocked_reasons_when_no_skills_are_ready() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "implementation"
-schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
 [[protocols]]
 name = "verify"
 requires = ["implementation"]
 trigger = { type = "on_artifact", name = "constraints" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("constraints", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
+            ("implementation", r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#),
+        ],
+        &["verify"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -285,8 +309,12 @@ fn step_dry_run_omits_partially_scanned_accepted_inputs_from_context() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -366,19 +394,16 @@ fn step_dry_run_omits_partially_scanned_accepted_inputs_from_context() {
 #[test]
 fn step_dry_run_json_reports_cycle_and_omits_execution_plan() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "a"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "b"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "first"
@@ -392,8 +417,12 @@ requires = ["a"]
 produces = ["b"]
 trigger = { type = "on_change", name = "b" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("a", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
+            ("b", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
+        ],
+        &["first", "second"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -429,19 +458,16 @@ trigger = { type = "on_change", name = "b" }
 #[test]
 fn step_dry_run_text_reports_cycle_and_no_execution_plan() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "a"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "b"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "first"
@@ -455,8 +481,12 @@ requires = ["a"]
 produces = ["b"]
 trigger = { type = "on_change", name = "b" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("a", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
+            ("b", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
+        ],
+        &["first", "second"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -487,27 +517,23 @@ trigger = { type = "on_change", name = "b" }
 #[test]
 fn step_dry_run_keeps_non_cyclic_ready_skills_in_plan_when_cycle_exists() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let title_schema = r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "seed"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "a"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "b"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "result"
-schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
 [[protocols]]
 name = "independent"
@@ -527,8 +553,14 @@ requires = ["a"]
 produces = ["b"]
 trigger = { type = "on_change", name = "b" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("seed", title_schema),
+            ("a", title_schema),
+            ("b", title_schema),
+            ("result", r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#),
+        ],
+        &["independent", "first", "second"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -571,23 +603,20 @@ trigger = { type = "on_change", name = "b" }
 #[test]
 fn step_dry_run_keeps_ready_skills_downstream_of_cycle_when_inputs_exist() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let title_schema = r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "a"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "b"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "result"
-schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
 [[protocols]]
 name = "first"
@@ -607,8 +636,13 @@ requires = ["a"]
 produces = ["result"]
 trigger = { type = "on_artifact", name = "a" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("a", title_schema),
+            ("b", title_schema),
+            ("result", r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#),
+        ],
+        &["first", "second", "publish"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -655,31 +689,26 @@ trigger = { type = "on_artifact", name = "a" }
 #[test]
 fn step_dry_run_preserves_dependency_order_for_ready_skills_with_unrelated_cycle() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let title_schema = r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "root"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "seed"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "result"
-schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
 [[artifact_types]]
 name = "a"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "b"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "independent"
@@ -705,8 +734,15 @@ requires = ["a"]
 produces = ["b"]
 trigger = { type = "on_change", name = "b" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("root", title_schema),
+            ("seed", title_schema),
+            ("result", r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#),
+            ("a", title_schema),
+            ("b", title_schema),
+        ],
+        &["independent", "publish", "first", "second"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -741,27 +777,29 @@ trigger = { type = "on_change", name = "b" }
 #[test]
 fn step_dry_run_reports_per_work_unit_on_change_readiness_when_freshness_is_mixed() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let wu_schema = r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "doc"
-schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
 
 [[artifact_types]]
 name = "reviewed"
-schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
 
 [[protocols]]
 name = "review"
 produces = ["reviewed"]
 trigger = { type = "on_change", name = "doc" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("doc", wu_schema),
+            ("reviewed", wu_schema),
+        ],
+        &["review"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();

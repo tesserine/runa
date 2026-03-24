@@ -13,7 +13,8 @@ An artifact type is a named category of work product with a machine-checkable co
 An artifact type declaration:
 
 - **name** — unique identifier within the methodology (e.g., `constraints`, `behavior-contract`, `test-evidence`)
-- **schema** — JSON Schema defining what a valid instance contains. This schema is the artifact's contract. There is no separate contract mechanism.
+- Artifact type names must be safe single path components because runa derives schema paths from them. Names must not contain `/`, `\`, or `..`.
+- **schema** — JSON Schema defining what a valid instance contains. This schema is the artifact's contract. There is no separate contract mechanism. The schema is not declared in the manifest — runa derives its location from the methodology layout convention (see below).
 
 runa ships no artifact types. Every artifact type is methodology-owned.
 
@@ -29,6 +30,7 @@ A protocol declares its relationship to artifacts through four kinds of edges:
 A protocol declaration:
 
 - **name** — unique identifier
+- Protocol names must be safe single path components because runa derives instruction paths from them. Names must not contain `/`, `\`, or `..`.
 - **requires** — zero or more artifact type names
 - **accepts** — zero or more artifact type names
 - **produces** — zero or more artifact type names
@@ -81,12 +83,24 @@ runa does not prescribe topology. Topologies emerge from declarations.
 
 runa does not interpret methodology semantics. If a methodology calls a stage "grounding" or "verification," runa does not know or care what those words mean. It sees declarations and artifacts.
 
+## Methodology Layout Standard
+
+The interface contract defines conventional locations for methodology content relative to the manifest file:
+
+- **Schemas:** `schemas/{artifact_type_name}.schema.json`
+- **Protocol instructions:** `protocols/{protocol_name}/PROTOCOL.md`
+
+These conventions are part of the interface contract — the same layer that defines manifest format, field names, and trigger condition types. A valid methodology conforms to this layout. runa derives paths from names it already has; the manifest does not include explicit path fields.
+
+Both schema files and instruction files must exist at their conventional locations when the manifest is parsed. Missing files are parse errors, caught before any runtime operation. Schema files are read and parsed at parse time. Instruction files are validated for existence at parse time; content reading is a separate concern.
+Unsafe artifact type or protocol names are also parse errors, rejected before runa attempts any layout-derived filesystem lookup.
+
 ## Methodology Registration
 
-A methodology registers with runa through a manifest file declaring:
+A methodology registers with runa through a manifest file and the layout convention. The manifest declares:
 
-- The methodology's artifact types and their schemas
-- The methodology's protocols and their declarations
+- The methodology's artifact types (names only — schemas are at conventional paths)
+- The methodology's protocols and their declarations (instruction content is at conventional paths)
 - No other configuration
 
-The manifest format is the methodology's only interface with the runtime. runa reads it, builds the graph, begins monitoring.
+The manifest and its accompanying layout are the methodology's only interface with the runtime. runa reads the manifest, resolves schemas and instruction files from the layout convention, builds the graph, and begins monitoring.

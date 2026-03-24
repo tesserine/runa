@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -12,23 +14,18 @@ name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "prior-art"
-schema = { type = "object", required = ["source"], properties = { source = { type = "string" } } }
 
 [[artifact_types]]
 name = "design-doc"
-schema = { type = "object", required = ["summary"], properties = { summary = { type = "string" } } }
 
 [[artifact_types]]
 name = "notes"
-schema = { type = "object", required = ["text"], properties = { text = { type = "string" } } }
 
 [[artifact_types]]
 name = "implementation"
-schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
 [[protocols]]
 name = "research"
@@ -54,6 +51,16 @@ requires = ["implementation"]
 trigger = { type = "on_artifact", name = "implementation" }
 "#
 }
+
+const SCHEMAS: &[(&str, &str)] = &[
+    ("constraints", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
+    ("prior-art", r#"{"type":"object","required":["source"],"properties":{"source":{"type":"string"}}}"#),
+    ("design-doc", r#"{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"}}}"#),
+    ("notes", r#"{"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}"#),
+    ("implementation", r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#),
+];
+
+const PROTOCOLS: &[&str] = &["research", "implement", "verify"];
 
 fn run_command(project_dir: &Path, args: &[&str]) -> Output {
     runa_bin()
@@ -120,8 +127,8 @@ fn assert_context_inputs(inputs: &serde_json::Value, expected: &[(&str, &str, Pa
 #[test]
 fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, manifest_toml()).unwrap();
+    let manifest_path =
+        common::write_methodology(dir.path(), manifest_toml(), SCHEMAS, PROTOCOLS);
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();

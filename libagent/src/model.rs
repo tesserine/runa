@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +10,10 @@ use serde::{Deserialize, Serialize};
 /// runa reads it, builds the dependency graph, and begins monitoring.
 ///
 /// Format: TOML. See `manifest::parse` for reading from files.
+/// TOML serialization of this runtime model is not a supported operation:
+/// `manifest::parse` populates schema content from the methodology layout
+/// convention, and that derived state is intentionally not accepted back
+/// through the TOML manifest parser.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     /// Methodology name.
@@ -53,6 +58,11 @@ pub struct ProtocolDeclaration {
     pub may_produce: Vec<String>,
     /// Condition that activates this protocol.
     pub trigger: TriggerCondition,
+    /// Filesystem path to the protocol's instruction content.
+    /// Derived from the methodology layout convention by `manifest::parse`.
+    /// `None` when produced by `manifest::from_str` (no filesystem access).
+    #[serde(skip)]
+    pub instructions: Option<PathBuf>,
 }
 
 /// Defines when the runtime should activate a protocol.
@@ -137,6 +147,7 @@ mod tests {
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
+            instructions: None,
         };
         let json = serde_json::to_string(&protocol).unwrap();
         let deserialized: ProtocolDeclaration = serde_json::from_str(&json).unwrap();
@@ -229,6 +240,7 @@ mod tests {
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
+            instructions: None,
         };
         let json = serde_json::to_string(&protocol).unwrap();
         let deserialized: ProtocolDeclaration = serde_json::from_str(&json).unwrap();

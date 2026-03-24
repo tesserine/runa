@@ -241,13 +241,22 @@ name = "test-methodology"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object" }
 
 [[protocols]]
 name = "ground"
 produces = ["constraints"]
 trigger = { type = "on_change", name = "constraints" }
 "#
+    }
+
+    /// Write a methodology layout alongside the manifest.
+    fn write_methodology_layout(manifest_dir: &Path) {
+        crate::test_helpers::write_methodology(
+            manifest_dir,
+            valid_manifest_toml(),
+            &[("constraints", r#"{"type": "object"}"#)],
+            &["ground"],
+        );
     }
 
     fn write_project_files(working: &Path, manifest_path: &Path) {
@@ -280,8 +289,8 @@ trigger = { type = "on_change", name = "constraints" }
     #[test]
     fn load_reads_config_and_state() {
         let dir = tempfile::tempdir().unwrap();
+        write_methodology_layout(dir.path());
         let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
 
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
@@ -295,8 +304,8 @@ trigger = { type = "on_change", name = "constraints" }
     #[test]
     fn load_with_explicit_config_override() {
         let dir = tempfile::tempdir().unwrap();
+        write_methodology_layout(dir.path());
         let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
 
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
@@ -330,8 +339,8 @@ trigger = { type = "on_change", name = "constraints" }
     #[test]
     fn load_with_custom_artifacts_dir() {
         let dir = tempfile::tempdir().unwrap();
+        write_methodology_layout(dir.path());
         let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
 
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();

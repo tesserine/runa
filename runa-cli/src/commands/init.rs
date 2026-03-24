@@ -149,11 +149,9 @@ name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object" }
 
 [[artifact_types]]
 name = "design-doc"
-schema = { type = "object" }
 
 [[protocols]]
 name = "ground"
@@ -173,11 +171,30 @@ trigger = { type = "on_artifact", name = "design-doc" }
 "#
     }
 
+    fn write_methodology_layout(dir: &std::path::Path) -> std::path::PathBuf {
+        let manifest_path = dir.join("manifest.toml");
+        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+        let schemas_dir = dir.join("schemas");
+        fs::create_dir_all(&schemas_dir).unwrap();
+        for name in &["constraints", "design-doc"] {
+            fs::write(
+                schemas_dir.join(format!("{name}.schema.json")),
+                r#"{"type": "object"}"#,
+            )
+            .unwrap();
+        }
+        for protocol in &["ground", "design", "review"] {
+            let protocol_dir = dir.join("protocols").join(protocol);
+            fs::create_dir_all(&protocol_dir).unwrap();
+            fs::write(protocol_dir.join("PROTOCOL.md"), format!("# {protocol}\n")).unwrap();
+        }
+        manifest_path
+    }
+
     #[test]
     fn valid_manifest_creates_config_and_state_files() {
         let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+        let manifest_path = write_methodology_layout(dir.path());
 
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
@@ -197,8 +214,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
     #[test]
     fn config_file_records_methodology_path() {
         let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+        let manifest_path = write_methodology_layout(dir.path());
 
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
@@ -216,8 +232,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
     #[test]
     fn config_file_records_artifacts_dir_when_provided() {
         let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+        let manifest_path = write_methodology_layout(dir.path());
 
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
@@ -234,8 +249,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
     #[test]
     fn config_file_omits_artifacts_dir_when_not_provided() {
         let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+        let manifest_path = write_methodology_layout(dir.path());
 
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
@@ -252,8 +266,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
     #[test]
     fn state_file_records_version_and_timestamp() {
         let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+        let manifest_path = write_methodology_layout(dir.path());
 
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
@@ -272,8 +285,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
     #[test]
     fn state_file_does_not_contain_methodology_path() {
         let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+        let manifest_path = write_methodology_layout(dir.path());
 
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
@@ -290,8 +302,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
     #[test]
     fn custom_config_path_writes_config_there() {
         let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+        let manifest_path = write_methodology_layout(dir.path());
 
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
@@ -349,8 +360,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
     #[test]
     fn idempotent_run_succeeds_twice() {
         let dir = tempfile::tempdir().unwrap();
-        let manifest_path = dir.path().join("manifest.toml");
-        fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+        let manifest_path = write_methodology_layout(dir.path());
 
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();

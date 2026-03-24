@@ -475,6 +475,7 @@ mod tests {
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: vec![],
             trigger: default_trigger(requires, produces),
+            instructions: None,
         }
     }
 
@@ -491,6 +492,7 @@ mod tests {
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: may_produce.iter().map(|s| (*s).into()).collect(),
             trigger: default_trigger(requires, produces),
+            instructions: None,
         }
     }
 
@@ -507,6 +509,7 @@ mod tests {
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: vec![],
             trigger: default_trigger(requires, produces),
+            instructions: None,
         }
     }
 
