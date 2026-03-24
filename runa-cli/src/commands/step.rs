@@ -261,12 +261,19 @@ pub fn run(
     dry_run: bool,
     json_output: bool,
 ) -> Result<(), StepError> {
+    if !dry_run && json_output {
+        return Err(StepError::JsonRequiresDryRun);
+    }
+
+    let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
+    let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
+    let evaluated = protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings);
+    let warnings = scan_findings.warnings.clone();
+    let execution_plan = build_execution_plan(&loaded, &scan_findings, &evaluated);
+
     let agent_command = if dry_run {
         None
     } else {
-        if json_output {
-            return Err(StepError::JsonRequiresDryRun);
-        }
         let config = crate::project::read_config(working_dir, config_override)
             .map_err(CommandError::from)
             .map_err(StepError::from)?;
@@ -278,12 +285,6 @@ pub fn run(
         }
         command
     };
-
-    let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
-    let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
-    let evaluated = protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings);
-    let warnings = scan_findings.warnings.clone();
-    let execution_plan = build_execution_plan(&loaded, &scan_findings, &evaluated);
 
     if !dry_run {
         if execution_plan.is_empty() {

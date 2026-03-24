@@ -441,6 +441,41 @@ fn step_without_dry_run_rejects_json_output() {
     assert!(stderr.contains("--json is only supported with --dry-run"));
 }
 
+#[test]
+fn step_without_dry_run_reports_project_load_failure_before_agent_config_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let external_config = dir.path().join("external-config.toml");
+    fs::write(
+        &external_config,
+        r#"
+methodology_path = "/tmp/methodology.toml"
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("not-a-project");
+    fs::create_dir(&project_dir).unwrap();
+
+    let output = runa_bin()
+        .arg("--config")
+        .arg(&external_config)
+        .arg("step")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "step should fail outside an initialized project"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not a runa project"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("no agent command configured"),
+        "stderr: {stderr}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn step_without_dry_run_stops_after_first_non_zero_agent_exit() {
