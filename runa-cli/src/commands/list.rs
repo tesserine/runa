@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use libagent::ArtifactFailure;
+use tracing::warn;
 
 use super::CommandError;
 
@@ -14,7 +15,12 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), Com
     let protocol_order: Vec<&str> = match loaded.graph.topological_order() {
         Ok(order) => order,
         Err(cycle) => {
-            eprintln!("warning: {cycle}");
+            warn!(
+                operation = "topological_order",
+                outcome = "cycle_fallback",
+                error = %cycle,
+                "falling back to manifest order after cycle detection"
+            );
             loaded
                 .manifest
                 .protocols

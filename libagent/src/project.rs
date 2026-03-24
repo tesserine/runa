@@ -11,12 +11,36 @@ pub const STATE_FILENAME: &str = "state.toml";
 pub const DEFAULT_WORKSPACE_DIR: &str = "workspace";
 pub const STORE_DIRNAME: &str = "store";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LogFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LoggingConfig {
+    #[serde(default)]
+    pub format: LogFormat,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+}
+
+impl LoggingConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 /// On-disk format for `.runa/config.toml` — operator configuration.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     pub methodology_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifacts_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "LoggingConfig::is_default")]
+    pub logging: LoggingConfig,
 }
 
 /// On-disk format for `.runa/state.toml` — initialization metadata managed by runa.
@@ -143,6 +167,15 @@ pub fn resolve_config(
     Err(ProjectError::ConfigNotFound)
 }
 
+pub fn read_config(
+    working_dir: &Path,
+    config_override: Option<&Path>,
+) -> Result<Config, ProjectError> {
+    let config_path = resolve_config(working_dir, config_override)?;
+    let config_content = std::fs::read_to_string(&config_path).map_err(ProjectError::Io)?;
+    toml::from_str(&config_content).map_err(|e| ProjectError::ConfigParseFailed(e.to_string()))
+}
+
 /// Load a runa project from `working_dir`.
 ///
 /// Resolves config via the resolution chain, reads state, parses the methodology
@@ -151,11 +184,7 @@ pub fn load(
     working_dir: &Path,
     config_override: Option<&Path>,
 ) -> Result<LoadedProject, ProjectError> {
-    let config_path = resolve_config(working_dir, config_override)?;
-
-    let config_content = std::fs::read_to_string(&config_path).map_err(ProjectError::Io)?;
-    let config: Config = toml::from_str(&config_content)
-        .map_err(|e| ProjectError::ConfigParseFailed(e.to_string()))?;
+    let config = read_config(working_dir, config_override)?;
 
     // Verify state.toml exists (project was initialized).
     let runa_dir = working_dir.join(RUNA_DIR);
@@ -229,6 +258,7 @@ trigger = { type = "on_change", name = "constraints" }
         let config = Config {
             methodology_path: canonical.display().to_string(),
             artifacts_dir: None,
+            logging: LoggingConfig::default(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -289,6 +319,7 @@ trigger = { type = "on_change", name = "constraints" }
         let config = Config {
             methodology_path: canonical.display().to_string(),
             artifacts_dir: None,
+            logging: LoggingConfig::default(),
         };
         fs::write(&external_config_path, toml::to_string(&config).unwrap()).unwrap();
 
@@ -312,6 +343,7 @@ trigger = { type = "on_change", name = "constraints" }
         let config = Config {
             methodology_path: canonical.display().to_string(),
             artifacts_dir: Some("custom-artifacts".to_string()),
+            logging: LoggingConfig::default(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -360,6 +392,7 @@ trigger = { type = "on_change", name = "constraints" }
         let config = Config {
             methodology_path: canonical.display().to_string(),
             artifacts_dir: None,
+            logging: LoggingConfig::default(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -427,5 +460,35 @@ trigger = { type = "on_change", name = "constraints" }
             err.to_string().contains("nonexistent.toml"),
             "error should include the path"
         );
+    }
+
+    #[test]
+    fn config_without_logging_uses_default_logging_settings() {
+        let config: Config = toml::from_str(
+            r#"
+methodology_path = "/tmp/methodology.toml"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.logging.format, LogFormat::Text);
+        assert_eq!(config.logging.filter, None);
+    }
+
+    #[test]
+    fn config_with_logging_table_parses_format_and_filter() {
+        let config: Config = toml::from_str(
+            r#"
+methodology_path = "/tmp/methodology.toml"
+
+[logging]
+format = "json"
+filter = "info"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.logging.format, LogFormat::Json);
+        assert_eq!(config.logging.filter.as_deref(), Some("info"));
     }
 }

@@ -26,7 +26,9 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 6. **Protocol selection.** `selection::discover_ready_candidates` evaluates protocols in topological order, discovers candidate work_units from artifact instances, and returns (protocol, work_unit) pairs where trigger, preconditions, and scan trust are all satisfied. Current work whose valid outputs are newer than all relevant inputs is suppressed directly from artifact freshness, with unreadable output instances conservatively disabling suppression for every work unit of the affected output type.
 
-7. **MCP runtime loop.** `runa-mcp` loads the project, scans, selects the first ready candidate, serves an MCP session via stdio, then re-scans and checks postconditions. Successful postconditions leave completion evidence in the workspace via the output artifacts themselves.
+7. **Tracing bootstrap.** Both binaries bootstrap tracing with env/default settings before any config lookup, then reconfigure the shared subscriber from `config.toml` when logging settings are available. Tracing events always go to stderr; operator-facing command output stays on stdout.
+
+8. **MCP runtime loop.** `runa-mcp` loads the project, scans, selects the first ready candidate, serves an MCP session via stdio, then re-scans and checks postconditions. Successful postconditions leave completion evidence in the workspace via the output artifacts themselves.
 
 ## Modules
 
@@ -41,6 +43,10 @@ TOML parsing and structural validation. `parse` reads from a file path; `from_st
 ### `validation.rs`
 
 JSON Schema validation for artifact instances using the `jsonschema` crate. `validate_artifact` compiles the schema, runs validation, and collects all violations into a `Vec<Violation>` before returning. Each `Violation` carries the artifact type name, a description, and both schema and instance JSON Pointer paths.
+
+### `logging.rs`
+
+Shared tracing bootstrap and reconfiguration. `configure_tracing` installs one global subscriber backed by a reloadable `EnvFilter` and a runtime-selectable text/JSON stderr formatter. `resolve_logging_config` applies the fixed precedence `RUST_LOG` → `config.logging.filter` → default `warn`, while `config.logging.format` chooses text or JSON output.
 
 ### `graph.rs`
 
@@ -120,7 +126,7 @@ Config resolution is whole-file (first found wins, no per-field merging): `--con
 
 ### `runa init --methodology <PATH> [--artifacts-dir <DIR>] [--config <PATH>]`
 
-Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes the path, creates `.runa/config.toml` (or writes to the `--config` path) containing the canonical methodology path and optional artifact workspace directory. Creates `.runa/state.toml`, `.runa/store/`, and the resolved artifact workspace directory. Reports the artifact type and protocol counts on success.
+Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes the path, creates `.runa/config.toml` (or writes to the `--config` path) containing the canonical methodology path, optional artifact workspace directory, and optional logging settings. Creates `.runa/state.toml`, `.runa/store/`, and the resolved artifact workspace directory. Reports the artifact type and protocol counts on success.
 
 ### `runa list`
 

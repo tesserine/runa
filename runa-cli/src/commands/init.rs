@@ -75,6 +75,7 @@ pub fn run(
     let config = Config {
         methodology_path: canonical_path.display().to_string(),
         artifacts_dir: artifacts_dir.map(String::from),
+        logging: crate::project::LoggingConfig::default(),
     };
     let config_toml = toml::to_string(&config).expect("Config serialization should not fail");
 

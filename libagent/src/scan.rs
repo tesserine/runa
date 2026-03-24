@@ -199,6 +199,21 @@ pub fn scan(workspace_dir: &Path, store: &mut ArtifactStore) -> Result<ScanResul
         (&left.artifact_type, &left.instance_id).cmp(&(&right.artifact_type, &right.instance_id))
     });
 
+    tracing::info!(
+        operation = "scan",
+        outcome = "completed",
+        new = result.new.len(),
+        modified = result.modified.len(),
+        revalidated = result.revalidated.len(),
+        invalid = result.invalid.len(),
+        malformed = result.malformed.len(),
+        unreadable = result.unreadable.len(),
+        partially_scanned_types = result.partially_scanned_types.len(),
+        removed = result.removed.len(),
+        unrecognized_dirs = result.unrecognized_dirs.len(),
+        "workspace scan completed"
+    );
+
     Ok(result)
 }
 

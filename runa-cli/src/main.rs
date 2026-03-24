@@ -3,8 +3,10 @@ mod project;
 
 use std::path::PathBuf;
 use std::process;
+use std::{io, io::Write};
 
 use clap::{Parser, Subcommand};
+use tracing::error;
 
 #[derive(Parser)]
 #[command(name = "runa", version)]
@@ -63,25 +65,51 @@ fn main() {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
     });
+    let config_override_ref = config_override.as_deref();
+
+    if let Err(err) = libagent::configure_tracing(None) {
+        let _ = writeln!(io::stderr(), "error: {err}");
+        process::exit(1);
+    }
+
+    let working_dir = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(err) => {
+            error!(
+                operation = "current_dir",
+                outcome = "failed",
+                error = %err,
+                "failed to resolve working directory"
+            );
+            eprintln!("error: {err}");
+            process::exit(1);
+        }
+    };
+
+    if !matches!(cli.command, Commands::Init { .. })
+        && let Ok(config) = project::read_config(&working_dir, config_override_ref)
+        && let Err(err) = libagent::configure_tracing(Some(&config.logging))
+    {
+        error!(
+            operation = "logging_config",
+            outcome = "failed",
+            error = %err,
+            "failed to apply configured logging"
+        );
+        eprintln!("error: {err}");
+        process::exit(1);
+    }
 
     match cli.command {
         Commands::Init {
             methodology,
             artifacts_dir,
         } => {
-            let working_dir = match std::env::current_dir() {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    process::exit(1);
-                }
-            };
-
             match commands::init::run(
                 &working_dir,
                 &methodology,
                 artifacts_dir.as_deref(),
-                config_override.as_deref(),
+                config_override_ref,
             ) {
                 Ok(summary) => {
                     println!(
@@ -93,90 +121,49 @@ fn main() {
                         summary.artifact_type_count, summary.protocol_count
                     );
                 }
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    process::exit(1);
-                }
+                Err(err) => fatal_command_error("init", &err),
             }
         }
         Commands::List => {
-            let working_dir = match std::env::current_dir() {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    process::exit(1);
-                }
-            };
-
-            if let Err(e) = commands::list::run(&working_dir, config_override.as_deref()) {
-                eprintln!("error: {e}");
-                process::exit(1);
+            if let Err(err) = commands::list::run(&working_dir, config_override_ref) {
+                fatal_command_error("list", &err);
             }
         }
-        Commands::Doctor => {
-            let working_dir = match std::env::current_dir() {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    process::exit(1);
-                }
-            };
-
-            match commands::doctor::run(&working_dir, config_override.as_deref()) {
-                Ok(healthy) => {
-                    if !healthy {
-                        process::exit(1);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("error: {e}");
+        Commands::Doctor => match commands::doctor::run(&working_dir, config_override_ref) {
+            Ok(healthy) => {
+                if !healthy {
                     process::exit(1);
                 }
             }
-        }
+            Err(err) => fatal_command_error("doctor", &err),
+        },
         Commands::Scan => {
-            let working_dir = match std::env::current_dir() {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    process::exit(1);
-                }
-            };
-
-            if let Err(e) = commands::scan::run(&working_dir, config_override.as_deref()) {
-                eprintln!("error: {e}");
-                process::exit(1);
+            if let Err(err) = commands::scan::run(&working_dir, config_override_ref) {
+                fatal_command_error("scan", &err);
             }
         }
         Commands::Status { json } => {
-            let working_dir = match std::env::current_dir() {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    process::exit(1);
-                }
-            };
-
-            if let Err(e) = commands::status::run(&working_dir, config_override.as_deref(), json) {
-                eprintln!("error: {e}");
-                process::exit(1);
+            if let Err(err) = commands::status::run(&working_dir, config_override_ref, json) {
+                fatal_command_error("status", &err);
             }
         }
         Commands::Step { dry_run, json } => {
-            let working_dir = match std::env::current_dir() {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    process::exit(1);
-                }
-            };
-
-            if let Err(e) =
-                commands::step::run(&working_dir, config_override.as_deref(), dry_run, json)
+            if let Err(err) = commands::step::run(&working_dir, config_override_ref, dry_run, json)
             {
-                eprintln!("error: {e}");
-                process::exit(1);
+                fatal_command_error("step", &err);
             }
         }
     }
+}
+
+fn fatal_command_error(command: &str, err: &dyn std::fmt::Display) -> ! {
+    error!(
+        operation = "command",
+        command = command,
+        outcome = "failed",
+        error = %err,
+        "command failed"
+    );
+    eprintln!("error: {err}");
+    process::exit(1)
 }

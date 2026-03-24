@@ -2,18 +2,33 @@ mod context;
 mod handler;
 
 use libagent::project::{self, RUNA_DIR, STORE_DIRNAME};
-use libagent::{ArtifactStore, discover_ready_candidates, enforce_postconditions, scan};
+use libagent::{
+    ArtifactStore, configure_tracing, discover_ready_candidates, enforce_postconditions, scan,
+};
 use rmcp::service::ServiceExt;
 use rmcp::transport::io;
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process;
+use tracing::{error, info, warn};
 
 use handler::RunaHandler;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    if let Err(err) = configure_tracing(None) {
+        let _ = writeln!(std::io::stderr(), "runa-mcp: {err}");
+        process::exit(1);
+    }
+
     if let Err(e) = run().await {
+        error!(
+            operation = "mcp_session",
+            outcome = "failed",
+            error = %e,
+            "mcp session failed"
+        );
         eprintln!("runa-mcp: {e}");
         process::exit(1);
     }
@@ -28,6 +43,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let config_override = std::env::var("RUNA_CONFIG").ok().map(PathBuf::from);
     let config_ref = config_override.as_deref();
+    if let Ok(config) = project::read_config(&working_dir, config_ref) {
+        configure_tracing(Some(&config.logging))?;
+    }
 
     // 2. Load project.
     let mut loaded = project::load(&working_dir, config_ref)?;
@@ -47,7 +65,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let topo_order = match loaded.graph.topological_order() {
         Ok(order) => order,
         Err(cycle) => {
-            eprintln!("runa-mcp: warning: {cycle}");
+            warn!(
+                operation = "topological_order",
+                outcome = "cycle_fallback",
+                error = %cycle,
+                "falling back to orderable protocols after cycle detection"
+            );
             let exclude: HashSet<&str> = cycle.path.iter().map(|s| s.as_str()).collect();
             loaded.graph.topological_order_excluding(&exclude)
         }
@@ -71,7 +94,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .find(|p| p.name == c.protocol_name)
             else {
-                eprintln!("runa-mcp: skipping unknown protocol '{}'", c.protocol_name);
+                warn!(
+                    operation = "candidate_selection",
+                    outcome = "skipped_unknown_protocol",
+                    protocol = %c.protocol_name,
+                    work_unit = ?c.work_unit,
+                    "skipping unknown protocol candidate"
+                );
                 continue;
             };
             let p = p.clone();
@@ -79,9 +108,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(e) =
                 handler::validate_output_types(&p, &loaded.store, c.work_unit.as_deref())
             {
-                eprintln!(
-                    "runa-mcp: skipping protocol '{}' work_unit={:?}: {e}",
-                    p.name, c.work_unit
+                warn!(
+                    operation = "candidate_selection",
+                    outcome = "skipped_invalid_output_types",
+                    protocol = %p.name,
+                    work_unit = ?c.work_unit,
+                    error = %e,
+                    "skipping protocol candidate with unsupported output types"
                 );
                 continue;
             }
@@ -90,16 +123,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         match found {
             Some(pair) => pair,
-            None => {
-                eprintln!("runa-mcp: no viable (protocol, work_unit) candidates found");
-                process::exit(1);
-            }
+            None => return Err("no viable protocol candidates found".into()),
         }
     };
 
-    eprintln!(
-        "runa-mcp: serving protocol '{}' work_unit={:?}",
-        candidate.protocol_name, candidate.work_unit
+    info!(
+        operation = "mcp_session",
+        outcome = "serving",
+        protocol = %candidate.protocol_name,
+        work_unit = ?candidate.work_unit,
+        "serving protocol candidate"
     );
 
     // 7. Build handler.
@@ -112,10 +145,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // 8. Serve via stdio transport.
     let (stdin, stdout) = io::stdio();
-    let service = handler
-        .serve((stdin, stdout))
-        .await
-        .inspect_err(|e| eprintln!("runa-mcp: server init failed: {e}"))?;
+    let service = handler.serve((stdin, stdout)).await.inspect_err(|e| {
+        error!(
+            operation = "mcp_server",
+            outcome = "init_failed",
+            error = %e,
+            "server initialization failed"
+        );
+    })?;
     service.waiting().await?;
 
     // 9. Re-scan workspace with a fresh store.
@@ -138,17 +175,38 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map(|ps| ps.artifact_type.as_str())
         .collect();
     if !partial_output_types.is_empty() {
-        eprintln!(
-            "runa-mcp: post-session scan incomplete for output types {:?} \
-             of '{}' work_unit={:?}",
-            partial_output_types, protocol.name, candidate.work_unit
+        warn!(
+            operation = "postconditions",
+            outcome = "scan_incomplete",
+            protocol = %protocol.name,
+            work_unit = ?candidate.work_unit,
+            artifact_types = ?partial_output_types,
+            "post-session scan incomplete for output types"
         );
-    } else if enforce_postconditions(&protocol, &store, work_unit_ref).is_ok() {
+        // Unconditional: postcondition outcomes must reach the operator
+        // even when tracing filters suppress warn-level events.
         eprintln!(
-            "runa-mcp: postconditions met for '{}' work_unit={:?}",
+            "runa-mcp: post-session scan incomplete for output types {partial_output_types:?} of '{}' work_unit={:?}",
             protocol.name, candidate.work_unit
         );
+    } else if enforce_postconditions(&protocol, &store, work_unit_ref).is_ok() {
+        info!(
+            operation = "postconditions",
+            outcome = "met",
+            protocol = %protocol.name,
+            work_unit = ?candidate.work_unit,
+            "postconditions met"
+        );
     } else {
+        warn!(
+            operation = "postconditions",
+            outcome = "not_met",
+            protocol = %protocol.name,
+            work_unit = ?candidate.work_unit,
+            "postconditions not met"
+        );
+        // Unconditional: postcondition outcomes must reach the operator
+        // even when tracing filters suppress warn-level events.
         eprintln!(
             "runa-mcp: postconditions not met for '{}' work_unit={:?}",
             protocol.name, candidate.work_unit

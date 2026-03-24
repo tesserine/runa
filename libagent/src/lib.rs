@@ -18,6 +18,7 @@
 pub mod context;
 pub mod enforcement;
 pub mod graph;
+pub mod logging;
 pub mod manifest;
 pub mod model;
 pub mod project;
@@ -34,9 +35,10 @@ pub use enforcement::{
     enforce_preconditions,
 };
 pub use graph::{CycleError, DependencyGraph, GraphError};
+pub use logging::{LoggingError, ResolvedLoggingConfig, configure_tracing, resolve_logging_config};
 pub use manifest::ManifestError;
 pub use model::{ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition};
-pub use project::{Config, LoadedProject, ProjectError, State};
+pub use project::{Config, LoadedProject, LogFormat, LoggingConfig, ProjectError, State};
 pub use scan::{
     ArtifactRef, InvalidArtifact, MalformedArtifact, PartiallyScannedType, ScanError, ScanResult,
     UnreadableArtifact, scan,
