@@ -14,7 +14,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for workspace structure, data flow, modul
 runa init --methodology path/to/manifest.toml [--artifacts-dir path/to/workspace]
 ```
 
-Parses the methodology manifest, validates its structure, and creates a `.runa/` directory with `config.toml` (operator configuration: methodology path, optional artifact workspace directory, optional logging settings), `state.toml` (runtime state: initialization timestamp, runa version), `.runa/workspace/` (default artifact workspace), and `.runa/store/` (internal artifact state store). Reports the artifact type and protocol counts on success.
+Parses the methodology manifest, validates its structure, and creates a `.runa/` directory with `config.toml` (operator configuration: methodology path, optional artifact workspace directory, optional logging settings, optional agent command), `state.toml` (runtime state: initialization timestamp, runa version), `.runa/workspace/` (default artifact workspace), and `.runa/store/` (internal artifact state store). Reports the artifact type and protocol counts on success.
 
 Commands that load a project manifest support `--config <PATH>` to override the config file location. The `RUNA_CONFIG` env var serves the same purpose. For `init`, `--config` controls where the config file is written; for manifest-loading commands, it controls where the config file is read from.
 
@@ -35,6 +35,15 @@ filter = "info"   # any tracing env-filter directive
 ```
 
 `format = "json"` switches stderr events to machine-readable JSON. This does not change stdout command output. `RUST_LOG` controls the filter only; output format is always determined by `config.logging.format` (defaulting to `text`).
+
+Optional agent execution config:
+
+```toml
+[agent]
+command = ["/path/to/agent-runtime", "--flag"]
+```
+
+`runa step` without `--dry-run` requires `[agent].command`. Runa executes that argv command in the project root, sends one pretty-printed JSON execution payload on stdin for each planned protocol, and leaves stdout/stderr attached to the child process. `--json` is dry-run only.
 
 ```bash
 runa list
@@ -64,12 +73,14 @@ Evaluates every protocol after an implicit scan and classifies it as `READY`, `B
 Unreadable produced artifacts do not block protocols directly, but they do conservatively disable freshness suppression for every work unit of that output type until a clean scan restores trustworthy completion evidence.
 
 ```bash
-runa step --dry-run [--json]
+runa step [--dry-run] [--json]
 ```
 
-Builds an operator-facing execution plan after an implicit scan. `step` uses the same candidate-selection logic as `runa-mcp`: protocols are evaluated per discovered work unit, and activated work is suppressed when valid outputs are newer than the relevant inputs for that work unit. The execution plan therefore contains `READY` `(protocol, work_unit)` pairs that can be placed in a valid execution order. Each plan entry includes the protocol name, optional `work_unit`, the human-readable trigger that activated it, and a serialized agent-facing context injection payload. The context payload contains the protocol name, the preloaded `PROTOCOL.md` instruction content, all valid required and available accepted inputs with text paths, content hashes, and relationships, plus expected outputs split into `produces` and `may_produce`.
+Builds an operator-facing execution plan after an implicit scan. `step` uses the same candidate-selection logic as `runa-mcp`: protocols are evaluated per discovered work unit, and activated work is suppressed when valid outputs are newer than the relevant inputs for that work unit. The execution plan therefore contains `READY` `(protocol, work_unit)` pairs that can be placed in a valid execution order. Each plan entry includes the protocol name, optional `work_unit`, the human-readable trigger that activated it, and a serialized agent-facing context payload. The context payload contains the protocol name, the preloaded `PROTOCOL.md` instruction content, all valid required and available accepted inputs with text paths, content hashes, and relationships, plus expected outputs split into `produces` and `may_produce`.
 
-If the graph contains a hard dependency cycle, `step` reports the cycle as a warning and excludes the cyclic protocols from `execution_plan`; non-cyclic READY protocols still appear when they are orderable. Text output prints the execution plan and the same grouped protocol status view used by `runa status`, so operators can still see blocked and waiting reasons when nothing is runnable. `--json` emits `{ "version": 2, "methodology": "...", "scan_warnings": [...], "cycle": ["..."] | null, "execution_plan": [...], "protocols": [...] }`, where `execution_plan` entries and `protocols` status entries may include an optional `work_unit`, and `protocols` reuses the same status entries as `runa status --json`. `runa step` without `--dry-run` is not implemented yet; it prints a placeholder message and exits with code 1.
+If the graph contains a hard dependency cycle, `step` reports the cycle as a warning and excludes the cyclic protocols from `execution_plan`; non-cyclic READY protocols still appear when they are orderable. `--dry-run` prints the execution plan and the same grouped protocol status view used by `runa status`, so operators can still see blocked and waiting reasons when nothing is runnable. `--json` emits `{ "version": 2, "methodology": "...", "scan_warnings": [...], "cycle": ["..."] | null, "execution_plan": [...], "protocols": [...] }`, where `execution_plan` entries and `protocols` status entries may include an optional `work_unit`, and `protocols` reuses the same status entries as `runa status --json`.
+
+Without `--dry-run`, `step` requires `[agent].command`, then invokes that command once per execution-plan entry in order. For each invocation, runa writes the exact plan entry JSON to the child process on stdin and waits for exit status `0` before continuing to the next entry. A non-zero exit stops execution immediately and skips post-execution validation; scan/reconciliation and cascading readiness remain future work.
 Like `runa status`, unreadable produced artifacts conservatively keep all work units of that output type eligible for rerun rather than attempting to scope freshness loss to a single instance.
 
 ## MCP Server

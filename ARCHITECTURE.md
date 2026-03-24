@@ -22,13 +22,15 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 4. **Trigger evaluation.** `trigger::evaluate` recursively evaluates a `TriggerCondition` tree against a `TriggerContext` (artifact store, scan metadata) plus the protocol declaration and returns a `TriggerResult`. `OnChange` derives temporal state from output artifact timestamps for the same work unit and consults the store's scan-gap metadata so any unreadable output instance conservatively invalidates completion evidence for the whole output type. Pure function, no side effects.
 
-5. **Context injection construction.** `context::build_context` converts a ready `ProtocolDeclaration` plus the current artifact store into the stable agent-facing payload used by `runa step` and `runa-mcp`: protocol name, available required/accepted artifact refs, and expected outputs.
+5. **Context injection construction.** `context::build_context` converts a ready `ProtocolDeclaration` plus the current artifact store into the stable agent-facing context used by `runa step` and `runa-mcp`: protocol name, available required/accepted artifact refs, and expected outputs.
 
 6. **Protocol selection.** `selection::discover_ready_candidates` evaluates protocols in topological order, discovers candidate work_units from artifact instances, and returns (protocol, work_unit) pairs where trigger, preconditions, and scan trust are all satisfied. Current work whose valid outputs are newer than all relevant inputs is suppressed directly from artifact freshness, with unreadable output instances conservatively disabling suppression for every work unit of the affected output type.
 
 7. **Tracing bootstrap.** Both binaries bootstrap tracing with env/default settings before any config lookup, then reconfigure the shared subscriber from `config.toml` when logging settings are available. Tracing events always go to stderr; operator-facing command output stays on stdout.
 
-8. **MCP runtime loop.** `runa-mcp` loads the project, scans, selects the first ready candidate, serves an MCP session via stdio, then re-scans and checks postconditions. Successful postconditions leave completion evidence in the workspace via the output artifacts themselves.
+8. **CLI step execution.** `runa step` reuses the same execution-plan construction as dry-run, then, when `[agent].command` is configured, invokes that argv command once per non-cyclic ready plan entry in order. Each invocation receives the exact plan entry JSON (`protocol`, optional `work_unit`, `trigger`, `context`) on stdin, runs in the project working directory, and must exit `0` for step to continue. This issue stops at command execution: no post-execution scan, postcondition enforcement, or cascading re-selection happens yet.
+
+9. **MCP runtime loop.** `runa-mcp` loads the project, scans, selects the first ready candidate, serves an MCP session via stdio, then re-scans and checks postconditions. Successful postconditions leave completion evidence in the workspace via the output artifacts themselves.
 
 ## Modules
 
@@ -84,7 +86,7 @@ Returns `EnforcementError` on failure, containing the protocol name, enforcement
 
 ### `project.rs`
 
-Shared project loading logic used by both `runa-cli` and `runa-mcp`. Config resolution chain (explicit override → `.runa/config.toml` → XDG config → error), manifest parsing, dependency graph construction, and artifact store initialization.
+Shared project loading logic used by both `runa-cli` and `runa-mcp`. Config resolution chain (explicit override → `.runa/config.toml` → XDG config → error), config parsing for logging plus optional agent execution command, manifest parsing, dependency graph construction, and artifact store initialization.
 
 ### `selection.rs`
 
@@ -108,7 +110,7 @@ Natural language context prompt renderer. Transforms `ContextInjection` into a `
 
 ```
 .runa/
-  config.toml                   # Created by `runa init`: methodology_path, optional artifacts_dir
+  config.toml                   # Created by `runa init`: methodology_path, optional artifacts_dir, optional logging, optional agent.command
   state.toml                    # Created by `runa init`: initialized_at, runa_version
   workspace/                    # Default artifact workspace (configurable via artifacts_dir)
     {type_name}/
@@ -126,7 +128,7 @@ Config resolution is whole-file (first found wins, no per-field merging): `--con
 
 ### `runa init --methodology <PATH> [--artifacts-dir <DIR>] [--config <PATH>]`
 
-Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes the path, creates `.runa/config.toml` (or writes to the `--config` path) containing the canonical methodology path, optional artifact workspace directory, and optional logging settings. Creates `.runa/state.toml`, `.runa/store/`, and the resolved artifact workspace directory. Reports the artifact type and protocol counts on success.
+Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes the path, creates `.runa/config.toml` (or writes to the `--config` path) containing the canonical methodology path, optional artifact workspace directory, optional logging settings, and optional agent execution settings. Creates `.runa/state.toml`, `.runa/store/`, and the resolved artifact workspace directory. Reports the artifact type and protocol counts on success.
 
 ### `runa list`
 
@@ -159,9 +161,13 @@ Text output groups protocols as `READY`, `BLOCKED`, then `WAITING`, preserving t
 
 Exits 0 for successful status evaluation regardless of whether protocols are ready, blocked, or waiting. Non-zero exit remains reserved for project-load, scan, or serialization failures.
 
-### `runa step --dry-run [--json]`
+### `runa step [--dry-run] [--json]`
 
-Runs the same implicit scan and shared candidate classification used by `runa status`, then builds an execution plan from the `READY` `(protocol, work_unit)` pairs that can be placed in a valid execution order. Candidate discovery, trigger evaluation, and freshness suppression use the same work-unit-scoped selection logic as `runa-mcp`, so `step --dry-run` previews the same ready work that MCP would attempt to serve. Plan entries preserve graph order for the non-cyclic frontier and include the protocol name, optional `work_unit`, the trigger condition string, and the JSON-serialized `libagent::context::ContextInjection` payload, including preloaded protocol instructions. If a hard dependency cycle exists, `step` reports the cycle as a warning, excludes the cycle participants from the plan, and still includes any unrelated orderable READY protocols. Text output prints the execution plan followed by the grouped READY/BLOCKED/WAITING view. JSON output adds an `execution_plan` array plus an optional `cycle` path while reusing the same `protocols` status entries and `scan_warnings` envelope fields as `runa status`. `runa step` without `--dry-run` is a deliberate stub: it prints `Agent execution is not yet implemented. Use --dry-run to see the execution plan.` and exits with code 1.
+Runs the same implicit scan and shared candidate classification used by `runa status`, then builds an execution plan from the `READY` `(protocol, work_unit)` pairs that can be placed in a valid execution order. Candidate discovery, trigger evaluation, and freshness suppression use the same work-unit-scoped selection logic as `runa-mcp`, so `step --dry-run` previews the same ready work that live execution attempts to serve. Plan entries preserve graph order for the non-cyclic frontier and include the protocol name, optional `work_unit`, the trigger condition string, and the JSON-serialized `libagent::context::ContextInjection` payload, including preloaded protocol instructions. If a hard dependency cycle exists, `step` reports the cycle as a warning, excludes the cycle participants from the plan, and still includes any unrelated orderable READY protocols.
+
+With `--dry-run`, text output prints the execution plan followed by the grouped READY/BLOCKED/WAITING view. JSON output adds an `execution_plan` array plus an optional `cycle` path while reusing the same `protocols` status entries and `scan_warnings` envelope fields as `runa status`.
+
+Without `--dry-run`, `step` requires `[agent].command` in config. It rejects `--json`, then invokes the configured argv command once per execution-plan entry in order, passing the exact plan entry JSON on stdin and inheriting child stdout/stderr. A non-zero exit stops execution immediately and surfaces the failing command, protocol, optional work unit, and exit status. This path does not yet rescan the workspace or enforce postconditions after the child exits.
 
 ## Key Design Patterns
 
