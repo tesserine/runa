@@ -4,7 +4,7 @@ Runa is an event-driven cognitive runtime for AI agents. It enforces contracts b
 
 ## Architecture
 
-Runa is a runtime layer between an orchestrating daemon and methodology plugins. Methodologies register via TOML manifests declaring their artifact types, protocols, and triggers. Runa computes the dependency graph, validates artifacts against their schemas, tracks state, and evaluates trigger conditions.
+Runa is a runtime layer between an orchestrating daemon and methodology plugins. Methodologies register via TOML manifests declaring their artifact types, protocols, and triggers. Schema content and protocol instruction files live at conventional locations relative to the manifest (`schemas/{name}.schema.json` and `protocols/{name}/PROTOCOL.md`). Runa derives these paths from the manifest, computes the dependency graph, validates artifacts against their schemas, tracks state, and evaluates trigger conditions.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for workspace structure, data flow, module descriptions, and disk layout.
 

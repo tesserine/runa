@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::process::Command;
 
@@ -11,11 +13,9 @@ name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "design-doc"
-schema = { type = "object" }
 
 [[protocols]]
 name = "ground"
@@ -33,6 +33,17 @@ name = "review"
 requires = ["design-doc"]
 trigger = { type = "on_artifact", name = "design-doc" }
 "#
+}
+
+fn methodology_schemas() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("constraints", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
+        ("design-doc", r#"{"type":"object"}"#),
+    ]
+}
+
+fn methodology_protocols() -> Vec<&'static str> {
+    vec!["ground", "design", "review"]
 }
 
 fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) {
@@ -66,8 +77,12 @@ fn scan_project(project_dir: &std::path::Path) {
 #[test]
 fn list_shows_skills_in_order() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        valid_manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -105,8 +120,12 @@ fn list_shows_skills_in_order() {
 #[test]
 fn list_shows_blocked_status() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        valid_manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -127,8 +146,12 @@ fn list_shows_blocked_status() {
 #[test]
 fn list_implicitly_scans_workspace_before_reporting() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        valid_manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -173,8 +196,12 @@ fn list_errors_on_uninitialized_project() {
 #[test]
 fn list_reports_invalid_required_artifacts_as_invalid() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        valid_manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -208,8 +235,12 @@ fn list_reports_invalid_required_artifacts_as_invalid() {
 #[test]
 fn list_reports_stale_required_artifacts_as_stale() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        valid_manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();

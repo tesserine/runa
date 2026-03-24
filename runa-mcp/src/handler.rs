@@ -506,6 +506,7 @@ mod tests {
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
+            instructions: None,
         };
 
         let handler = RunaHandler::new(
@@ -571,6 +572,7 @@ mod tests {
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
+            instructions: None,
         };
 
         let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
@@ -619,6 +621,7 @@ mod tests {
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
+            instructions: None,
         };
 
         let handler = RunaHandler::new(
@@ -666,6 +669,7 @@ mod tests {
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
+            instructions: None,
         };
 
         let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
@@ -694,6 +698,7 @@ mod tests {
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
+            instructions: None,
         };
 
         let result = validate_output_types(&protocol, &store, Some("wu"));
@@ -723,6 +728,7 @@ mod tests {
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
+            instructions: None,
         };
 
         let result = validate_output_types(&protocol, &store, Some("wu"));
@@ -756,6 +762,7 @@ mod tests {
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
+            instructions: None,
         };
 
         assert!(validate_output_types(&protocol, &store, Some("wu")).is_ok());
@@ -785,6 +792,7 @@ mod tests {
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
+            instructions: None,
         };
 
         let result = validate_output_types(&protocol, &store, None);
@@ -816,6 +824,7 @@ mod tests {
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
+            instructions: None,
         };
 
         assert!(validate_output_types(&protocol, &store, Some("wu")).is_ok());
@@ -854,6 +863,7 @@ mod tests {
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
+            instructions: None,
         };
 
         let handler = RunaHandler::new(

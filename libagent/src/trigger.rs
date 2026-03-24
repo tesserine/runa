@@ -186,6 +186,7 @@ mod tests {
             produces: produces.iter().map(|s| s.to_string()).collect(),
             may_produce: may_produce.iter().map(|s| s.to_string()).collect(),
             trigger,
+            instructions: None,
         }
     }
 

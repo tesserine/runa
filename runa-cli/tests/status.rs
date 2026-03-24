@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::process::Command;
 
@@ -11,15 +13,12 @@ name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "prior-art"
-schema = { type = "object", required = ["source"], properties = { source = { type = "string" } } }
 
 [[artifact_types]]
 name = "implementation"
-schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
 [[protocols]]
 name = "implement"
@@ -37,6 +36,18 @@ trigger = { type = "on_artifact", name = "constraints" }
 name = "ground"
 trigger = { type = "on_invalid", name = "implementation" }
 "#
+}
+
+fn manifest_toml_schemas() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("constraints", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+        ("prior-art", r#"{"type": "object", "required": ["source"], "properties": {"source": {"type": "string"}}}"#),
+        ("implementation", r#"{"type": "object", "required": ["done"], "properties": {"done": {"type": "boolean"}}}"#),
+    ]
+}
+
+fn manifest_toml_protocols() -> &'static [&'static str] {
+    &["implement", "verify", "ground"]
 }
 
 fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) {
@@ -70,8 +81,12 @@ fn scan_project(project_dir: &std::path::Path) {
 #[test]
 fn status_groups_ready_blocked_and_waiting_after_implicit_scan() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        manifest_toml_schemas(),
+        manifest_toml_protocols(),
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -128,8 +143,12 @@ fn status_groups_ready_blocked_and_waiting_after_implicit_scan() {
 #[test]
 fn status_json_reports_ordered_skills_and_status_specific_fields() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        manifest_toml_schemas(),
+        manifest_toml_protocols(),
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -224,19 +243,16 @@ fn status_json_reports_ordered_skills_and_status_specific_fields() {
 #[test]
 fn status_json_reports_stale_failures_and_composite_waiting_conditions() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "implementation"
-schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
 [[protocols]]
 name = "verify"
@@ -253,8 +269,12 @@ trigger = { type = "all_of", conditions = [
     ] }
 ] }
 "#,
-    )
-    .unwrap();
+        &[
+            ("constraints", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+            ("implementation", r#"{"type": "object", "required": ["done"], "properties": {"done": {"type": "boolean"}}}"#),
+        ],
+        &["verify", "release"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -344,8 +364,12 @@ fn status_keeps_skills_ready_when_only_accepted_types_are_partially_scanned() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        manifest_toml_schemas(),
+        manifest_toml_protocols(),
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -408,8 +432,12 @@ fn status_blocks_skills_with_partial_required_types_and_reports_scan_warnings() 
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, manifest_toml()).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        manifest_toml_schemas(),
+        manifest_toml_protocols(),
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -501,23 +529,24 @@ fn status_blocks_skills_when_partial_scan_affects_requires_even_if_trigger_is_un
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "implement"
 requires = ["constraints"]
 trigger = { type = "on_invalid", name = "constraints" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("constraints", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+        ],
+        &["implement"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -572,27 +601,28 @@ fn status_reports_all_partial_required_types_as_scan_incomplete_failures() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "implementation"
-schema = { type = "object", required = ["done"], properties = { done = { type = "boolean" } } }
 
 [[protocols]]
 name = "verify"
 requires = ["constraints", "implementation"]
 trigger = { type = "on_artifact", name = "constraints" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("constraints", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+            ("implementation", r#"{"type": "object", "required": ["done"], "properties": {"done": {"type": "boolean"}}}"#),
+        ],
+        &["verify"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -663,22 +693,23 @@ fn status_blocks_skills_when_partial_scan_affects_trigger_only_artifact_types() 
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "report"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "repair"
 trigger = { type = "on_artifact", name = "report" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("report", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+        ],
+        &["repair"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -729,9 +760,8 @@ trigger = { type = "on_artifact", name = "report" }
 #[test]
 fn status_preserves_reason_for_empty_any_of_triggers() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
@@ -741,8 +771,9 @@ artifact_types = []
 name = "impossible"
 trigger = { type = "any_of", conditions = [] }
 "#,
-    )
-    .unwrap();
+        &[],
+        &["impossible"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -795,22 +826,23 @@ fn status_blocks_on_invalid_when_candidate_discovery_scan_trust_is_missing() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "report"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "repair"
 trigger = { type = "on_invalid", name = "report" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("report", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+        ],
+        &["repair"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -860,19 +892,16 @@ fn status_blocks_any_of_when_candidate_discovery_scan_trust_is_missing() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "report"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "implement"
@@ -881,8 +910,12 @@ trigger = { type = "any_of", conditions = [
     { type = "on_artifact", name = "report" }
 ] }
 "#,
-    )
-    .unwrap();
+        &[
+            ("constraints", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+            ("report", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+        ],
+        &["implement"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -933,22 +966,23 @@ fn status_blocks_on_artifact_when_only_unreadable_instances_exist() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "report"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "publish"
 trigger = { type = "on_artifact", name = "report" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("report", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+        ],
+        &["publish"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -997,19 +1031,16 @@ fn status_blocks_untrustworthy_not_satisfied_on_invalid_and_on_change_triggers()
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "report"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "doc"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "repair"
@@ -1019,8 +1050,12 @@ trigger = { type = "on_invalid", name = "report" }
 name = "review"
 trigger = { type = "on_change", name = "doc" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("report", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+            ("doc", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+        ],
+        &["repair", "review"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1094,27 +1129,28 @@ fn status_blocks_on_change_when_output_freshness_is_untrustworthy() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "doc"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "reviewed"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "review"
 produces = ["reviewed"]
 trigger = { type = "on_change", name = "doc" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("doc", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+            ("reviewed", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+        ],
+        &["review"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1162,27 +1198,28 @@ fn status_unscopes_new_unreadable_outputs_across_all_work_units() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "doc"
-schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
 
 [[artifact_types]]
 name = "reviewed"
-schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
 
 [[protocols]]
 name = "review"
 produces = ["reviewed"]
 trigger = { type = "on_change", name = "doc" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("doc", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
+            ("reviewed", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
+        ],
+        &["review"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1276,27 +1313,28 @@ trigger = { type = "on_change", name = "doc" }
 #[test]
 fn status_reports_per_work_unit_on_change_readiness_when_freshness_is_mixed() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "doc"
-schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
 
 [[artifact_types]]
 name = "reviewed"
-schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
 
 [[protocols]]
 name = "review"
 produces = ["reviewed"]
 trigger = { type = "on_change", name = "doc" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("doc", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
+            ("reviewed", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
+        ],
+        &["review"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1400,23 +1438,19 @@ fn status_does_not_block_on_change_for_partial_optional_outputs() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "doc"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "reviewed"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "review-notes"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "review"
@@ -1424,8 +1458,13 @@ produces = ["reviewed"]
 may_produce = ["review-notes"]
 trigger = { type = "on_change", name = "doc" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("doc", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+            ("reviewed", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+            ("review-notes", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+        ],
+        &["review"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1480,27 +1519,28 @@ fn status_unscopes_partial_output_reruns_across_all_work_units() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "doc"
-schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
 
 [[artifact_types]]
 name = "reviewed"
-schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
 
 [[protocols]]
 name = "review"
 produces = ["reviewed"]
 trigger = { type = "on_change", name = "doc" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("doc", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
+            ("reviewed", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
+        ],
+        &["review"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1592,27 +1632,28 @@ fn status_unscopes_partial_outputs_when_the_stored_work_unit_is_unverifiable() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "doc"
-schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
 
 [[artifact_types]]
 name = "reviewed"
-schema = { type = "object", required = ["title", "work_unit"], properties = { title = { type = "string" }, work_unit = { type = "string" } } }
 
 [[protocols]]
 name = "review"
 produces = ["reviewed"]
 trigger = { type = "on_change", name = "doc" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("doc", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
+            ("reviewed", r#"{"type": "object", "required": ["title", "work_unit"], "properties": {"title": {"type": "string"}, "work_unit": {"type": "string"}}}"#),
+        ],
+        &["review"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1709,23 +1750,24 @@ fn status_preserves_invalid_preconditions_alongside_scan_incomplete() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "implement"
 requires = ["constraints"]
 trigger = { type = "on_artifact", name = "constraints" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("constraints", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+        ],
+        &["implement"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1779,22 +1821,23 @@ fn status_keeps_on_artifact_waiting_when_visible_invalid_instance_makes_it_defin
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(
-        &manifest_path,
+    let manifest_path = common::write_methodology(
+        dir.path(),
         r#"
 name = "groundwork"
 
 [[artifact_types]]
 name = "report"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[protocols]]
 name = "publish"
 trigger = { type = "on_artifact", name = "report" }
 "#,
-    )
-    .unwrap();
+        &[
+            ("report", r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#),
+        ],
+        &["publish"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();

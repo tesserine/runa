@@ -124,6 +124,7 @@ mod tests {
             trigger: crate::TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
+            instructions: None,
         };
 
         let context = build_context(&protocol, &store, None);
@@ -190,6 +191,7 @@ mod tests {
             trigger: crate::TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
+            instructions: None,
         };
 
         let context = build_context(&protocol, &store, None);
@@ -263,6 +265,7 @@ mod tests {
             trigger: crate::TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
+            instructions: None,
         };
 
         // Scoped to WU-A: sees a1 + shared, not b1.

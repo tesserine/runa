@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::process::Command;
 
@@ -11,11 +13,9 @@ name = "groundwork"
 
 [[artifact_types]]
 name = "constraints"
-schema = { type = "object", required = ["title"], properties = { title = { type = "string" } } }
 
 [[artifact_types]]
 name = "design-doc"
-schema = { type = "object" }
 
 [[protocols]]
 name = "ground"
@@ -34,6 +34,13 @@ requires = ["design-doc"]
 trigger = { type = "on_artifact", name = "design-doc" }
 "#
 }
+
+const SCHEMAS: &[(&str, &str)] = &[
+    ("constraints", r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#),
+    ("design-doc", r#"{"type":"object"}"#),
+];
+
+const PROTOCOLS: &[&str] = &["ground", "design", "review"];
 
 fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) {
     let output = runa_bin()
@@ -66,21 +73,24 @@ fn scan_project(project_dir: &std::path::Path) {
 #[test]
 fn doctor_healthy_exit_zero() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
     // Use a manifest with no requires so everything is "ok".
     let manifest = r#"
 name = "simple"
 
 [[artifact_types]]
 name = "report"
-schema = { type = "object" }
 
 [[protocols]]
 name = "generate"
 produces = ["report"]
 trigger = { type = "on_change", name = "report" }
 "#;
-    fs::write(&manifest_path, manifest).unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest,
+        &[("report", r#"{"type":"object"}"#)],
+        &["generate"],
+    );
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -105,8 +115,8 @@ trigger = { type = "on_change", name = "report" }
 #[test]
 fn doctor_unready_skills_exit_one() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path =
+        common::write_methodology(dir.path(), valid_manifest_toml(), SCHEMAS, PROTOCOLS);
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -131,8 +141,8 @@ fn doctor_unready_skills_exit_one() {
 #[test]
 fn doctor_implicitly_scans_workspace_before_reporting() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path =
+        common::write_methodology(dir.path(), valid_manifest_toml(), SCHEMAS, PROTOCOLS);
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -159,8 +169,8 @@ fn doctor_implicitly_scans_workspace_before_reporting() {
 #[test]
 fn doctor_with_invalid_artifacts_exit_one() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path =
+        common::write_methodology(dir.path(), valid_manifest_toml(), SCHEMAS, PROTOCOLS);
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -191,8 +201,8 @@ fn doctor_with_invalid_artifacts_exit_one() {
 #[test]
 fn doctor_with_malformed_artifacts_exit_one() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path =
+        common::write_methodology(dir.path(), valid_manifest_toml(), SCHEMAS, PROTOCOLS);
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -226,8 +236,8 @@ fn doctor_reports_unreadable_workspace_entries_as_problems() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path =
+        common::write_methodology(dir.path(), valid_manifest_toml(), SCHEMAS, PROTOCOLS);
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -283,8 +293,8 @@ fn doctor_errors_on_uninitialized_project() {
 #[test]
 fn doctor_reports_stale_required_artifacts_as_stale() {
     let dir = tempfile::tempdir().unwrap();
-    let manifest_path = dir.path().join("manifest.toml");
-    fs::write(&manifest_path, valid_manifest_toml()).unwrap();
+    let manifest_path =
+        common::write_methodology(dir.path(), valid_manifest_toml(), SCHEMAS, PROTOCOLS);
 
     let project_dir = dir.path().join("project");
     fs::create_dir(&project_dir).unwrap();
