@@ -29,6 +29,7 @@ async fn main() {
             error = %e,
             "mcp session failed"
         );
+        eprintln!("runa-mcp: {e}");
         process::exit(1);
     }
 }
@@ -182,6 +183,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             artifact_types = ?partial_output_types,
             "post-session scan incomplete for output types"
         );
+        eprintln!(
+            "runa-mcp: post-session scan incomplete for output types {partial_output_types:?} of '{}' work_unit={:?}",
+            protocol.name, candidate.work_unit
+        );
     } else if enforce_postconditions(&protocol, &store, work_unit_ref).is_ok() {
         info!(
             operation = "postconditions",
@@ -197,6 +202,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             protocol = %protocol.name,
             work_unit = ?candidate.work_unit,
             "postconditions not met"
+        );
+        eprintln!(
+            "runa-mcp: postconditions not met for '{}' work_unit={:?}",
+            protocol.name, candidate.work_unit
         );
     }
 

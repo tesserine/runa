@@ -81,6 +81,7 @@ fn main() {
                 error = %err,
                 "failed to resolve working directory"
             );
+            eprintln!("error: {err}");
             process::exit(1);
         }
     };
@@ -95,6 +96,7 @@ fn main() {
             error = %err,
             "failed to apply configured logging"
         );
+        eprintln!("error: {err}");
         process::exit(1);
     }
 
@@ -119,28 +121,12 @@ fn main() {
                         summary.artifact_type_count, summary.protocol_count
                     );
                 }
-                Err(err) => {
-                    error!(
-                        operation = "command",
-                        command = "init",
-                        outcome = "failed",
-                        error = %err,
-                        "command failed"
-                    );
-                    process::exit(1);
-                }
+                Err(err) => fatal_command_error("init", &err),
             }
         }
         Commands::List => {
             if let Err(err) = commands::list::run(&working_dir, config_override_ref) {
-                error!(
-                    operation = "command",
-                    command = "list",
-                    outcome = "failed",
-                    error = %err,
-                    "command failed"
-                );
-                process::exit(1);
+                fatal_command_error("list", &err);
             }
         }
         Commands::Doctor => match commands::doctor::run(&working_dir, config_override_ref) {
@@ -149,53 +135,35 @@ fn main() {
                     process::exit(1);
                 }
             }
-            Err(err) => {
-                error!(
-                    operation = "command",
-                    command = "doctor",
-                    outcome = "failed",
-                    error = %err,
-                    "command failed"
-                );
-                process::exit(1);
-            }
+            Err(err) => fatal_command_error("doctor", &err),
         },
         Commands::Scan => {
             if let Err(err) = commands::scan::run(&working_dir, config_override_ref) {
-                error!(
-                    operation = "command",
-                    command = "scan",
-                    outcome = "failed",
-                    error = %err,
-                    "command failed"
-                );
-                process::exit(1);
+                fatal_command_error("scan", &err);
             }
         }
         Commands::Status { json } => {
             if let Err(err) = commands::status::run(&working_dir, config_override_ref, json) {
-                error!(
-                    operation = "command",
-                    command = "status",
-                    outcome = "failed",
-                    error = %err,
-                    "command failed"
-                );
-                process::exit(1);
+                fatal_command_error("status", &err);
             }
         }
         Commands::Step { dry_run, json } => {
             if let Err(err) = commands::step::run(&working_dir, config_override_ref, dry_run, json)
             {
-                error!(
-                    operation = "command",
-                    command = "step",
-                    outcome = "failed",
-                    error = %err,
-                    "command failed"
-                );
-                process::exit(1);
+                fatal_command_error("step", &err);
             }
         }
     }
+}
+
+fn fatal_command_error(command: &str, err: &dyn std::fmt::Display) -> ! {
+    error!(
+        operation = "command",
+        command = command,
+        outcome = "failed",
+        error = %err,
+        "command failed"
+    );
+    eprintln!("error: {err}");
+    process::exit(1)
 }
