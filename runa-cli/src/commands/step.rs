@@ -6,8 +6,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
 
-use libagent::context::{ArtifactRelationship, ContextInjection, render_context_prompt};
-use serde::Serialize;
+use libagent::context::{
+    ArtifactRelationship, ContextInjection, ContextInjectionView, render_context_prompt,
+};
+use serde::{Serialize, Serializer};
 use tracing::{info, warn};
 
 use super::CommandError;
@@ -127,6 +129,7 @@ struct PlanEntry {
     work_unit: Option<String>,
     trigger: String,
     mcp_config: McpServerConfig,
+    #[serde(serialize_with = "serialize_context")]
     context: ContextInjection,
 }
 
@@ -147,6 +150,13 @@ struct PlannedEntry {
 struct BinaryLookup {
     sibling_path: Option<PathBuf>,
     resolved_path: Option<PathBuf>,
+}
+
+fn serialize_context<S>(context: &ContextInjection, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    ContextInjectionView::from(context).serialize(serializer)
 }
 
 fn build_execution_plan(
@@ -421,7 +431,8 @@ pub fn run(
                 println!("     trigger: {}", entry.trigger);
                 println!("     context:");
                 let context =
-                    serde_json::to_string_pretty(&entry.context).map_err(StepError::Json)?;
+                    serde_json::to_string_pretty(&ContextInjectionView::from(&entry.context))
+                        .map_err(StepError::Json)?;
                 for line in context.lines() {
                     println!("       {line}");
                 }
