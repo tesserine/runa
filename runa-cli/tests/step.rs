@@ -349,7 +349,7 @@ fn step_without_dry_run_fails_when_agent_command_is_not_configured() {
 
 #[cfg(unix)]
 #[test]
-fn step_without_dry_run_invokes_configured_agent_with_execution_payload() {
+fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
@@ -376,21 +376,6 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_payload() {
     )
     .unwrap();
 
-    let dry_run = runa_bin()
-        .arg("step")
-        .arg("--dry-run")
-        .arg("--json")
-        .current_dir(&project_dir)
-        .output()
-        .unwrap();
-    assert!(
-        dry_run.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&dry_run.stderr)
-    );
-    let dry_run_json: serde_json::Value = serde_json::from_slice(&dry_run.stdout).unwrap();
-    let expected_payload = dry_run_json["execution_plan"][0].clone();
-
     let payload_path = dir.path().join("captured-payload.json");
     let agent_path = write_capture_agent(dir.path());
     append_agent_command_config(
@@ -410,9 +395,22 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_payload() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let captured: serde_json::Value =
-        serde_json::from_slice(&fs::read(&payload_path).unwrap()).unwrap();
-    assert_eq!(captured, expected_payload);
+    let captured = fs::read_to_string(&payload_path).unwrap();
+    assert!(captured.contains("# Protocol: implement"), "{captured}");
+    assert!(captured.contains("## Protocol instructions"), "{captured}");
+    assert!(captured.contains("# implement"), "{captured}");
+    assert!(captured.contains("## What you've been given"), "{captured}");
+    assert!(captured.contains("**Title:** ship step"), "{captured}");
+    assert!(captured.contains("## Additional context"), "{captured}");
+    assert!(captured.contains("**Source:** notes"), "{captured}");
+    assert!(
+        captured.contains("## What you need to deliver"),
+        "{captured}"
+    );
+    assert!(
+        captured.contains("You must produce: implementation"),
+        "{captured}"
+    );
 }
 
 #[test]

@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
 
-use libagent::context::{ArtifactRelationship, ContextInjection};
+use libagent::context::{ArtifactRelationship, ContextInjection, render_context_prompt};
 use serde::Serialize;
 use tracing::{info, warn};
 
@@ -208,9 +208,10 @@ fn execute_plan(
                         "child stdin was not available",
                     ),
                 })?;
-            serde_json::to_writer_pretty(&mut *stdin, entry).map_err(StepError::Json)?;
+            let prompt = render_context_prompt(&entry.context);
             stdin
-                .write_all(b"\n")
+                .write_all(prompt.as_bytes())
+                .and_then(|_| stdin.write_all(b"\n"))
                 .map_err(|source| StepError::AgentCommandIo {
                     command: command_display.clone(),
                     stage: "stdin_write",

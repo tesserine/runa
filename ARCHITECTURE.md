@@ -8,7 +8,7 @@ Three crates, Rust 2024 edition, resolver v3:
 
 - **`libagent`** — All domain logic: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, context injection construction, pre/post-execution enforcement, project loading, and protocol selection.
 - **`runa-cli`** — Thin CLI binary. Clap-based argument parsing, delegates to libagent. No domain logic.
-- **`runa-mcp`** — MCP server binary. Single-session stdio process that serves one named protocol invocation per run. Loads the project, resolves the requested protocol from the manifest, exposes protocol outputs as MCP tools and context as an MCP prompt, and writes produced artifacts into the workspace.
+- **`runa-mcp`** — MCP server binary. Single-session stdio process that serves one named protocol invocation per run. Loads the project, resolves the requested protocol from the manifest, exposes protocol outputs as MCP tools, and writes produced artifacts into the workspace.
 
 ## Data Flow
 
@@ -22,13 +22,13 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 4. **Trigger evaluation.** `trigger::evaluate` recursively evaluates a `TriggerCondition` tree against a `TriggerContext` (artifact store, scan metadata) plus the protocol declaration and returns a `TriggerResult`. `OnChange` derives temporal state from output artifact timestamps for the same work unit and consults the store's scan-gap metadata so any unreadable output instance conservatively invalidates completion evidence for the whole output type. Pure function, no side effects.
 
-5. **Context injection construction.** `context::build_context` converts a ready `ProtocolDeclaration` plus the current artifact store into the stable agent-facing context used by `runa step` and `runa-mcp`: protocol name, available required/accepted artifact refs, and expected outputs.
+5. **Context injection construction.** `context::build_context` converts a ready `ProtocolDeclaration` plus the current artifact store into the stable agent-facing context used by `runa step`: protocol name, available required/accepted artifact refs, and expected outputs. `context::render_context_prompt` turns that context into the prose prompt delivered on stdin during live execution.
 
 6. **Protocol selection.** `selection::discover_ready_candidates` evaluates protocols in topological order, discovers candidate work_units from artifact instances, and returns (protocol, work_unit) pairs where trigger, preconditions, and scan trust are all satisfied. Current work whose valid outputs are newer than all relevant inputs is suppressed directly from artifact freshness, with unreadable output instances conservatively disabling suppression for every work unit of the affected output type.
 
 7. **Tracing bootstrap.** Both binaries bootstrap tracing with env/default settings before any config lookup, then reconfigure the shared subscriber from `config.toml` when logging settings are available. Tracing events always go to stderr; operator-facing command output stays on stdout.
 
-8. **CLI step execution.** `runa step` reuses the same execution-plan construction as dry-run, then, when `[agent].command` is configured, invokes that argv command once per non-cyclic ready plan entry in order. Each invocation receives the exact plan entry JSON (`protocol`, optional `work_unit`, `trigger`, `context`) on stdin, runs in the project working directory, and must exit `0` for step to continue. This issue stops at command execution: no post-execution scan, postcondition enforcement, or cascading re-selection happens yet.
+8. **CLI step execution.** `runa step` reuses the same execution-plan construction as dry-run, then, when `[agent].command` is configured, invokes that argv command once per non-cyclic ready plan entry in order. Each invocation renders the entry's `ContextInjection` into a natural-language prompt, writes that prompt on stdin, runs in the project working directory, and must exit `0` for step to continue. This issue stops at command execution: no post-execution scan, postcondition enforcement, or cascading re-selection happens yet.
 
 9. **MCP runtime loop.** `runa-mcp` parses `--protocol` and optional `--work-unit`, loads the project, resolves the named protocol from the manifest, validates that its outputs can be served as MCP tools, and serves an MCP session via stdio.
 
@@ -56,7 +56,7 @@ Dependency graph built from protocol declarations. Edges derive from artifact re
 
 ### `context.rs`
 
-Stable agent-facing context injection contract. `build_context` gathers all valid required artifacts and all valid available accepted artifacts for a protocol into ordered `ArtifactRef` entries carrying `artifact_type`, `instance_id`, lossy text `path`, `content_hash`, and `relationship` (`requires` or `accepts`). It also copies the preloaded protocol instruction content into the payload. `ExpectedOutputs` exposes `produces` and `may_produce` artifact type names without embedding trigger/operator details.
+Stable agent-facing context injection contract plus prompt rendering. `build_context` gathers all valid required artifacts and all valid available accepted artifacts for a protocol into ordered `ArtifactRef` entries carrying `artifact_type`, `instance_id`, lossy text `path`, `content_hash`, and `relationship` (`requires` or `accepts`). It also copies the preloaded protocol instruction content into the payload. `ExpectedOutputs` exposes `produces` and `may_produce` artifact type names without embedding trigger/operator details. `render_context_prompt` transforms a `ContextInjection` into the prose prompt used by live `runa step`; JSON objects become labeled key-value sections, arrays become numbered lists, nested structures are indented, and artifact read/parse errors are rendered inline.
 
 ### `store.rs`
 
@@ -100,11 +100,7 @@ Runtime loop: parses `--protocol` and optional `--work-unit`, loads the project,
 
 ### `handler.rs`
 
-`ServerHandler` implementation. `RunaHandler` derives one MCP tool per output artifact type (`produces` + `may_produce`), with tool input schemas derived from artifact type JSON Schemas (with `work_unit` stripped). `call_tool` validates artifacts before writing, then writes to the workspace and records in the store. A single `"context"` prompt delivers the protocol context.
-
-### `context.rs`
-
-Natural language context prompt renderer. Transforms `ContextInjection` into a `GetPromptResult` with the protocol heading, a protocol-instructions section, prose-rendered artifact content, and output guidance. JSON objects become labeled key-value sections with humanized keys, arrays become numbered lists, and nested structures are indented. Artifact read/parse errors are rendered inline rather than failing the prompt.
+`ServerHandler` implementation. `RunaHandler` derives one MCP tool per output artifact type (`produces` + `may_produce`), with tool input schemas derived from artifact type JSON Schemas (with `work_unit` stripped). `call_tool` validates artifacts before writing, then writes to the workspace and records in the store. The server advertises tool capabilities only; prompt delivery is handled by `runa step`, not by MCP.
 
 ## `.runa/` Directory Layout
 
@@ -167,7 +163,7 @@ Runs the same implicit scan and shared candidate classification used by `runa st
 
 With `--dry-run`, text output prints the execution plan followed by the grouped READY/BLOCKED/WAITING view. JSON output adds an `execution_plan` array plus an optional `cycle` path while reusing the same `protocols` status entries and `scan_warnings` envelope fields as `runa status`.
 
-Without `--dry-run`, `step` requires `[agent].command` in config. It rejects `--json`, then invokes the configured argv command once per execution-plan entry in order, passing the exact plan entry JSON on stdin and inheriting child stdout/stderr. A non-zero exit stops execution immediately and surfaces the failing command, protocol, optional work unit, and exit status. This path does not yet rescan the workspace or enforce postconditions after the child exits.
+Without `--dry-run`, `step` requires `[agent].command` in config. It rejects `--json`, then invokes the configured argv command once per execution-plan entry in order, rendering each entry's `ContextInjection` to natural-language prompt text on stdin while inheriting child stdout/stderr. A non-zero exit stops execution immediately and surfaces the failing command, protocol, optional work unit, and exit status. This path does not yet rescan the workspace or enforce postconditions after the child exits.
 
 ## Key Design Patterns
 
