@@ -149,6 +149,148 @@ fn matches_work_unit_filter(state_wu: &Option<String>, filter: Option<&str>) -> 
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct PersistedArtifactState {
+    path: PersistedPath,
+    display_path: String,
+    status: ValidationStatus,
+    last_modified_ms: u64,
+    content_hash: String,
+    #[serde(default)]
+    schema_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    work_unit: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+enum PersistedArtifactStateCompat {
+    Current(PersistedArtifactState),
+    Legacy(LegacyArtifactState),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct LegacyArtifactState {
+    path: String,
+    status: ValidationStatus,
+    last_modified_ms: u64,
+    content_hash: String,
+    #[serde(default)]
+    schema_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    work_unit: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PersistedPath {
+    UnixBytes(Vec<u8>),
+    WindowsWide(Vec<u16>),
+    Utf8(String),
+}
+
+impl PersistedArtifactState {
+    fn from_state(state: &ArtifactState) -> Self {
+        Self {
+            path: PersistedPath::from_path(&state.path),
+            display_path: display_path(&state.path),
+            status: state.status.clone(),
+            last_modified_ms: state.last_modified_ms,
+            content_hash: state.content_hash.clone(),
+            schema_hash: state.schema_hash.clone(),
+            work_unit: state.work_unit.clone(),
+        }
+    }
+
+    fn into_state(self) -> ArtifactState {
+        ArtifactState {
+            path: self.path.into_path_buf(),
+            status: self.status,
+            last_modified_ms: self.last_modified_ms,
+            content_hash: self.content_hash,
+            schema_hash: self.schema_hash,
+            work_unit: self.work_unit,
+        }
+    }
+}
+
+impl LegacyArtifactState {
+    fn into_state(self) -> ArtifactState {
+        ArtifactState {
+            path: PathBuf::from(self.path),
+            status: self.status,
+            last_modified_ms: self.last_modified_ms,
+            content_hash: self.content_hash,
+            schema_hash: self.schema_hash,
+            work_unit: self.work_unit,
+        }
+    }
+}
+
+impl PersistedPath {
+    fn from_path(path: &Path) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+
+            return Self::UnixBytes(path.as_os_str().as_bytes().to_vec());
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+
+            return Self::WindowsWide(path.as_os_str().encode_wide().collect());
+        }
+
+        #[allow(unreachable_code)]
+        Self::Utf8(path.to_string_lossy().into_owned())
+    }
+
+    fn into_path_buf(self) -> PathBuf {
+        match self {
+            #[cfg(unix)]
+            Self::UnixBytes(bytes) => {
+                use std::ffi::OsString;
+                use std::os::unix::ffi::OsStringExt;
+
+                PathBuf::from(OsString::from_vec(bytes))
+            }
+            #[cfg(not(unix))]
+            Self::UnixBytes(bytes) => PathBuf::from(String::from_utf8_lossy(&bytes).into_owned()),
+            #[cfg(windows)]
+            Self::WindowsWide(units) => {
+                use std::ffi::OsString;
+                use std::os::windows::ffi::OsStringExt;
+
+                PathBuf::from(OsString::from_wide(&units))
+            }
+            #[cfg(not(windows))]
+            Self::WindowsWide(units) => PathBuf::from(String::from_utf16_lossy(&units)),
+            Self::Utf8(path) => PathBuf::from(path),
+        }
+    }
+}
+
+fn display_path(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn deserialize_artifact_state(content: &str) -> Result<ArtifactState, StoreError> {
+    let state = serde_json::from_str::<PersistedArtifactStateCompat>(content)
+        .map_err(|e| StoreError::Serialization(e.to_string()))?;
+
+    Ok(match state {
+        PersistedArtifactStateCompat::Current(current) => current.into_state(),
+        PersistedArtifactStateCompat::Legacy(legacy) => legacy.into_state(),
+    })
+}
+
+fn serialize_artifact_state(state: &ArtifactState) -> Result<String, StoreError> {
+    serde_json::to_string_pretty(&PersistedArtifactState::from_state(state))
+        .map_err(|e| StoreError::Serialization(e.to_string()))
+}
+
 impl ArtifactStore {
     /// Create a store, loading existing state from disk if present.
     /// Creates `store_dir` if it doesn't exist.
@@ -189,8 +331,7 @@ impl ArtifactStore {
                         .to_string_lossy()
                         .into_owned();
                     let content = std::fs::read_to_string(&path).map_err(StoreError::Io)?;
-                    let state: ArtifactState = serde_json::from_str(&content)
-                        .map_err(|e| StoreError::Serialization(e.to_string()))?;
+                    let state = deserialize_artifact_state(&content)?;
                     artifacts.insert((type_name.clone(), instance_id), state);
                 }
             }
@@ -546,8 +687,7 @@ impl ArtifactStore {
         std::fs::create_dir_all(&type_dir).map_err(StoreError::Io)?;
         let file_path = type_dir.join(format!("{instance_id}.json"));
         let tmp_path = type_dir.join(format!("{instance_id}.json.tmp"));
-        let json = serde_json::to_string_pretty(state)
-            .map_err(|e| StoreError::Serialization(e.to_string()))?;
+        let json = serialize_artifact_state(state)?;
         std::fs::write(&tmp_path, json).map_err(StoreError::Io)?;
         std::fs::rename(&tmp_path, &file_path).map_err(StoreError::Io)?;
         Ok(())
@@ -1496,5 +1636,64 @@ mod tests {
         assert!(store.has_any_invalid("report", Some("wu-b")));
         // Visible unscoped.
         assert!(store.has_any_invalid("report", None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn record_persists_and_reloads_non_utf8_paths() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let tmp = TempDir::new().unwrap();
+        let store_dir = tmp.path().join("artifacts");
+        let mut store = make_store(&store_dir, vec!["report"]);
+        let path = PathBuf::from(OsString::from_vec(b"reports/spec-\xFF.json".to_vec()));
+
+        store
+            .record("report", "spec", &path, &json!({"title": "Q1"}))
+            .unwrap();
+        assert_eq!(store.get("report", "spec").unwrap().path, path);
+
+        let reloaded = ArtifactStore::new(
+            vec![make_artifact_type("report", simple_schema())],
+            store_dir,
+        )
+        .unwrap();
+        assert_eq!(reloaded.get("report", "spec").unwrap().path, path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loads_legacy_string_paths_and_rewrites_on_persist() {
+        let tmp = TempDir::new().unwrap();
+        let store_dir = tmp.path().join("artifacts");
+        let type_dir = store_dir.join("report");
+        std::fs::create_dir_all(&type_dir).unwrap();
+        std::fs::write(
+            type_dir.join("spec.json"),
+            r#"{
+  "path": "reports/spec.json",
+  "status": "valid",
+  "last_modified_ms": 1,
+  "content_hash": "sha256:test",
+  "schema_hash": "sha256:schema"
+}"#,
+        )
+        .unwrap();
+
+        let mut store = ArtifactStore::new(
+            vec![make_artifact_type("report", simple_schema())],
+            store_dir.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.get("report", "spec").unwrap().path,
+            PathBuf::from("reports/spec.json")
+        );
+
+        store.invalidate("report", "spec").unwrap();
+        let persisted = std::fs::read_to_string(type_dir.join("spec.json")).unwrap();
+        assert!(persisted.contains("\"display_path\": \"reports/spec.json\""));
+        assert!(persisted.contains("\"unix_bytes\""), "{persisted}");
     }
 }

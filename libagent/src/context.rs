@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -10,27 +12,46 @@ pub enum ArtifactRelationship {
     Accepts,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ArtifactRef {
     pub artifact_type: String,
     pub instance_id: String,
-    pub path: String,
+    pub path: PathBuf,
+    pub display_path: String,
     pub content_hash: String,
     pub relationship: ArtifactRelationship,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ArtifactRefView {
+    pub artifact_type: String,
+    pub instance_id: String,
+    pub display_path: String,
+    pub content_hash: String,
+    pub relationship: ArtifactRelationship,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExpectedOutputs {
     pub produces: Vec<String>,
     pub may_produce: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ContextInjection {
     pub protocol: String,
     pub work_unit: Option<String>,
     pub instructions: String,
     pub inputs: Vec<ArtifactRef>,
+    pub expected_outputs: ExpectedOutputs,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ContextInjectionView {
+    pub protocol: String,
+    pub work_unit: Option<String>,
+    pub instructions: String,
+    pub inputs: Vec<ArtifactRefView>,
     pub expected_outputs: ExpectedOutputs,
 }
 
@@ -140,7 +161,8 @@ fn collect_inputs(
                 target.push(ArtifactRef {
                     artifact_type: artifact_type.clone(),
                     instance_id: instance_id.to_string(),
-                    path: display_path(&state.path),
+                    path: state.path.clone(),
+                    display_path: display_path(&state.path),
                     content_hash: state.content_hash.clone(),
                     relationship,
                 });
@@ -228,6 +250,30 @@ fn humanize_key(key: &str) -> String {
     result
 }
 
+impl From<&ArtifactRef> for ArtifactRefView {
+    fn from(input: &ArtifactRef) -> Self {
+        Self {
+            artifact_type: input.artifact_type.clone(),
+            instance_id: input.instance_id.clone(),
+            display_path: input.display_path.clone(),
+            content_hash: input.content_hash.clone(),
+            relationship: input.relationship,
+        }
+    }
+}
+
+impl From<&ContextInjection> for ContextInjectionView {
+    fn from(context: &ContextInjection) -> Self {
+        Self {
+            protocol: context.protocol.clone(),
+            work_unit: context.work_unit.clone(),
+            instructions: context.instructions.clone(),
+            inputs: context.inputs.iter().map(ArtifactRefView::from).collect(),
+            expected_outputs: context.expected_outputs.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,7 +329,8 @@ mod tests {
             ArtifactRef {
                 artifact_type: "constraints".into(),
                 instance_id: "spec".into(),
-                path: constraints_path.display().to_string(),
+                path: constraints_path.clone(),
+                display_path: constraints_path.display().to_string(),
                 content_hash:
                     "sha256:dd4077b358533c789242e86ac7f5e7dffa0a587d5b4acfd343c612ae9ddfd315".into(),
                 relationship: ArtifactRelationship::Requires,
@@ -294,7 +341,8 @@ mod tests {
             ArtifactRef {
                 artifact_type: "notes".into(),
                 instance_id: "notes".into(),
-                path: notes_path.display().to_string(),
+                path: notes_path.clone(),
+                display_path: notes_path.display().to_string(),
                 content_hash:
                     "sha256:c623bcb14b09ea83fe711bfb893ea3d56f13a23b95bad47e04c4dec264267abd".into(),
                 relationship: ArtifactRelationship::Accepts,
@@ -359,11 +407,38 @@ mod tests {
         let artifact = ArtifactRef {
             artifact_type: "constraints".into(),
             instance_id: "spec".into(),
-            path: display,
+            path: path.to_path_buf(),
+            display_path: display,
             content_hash: "sha256:test".into(),
             relationship: ArtifactRelationship::Requires,
         };
-        assert!(serde_json::to_string(&artifact).is_ok());
+        let view = ArtifactRefView::from(&artifact);
+        assert!(serde_json::to_string(&view).is_ok());
+    }
+
+    #[test]
+    fn context_view_uses_display_path_only() {
+        let context = ContextInjection {
+            protocol: "implement".into(),
+            work_unit: None,
+            instructions: String::new(),
+            inputs: vec![ArtifactRef {
+                artifact_type: "constraints".into(),
+                instance_id: "spec".into(),
+                path: PathBuf::from("/tmp/spec.json"),
+                display_path: "/tmp/spec.json".into(),
+                content_hash: "sha256:test".into(),
+                relationship: ArtifactRelationship::Requires,
+            }],
+            expected_outputs: ExpectedOutputs {
+                produces: vec!["implementation".into()],
+                may_produce: Vec::new(),
+            },
+        };
+
+        let value = serde_json::to_value(ContextInjectionView::from(&context)).unwrap();
+        assert_eq!(value["inputs"][0]["display_path"], "/tmp/spec.json");
+        assert!(value["inputs"][0].get("path").is_none(), "{value:#}");
     }
 
     #[test]
@@ -499,7 +574,8 @@ mod tests {
             inputs: vec![ArtifactRef {
                 artifact_type: "constraints".into(),
                 instance_id: "missing".into(),
-                path: "/tmp/does-not-exist.json".into(),
+                path: PathBuf::from("/tmp/does-not-exist.json"),
+                display_path: "/tmp/does-not-exist.json".into(),
                 content_hash: "sha256:test".into(),
                 relationship: ArtifactRelationship::Requires,
             }],

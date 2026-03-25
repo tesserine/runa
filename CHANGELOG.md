@@ -30,6 +30,11 @@ Semantic Versioning.
 
 ### Fixed
 
+- Preserve valid Unix artifact filenames containing non-UTF8 bytes across
+  `.runa/store` persistence and live `runa step` prompt rendering by keeping
+  exact paths internally, storing a byte-preserving encoded path on disk, and
+  exposing only display-only `display_path` strings in the dry-run context
+  payload.
 - Wrap the documented Claude example wrapper's `--mcp-config` file in Claude's
   required `mcpServers.runa` schema and export absolute resolved MCP command
   and config paths from `runa step`, so live agent execution no longer depends

@@ -198,7 +198,7 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["version"], 2);
+    assert_eq!(value["version"], 3);
     assert_eq!(value["methodology"], "groundwork");
     assert_eq!(value["scan_warnings"], serde_json::json!([]));
     assert!(value.get("cycle").is_none(), "{value:#}");
@@ -251,14 +251,14 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
             {
                 "artifact_type": "constraints",
                 "instance_id": "spec-1",
-                "path": workspace.join("constraints/spec-1.json"),
+                "display_path": workspace.join("constraints/spec-1.json"),
                 "content_hash": "sha256:dd4077b358533c789242e86ac7f5e7dffa0a587d5b4acfd343c612ae9ddfd315",
                 "relationship": "requires"
             },
             {
                 "artifact_type": "prior-art",
                 "instance_id": "survey-1",
-                "path": workspace.join("prior-art/survey-1.json"),
+                "display_path": workspace.join("prior-art/survey-1.json"),
                 "content_hash": "sha256:07de5216ca2c3ee50838fd24a2032bc4a9d77e73ba1de36a1cbdcd56b666946a",
                 "relationship": "accepts"
             }
@@ -279,6 +279,56 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
             "on_invalid(implementation): no invalid instances of artifact type 'implementation'"
         ])
     );
+}
+
+#[test]
+fn step_dry_run_json_uses_display_path_for_context_inputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let input = &value["execution_plan"][0]["context"]["inputs"][0];
+    assert_eq!(
+        input["display_path"],
+        serde_json::Value::String(
+            workspace
+                .join("constraints/spec-1.json")
+                .display()
+                .to_string()
+        )
+    );
+    assert!(input.get("path").is_none(), "{input:#}");
 }
 
 #[test]
@@ -566,6 +616,58 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
             "RUNA_WORKING_DIR": project_dir
         })
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn step_without_dry_run_reads_non_utf8_artifact_paths_into_prompt() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    let non_utf8_name = OsString::from_vec(b"spec-\xFF.json".to_vec());
+    fs::write(
+        workspace.join("constraints").join(non_utf8_name),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+
+    let payload_path = dir.path().join("captured-payload.txt");
+    let agent_path = write_capture_agent(dir.path());
+    append_agent_command_config(
+        &project_dir,
+        &[agent_path.as_path(), payload_path.as_path()],
+    );
+
+    let output = runa_bin()
+        .arg("step")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let captured = fs::read_to_string(&payload_path).unwrap();
+    assert!(captured.contains("# Protocol: implement"), "{captured}");
+    assert!(captured.contains("**Title:** ship step"), "{captured}");
+    assert!(!captured.contains("Could not read artifact"), "{captured}");
 }
 
 #[cfg(unix)]
@@ -1089,7 +1191,7 @@ fn step_dry_run_omits_partially_scanned_accepted_inputs_from_context() {
             {
                 "artifact_type": "constraints",
                 "instance_id": "spec-1",
-                "path": workspace.join("constraints/spec-1.json"),
+                "display_path": workspace.join("constraints/spec-1.json"),
                 "content_hash": "sha256:dd4077b358533c789242e86ac7f5e7dffa0a587d5b4acfd343c612ae9ddfd315",
                 "relationship": "requires"
             }

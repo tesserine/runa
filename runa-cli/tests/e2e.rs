@@ -123,7 +123,8 @@ fn assert_context_inputs(inputs: &serde_json::Value, expected: &[(&str, &str, Pa
     for (entry, (artifact_type, instance_id, path, relationship)) in actual.iter().zip(expected) {
         assert_eq!(entry["artifact_type"], *artifact_type);
         assert_eq!(entry["instance_id"], *instance_id);
-        assert_eq!(entry["path"], path.display().to_string());
+        assert_eq!(entry["display_path"], path.display().to_string());
+        assert!(entry.get("path").is_none(), "{entry:#}");
         assert_eq!(entry["relationship"], *relationship);
 
         let content_hash = entry["content_hash"].as_str().unwrap();
