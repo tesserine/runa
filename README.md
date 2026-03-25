@@ -45,6 +45,8 @@ command = ["./examples/agent-claude-code.sh"]
 
 `runa step` without `--dry-run` requires `[agent].command`. Runa executes that argv command in the project root, renders a natural-language execution prompt from the planned protocol context, writes that prompt on stdin, and leaves stdout/stderr attached to the child process. Before each invocation it also exports `RUNA_MCP_CONFIG`, a JSON description of how the wrapper should spawn `runa-mcp` for the selected protocol run. The wrapper adapts that config to the specific agent runtime. `--json` is dry-run only.
 
+The exported `RUNA_MCP_CONFIG` payload stays runtime-agnostic: `{command,args,env}`. Agent wrappers are responsible for adapting that generic server description to their runtime's schema. The Claude example wrapper wraps it as `{"mcpServers":{"runa":...}}` before invoking `claude`. The exported command and env paths are absolute whenever `runa step` resolved them from the local filesystem, so wrappers do not depend on their child process cwd to launch `runa-mcp`.
+
 ```bash
 runa list
 ```

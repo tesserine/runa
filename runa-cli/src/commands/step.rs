@@ -476,7 +476,7 @@ fn locate_runa_mcp() -> Result<PathBuf, StepError> {
 
     lookup
         .resolved_path
-        .ok_or_else(|| StepError::McpBinaryNotFound {
+        .ok_or(StepError::McpBinaryNotFound {
             binary_name: executable_name,
             sibling_path: lookup.sibling_path,
         })
@@ -552,6 +552,8 @@ fn build_mcp_config(
         args.push(work_unit.to_string());
     }
 
+    let working_dir = absolutize_path(working_dir, working_dir);
+    let config_path = absolutize_path(config_path, &working_dir);
     let mut env = BTreeMap::new();
     env.insert(
         "RUNA_CONFIG".to_string(),
@@ -563,15 +565,46 @@ fn build_mcp_config(
     );
 
     McpServerConfig {
-        command: mcp_command.to_string(),
+        command: normalize_mcp_command(mcp_command, &working_dir),
         args,
         env,
+    }
+}
+
+fn normalize_mcp_command(command: &str, working_dir: &Path) -> String {
+    let command_path = Path::new(command);
+    if command_path.is_absolute() {
+        return command.to_string();
+    }
+
+    // Preserve the dry-run preview fallback when the binary is unresolved.
+    if command_path.components().count() == 1 && !working_dir.join(command_path).exists() {
+        return command.to_string();
+    }
+
+    absolutize_path(command_path, working_dir)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn absolutize_path(path: &Path, base_dir: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base_dir.join(path)
+    };
+
+    if absolute.exists() {
+        std::fs::canonicalize(&absolute).unwrap_or(absolute)
+    } else {
+        absolute
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn build_mcp_config_includes_protocol_scope_and_project_env() {
@@ -596,6 +629,61 @@ mod tests {
             config.env.get("RUNA_CONFIG"),
             Some(&"/tmp/project/.runa/config.toml".to_string())
         );
+    }
+
+    #[test]
+    fn build_mcp_config_absolutizes_relative_command_and_config_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let working_dir = temp.path().join("project");
+        let runa_dir = working_dir.join(".runa");
+        let bin_dir = working_dir.join("target/debug");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(runa_dir.join("config.toml"), "methodology_path = \"x\"").unwrap();
+        fs::write(bin_dir.join(binary_executable_name("runa-mcp")), b"").unwrap();
+
+        let config = build_mcp_config(
+            "target/debug/runa-mcp",
+            &working_dir,
+            Path::new(".runa/config.toml"),
+            "implement",
+            None,
+        );
+
+        assert_eq!(
+            config.command,
+            working_dir
+                .join("target/debug")
+                .join(binary_executable_name("runa-mcp"))
+                .to_string_lossy()
+                .into_owned()
+        );
+        assert_eq!(
+            config.env.get("RUNA_WORKING_DIR"),
+            Some(&working_dir.to_string_lossy().into_owned())
+        );
+        assert_eq!(
+            config.env.get("RUNA_CONFIG"),
+            Some(
+                &working_dir
+                    .join(".runa/config.toml")
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn build_mcp_config_preserves_unresolved_bare_preview_command() {
+        let config = build_mcp_config(
+            "runa-mcp",
+            Path::new("/tmp/project"),
+            Path::new("/tmp/project/.runa/config.toml"),
+            "implement",
+            None,
+        );
+
+        assert_eq!(config.command, "runa-mcp");
     }
 
     #[test]

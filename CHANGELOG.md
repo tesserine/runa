@@ -30,6 +30,10 @@ Semantic Versioning.
 
 ### Fixed
 
+- Wrap the documented Claude example wrapper's `--mcp-config` file in Claude's
+  required `mcpServers.runa` schema and export absolute resolved MCP command
+  and config paths from `runa step`, so live agent execution no longer depends
+  on the wrapper's working directory.
 - Move prompt rendering into libagent so live `runa step` writes the agent's
   prose prompt on stdin while `runa-mcp` advertises tool capabilities only.
 - Preserve `status` and `step` readiness reporting when scans encounter
