@@ -37,8 +37,8 @@ enum Commands {
     Doctor,
     /// Scan the artifact workspace and reconcile it into the store
     Scan,
-    /// Evaluate protocol readiness and report status
-    Status {
+    /// Evaluate protocol readiness and report state
+    State {
         /// Emit machine-readable JSON instead of text output
         #[arg(long)]
         json: bool,
@@ -142,9 +142,9 @@ fn main() {
                 fatal_command_error("scan", &err);
             }
         }
-        Commands::Status { json } => {
-            if let Err(err) = commands::status::run(&working_dir, config_override_ref, json) {
-                fatal_command_error("status", &err);
+        Commands::State { json } => {
+            if let Err(err) = commands::state::run(&working_dir, config_override_ref, json) {
+                fatal_command_error("state", &err);
             }
         }
         Commands::Step { dry_run, json } => {

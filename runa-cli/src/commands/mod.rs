@@ -10,7 +10,7 @@ pub mod init;
 pub mod list;
 pub mod protocol_eval;
 pub mod scan;
-pub mod status;
+pub mod state;
 pub mod step;
 
 #[derive(Debug)]

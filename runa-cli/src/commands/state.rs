@@ -7,37 +7,37 @@ use super::CommandError;
 use crate::commands::protocol_eval;
 
 #[derive(Debug)]
-pub enum StatusError {
+pub enum StateError {
     Command(CommandError),
     Json(serde_json::Error),
 }
 
-impl fmt::Display for StatusError {
+impl fmt::Display for StateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            StatusError::Command(err) => write!(f, "{err}"),
-            StatusError::Json(err) => write!(f, "{err}"),
+            StateError::Command(err) => write!(f, "{err}"),
+            StateError::Json(err) => write!(f, "{err}"),
         }
     }
 }
 
-impl std::error::Error for StatusError {
+impl std::error::Error for StateError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            StatusError::Command(err) => Some(err),
-            StatusError::Json(err) => Some(err),
+            StateError::Command(err) => Some(err),
+            StateError::Json(err) => Some(err),
         }
     }
 }
 
-impl From<CommandError> for StatusError {
+impl From<CommandError> for StateError {
     fn from(err: CommandError) -> Self {
-        StatusError::Command(err)
+        StateError::Command(err)
     }
 }
 
 #[derive(Serialize)]
-struct StatusJson<'a> {
+struct StateJson<'a> {
     version: u32,
     methodology: &'a str,
     scan_warnings: Vec<String>,
@@ -48,14 +48,14 @@ pub fn run(
     working_dir: &Path,
     config_override: Option<&Path>,
     json_output: bool,
-) -> Result<(), StatusError> {
+) -> Result<(), StateError> {
     let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
     let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
     let evaluated = protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings);
     let warnings = scan_findings.warnings.clone();
 
     if json_output {
-        let payload = StatusJson {
+        let payload = StateJson {
             version: 2,
             methodology: &loaded.manifest.name,
             scan_warnings: warnings.clone(),
@@ -63,7 +63,7 @@ pub fn run(
         };
         println!(
             "{}",
-            serde_json::to_string_pretty(&payload).map_err(StatusError::Json)?
+            serde_json::to_string_pretty(&payload).map_err(StateError::Json)?
         );
     } else {
         println!("Methodology: {}", loaded.manifest.name);

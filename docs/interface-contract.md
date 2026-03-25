@@ -59,7 +59,7 @@ Nesting is permitted. `all_of(on_artifact("constraints"), any_of(on_change("revi
 
 ## What runa Does
 
-runa is an event-driven runtime. The CLI commands (init, scan, list, status, step, doctor) are windows into its state. The runtime itself is the monitoring loop.
+runa is an event-driven runtime. The CLI commands (init, scan, list, state, step, doctor) are windows into its state. The runtime itself is the monitoring loop.
 
 Given the declarations above, runa provides five runtime capabilities:
 
