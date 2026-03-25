@@ -35,3 +35,6 @@ Semantic Versioning.
 - Preserve `status` and `step` readiness reporting when scans encounter
   unreadable produced artifacts by disabling freshness suppression for the
   affected output type instead of blocking protocols outright.
+- Restore `runa step` MCP discovery so `--dry-run` remains a planning-only
+  preview when `runa-mcp` is absent, while live execution prefers a sibling
+  `runa-mcp` binary and falls back to `PATH` for split-install layouts.
