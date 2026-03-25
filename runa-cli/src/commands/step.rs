@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fmt;
 use std::io;
@@ -300,11 +300,29 @@ fn candidate_key(protocol: &str, work_unit: Option<&str>) -> CandidateKey {
     }
 }
 
-fn scan_result_has_state_transitions(scan_result: &libagent::ScanResult) -> bool {
-    !scan_result.new.is_empty()
-        || !scan_result.modified.is_empty()
-        || !scan_result.revalidated.is_empty()
-        || !scan_result.removed.is_empty()
+fn scan_result_changed_types(scan_result: &libagent::ScanResult) -> HashSet<String> {
+    scan_result
+        .new
+        .iter()
+        .chain(scan_result.modified.iter())
+        .chain(scan_result.revalidated.iter())
+        .chain(scan_result.removed.iter())
+        .map(|artifact| artifact.artifact_type.clone())
+        .collect()
+}
+
+fn candidate_is_invalidated_by_types(
+    candidate: &CandidateKey,
+    changed_types: &HashSet<String>,
+    protocol_input_types: &HashMap<String, HashSet<String>>,
+) -> bool {
+    protocol_input_types
+        .get(candidate.protocol.as_str())
+        .is_some_and(|relevant_types| {
+            relevant_types
+                .iter()
+                .any(|artifact_type| changed_types.contains(artifact_type))
+        })
 }
 
 fn execute_entry(
@@ -410,6 +428,17 @@ fn execute_live_step(
 
     let mcp_binary = locate_runa_mcp()?;
     let mcp_command = mcp_binary.to_string_lossy().into_owned();
+    let protocol_input_types: HashMap<String, HashSet<String>> = loaded
+        .manifest
+        .protocols
+        .iter()
+        .map(|protocol| {
+            (
+                protocol.name.clone(),
+                libagent::protocol_relevant_input_types(protocol),
+            )
+        })
+        .collect();
     let mut exhausted = HashSet::new();
 
     loop {
@@ -456,10 +485,12 @@ fn execute_live_step(
             &execution_entry.protocol,
             execution_entry.work_unit.as_deref(),
         );
-        if scan_result_has_state_transitions(&scan_result) {
-            exhausted.clear();
-        } else {
-            exhausted.insert(executed_key);
+        let changed_types = scan_result_changed_types(&scan_result);
+        exhausted.insert(executed_key);
+        if !changed_types.is_empty() {
+            exhausted.retain(|candidate| {
+                !candidate_is_invalidated_by_types(candidate, &changed_types, &protocol_input_types)
+            });
         }
 
         planned_entries =
@@ -787,6 +818,38 @@ mod tests {
     #[cfg(not(unix))]
     fn write_executable_file(path: &Path) {
         fs::write(path, b"").unwrap();
+    }
+
+    #[test]
+    fn candidate_invalidation_preserves_exhaustion_for_unrelated_changed_types() {
+        let candidate = candidate_key("prepare", None);
+        let changed_types = HashSet::from([String::from("implementation")]);
+        let protocol_input_types = HashMap::from([(
+            String::from("prepare"),
+            HashSet::from([String::from("constraints")]),
+        )]);
+
+        assert!(!candidate_is_invalidated_by_types(
+            &candidate,
+            &changed_types,
+            &protocol_input_types,
+        ));
+    }
+
+    #[test]
+    fn candidate_invalidation_clears_exhaustion_for_overlapping_changed_types() {
+        let candidate = candidate_key("prepare", None);
+        let changed_types = HashSet::from([String::from("constraints")]);
+        let protocol_input_types = HashMap::from([(
+            String::from("prepare"),
+            HashSet::from([String::from("constraints")]),
+        )]);
+
+        assert!(candidate_is_invalidated_by_types(
+            &candidate,
+            &changed_types,
+            &protocol_input_types,
+        ));
     }
 
     #[test]

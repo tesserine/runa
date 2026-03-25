@@ -120,6 +120,16 @@ pub fn protocol_work_units(
     collect_work_units(store, &referenced_types, partially_scanned_types)
 }
 
+pub fn protocol_relevant_input_types(protocol: &ProtocolDeclaration) -> HashSet<String> {
+    let mut trigger_types = HashSet::new();
+    trigger_artifact_types(&protocol.trigger, &mut trigger_types);
+
+    protocol_freshness_types(protocol, &trigger_types)
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Walk a trigger condition tree and collect artifact type names
 /// from `OnArtifact`, `OnChange`, and `OnInvalid` variants.
 fn trigger_artifact_types<'a>(condition: &'a TriggerCondition, out: &mut HashSet<&'a str>) {
@@ -717,6 +727,33 @@ mod tests {
         assert!(types.contains("constraints"));
         assert!(types.contains("spec"));
         assert!(types.contains("report"));
+    }
+
+    #[test]
+    fn protocol_relevant_input_types_collects_requires_and_trigger_types() {
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &["prior-art"],
+            &["implementation"],
+            &[],
+            TriggerCondition::AnyOf {
+                conditions: vec![
+                    TriggerCondition::OnArtifact {
+                        name: "constraints".into(),
+                    },
+                    TriggerCondition::OnChange {
+                        name: "review".into(),
+                    },
+                ],
+            },
+        );
+
+        let types = protocol_relevant_input_types(&protocol);
+        assert_eq!(types.len(), 2);
+        assert!(types.contains("constraints"));
+        assert!(types.contains("review"));
+        assert!(!types.contains("prior-art"));
     }
 
     #[test]

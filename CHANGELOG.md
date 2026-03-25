@@ -30,6 +30,9 @@ Semantic Versioning.
 
 ### Fixed
 
+- Preserve exhausted live `runa step` candidates across unrelated workspace
+  transitions by reopening previously executed work only when the changed
+  artifact types overlap that protocol's required or trigger-referenced inputs.
 - Preserve valid Unix artifact filenames containing non-UTF8 bytes across
   `.runa/store` persistence and live `runa step` prompt rendering by keeping
   exact paths internally, storing a byte-preserving encoded path on disk, and
