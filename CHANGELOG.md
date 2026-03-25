@@ -20,6 +20,10 @@ Semantic Versioning.
 - Allow `runa step` to execute a configured `[agent].command` by sending each
   planned protocol as a rendered natural-language prompt on stdin, while
   keeping `--dry-run` as the exact execution preview surface.
+- Pass candidate-specific `runa-mcp` launch configuration through
+  `RUNA_MCP_CONFIG` for both dry-run inspection and live `step` execution, so
+  agent wrappers can attach the advertised MCP tools to the same prompt-driven
+  workflow.
 - Simplify `runa-mcp` into a pure tool server with required `--protocol` and
   optional `--work-unit` arguments, removing workspace scanning, candidate
   selection, and shutdown postcondition checks from the MCP process.

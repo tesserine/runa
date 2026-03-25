@@ -1,7 +1,8 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
 
 use libagent::context::{ArtifactRelationship, ContextInjection, render_context_prompt};
@@ -17,6 +18,8 @@ pub enum StepError {
     Json(serde_json::Error),
     AgentCommandNotConfigured,
     JsonRequiresDryRun,
+    CurrentExecutablePath(io::Error),
+    McpBinaryNotFound(PathBuf),
     AgentCommandIo {
         command: String,
         stage: &'static str,
@@ -41,6 +44,16 @@ impl fmt::Display for StepError {
             ),
             StepError::JsonRequiresDryRun => {
                 write!(f, "--json is only supported with --dry-run")
+            }
+            StepError::CurrentExecutablePath(source) => {
+                write!(f, "failed to resolve the runa binary path: {source}")
+            }
+            StepError::McpBinaryNotFound(path) => {
+                write!(
+                    f,
+                    "could not locate companion MCP server binary at {}",
+                    path.display()
+                )
             }
             StepError::AgentCommandIo {
                 command,
@@ -76,6 +89,8 @@ impl std::error::Error for StepError {
             StepError::Json(err) => Some(err),
             StepError::AgentCommandNotConfigured => None,
             StepError::JsonRequiresDryRun => None,
+            StepError::CurrentExecutablePath(source) => Some(source),
+            StepError::McpBinaryNotFound(_) => None,
             StepError::AgentCommandIo { source, .. } => Some(source),
             StepError::AgentCommandFailed { .. } => None,
         }
@@ -105,14 +120,24 @@ struct PlanEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     work_unit: Option<String>,
     trigger: String,
+    mcp_config: McpServerConfig,
     context: ContextInjection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct McpServerConfig {
+    command: String,
+    args: Vec<String>,
+    env: BTreeMap<String, String>,
 }
 
 fn build_execution_plan(
     loaded: &crate::project::LoadedProject,
     scan_findings: &protocol_eval::ScanFindings,
     evaluated: &protocol_eval::EvaluatedProtocols,
-) -> Vec<PlanEntry> {
+    working_dir: &Path,
+    config_path: &Path,
+) -> Result<Vec<PlanEntry>, StepError> {
     let protocol_map: std::collections::HashMap<&str, &libagent::ProtocolDeclaration> = loaded
         .manifest
         .protocols
@@ -126,10 +151,20 @@ fn build_execution_plan(
         .map(|cycle| cycle.path.iter().map(|name| name.as_str()).collect())
         .unwrap_or_default();
 
-    evaluated
+    let ready_entries: Vec<_> = evaluated
         .ready
         .iter()
         .filter(|entry| !cycle_participants.contains(entry.name.as_str()))
+        .collect();
+
+    if ready_entries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mcp_binary = locate_runa_mcp()?;
+
+    Ok(ready_entries
+        .into_iter()
         .map(|entry| {
             let protocol = protocol_map
                 .get(entry.name.as_str())
@@ -149,10 +184,17 @@ fn build_execution_plan(
                 protocol: entry.name.clone(),
                 work_unit: entry.work_unit.clone(),
                 trigger: protocol.trigger.to_string(),
+                mcp_config: build_mcp_config(
+                    &mcp_binary,
+                    working_dir,
+                    config_path,
+                    &entry.name,
+                    entry.work_unit.as_deref(),
+                ),
                 context,
             }
         })
-        .collect()
+        .collect())
 }
 
 fn format_command(command: &[String]) -> String {
@@ -185,6 +227,10 @@ fn execute_plan(
         let mut child = ProcessCommand::new(&agent_command[0]);
         child
             .args(&agent_command[1..])
+            .env(
+                "RUNA_MCP_CONFIG",
+                serde_json::to_string(&entry.mcp_config).map_err(StepError::Json)?,
+            )
             .current_dir(working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::inherit())
@@ -270,7 +316,16 @@ pub fn run(
     let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
     let evaluated = protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings);
     let warnings = scan_findings.warnings.clone();
-    let execution_plan = build_execution_plan(&loaded, &scan_findings, &evaluated);
+    let config_path = crate::project::resolve_config(working_dir, config_override)
+        .map_err(CommandError::from)
+        .map_err(StepError::from)?;
+    let execution_plan = build_execution_plan(
+        &loaded,
+        &scan_findings,
+        &evaluated,
+        working_dir,
+        &config_path,
+    )?;
 
     let agent_command = if dry_run {
         None
@@ -355,6 +410,12 @@ pub fn run(
                 for line in context.lines() {
                     println!("       {line}");
                 }
+                println!("     mcp_config:");
+                let mcp_config =
+                    serde_json::to_string_pretty(&entry.mcp_config).map_err(StepError::Json)?;
+                for line in mcp_config.lines() {
+                    println!("       {line}");
+                }
             }
         }
 
@@ -367,4 +428,96 @@ pub fn run(
     }
 
     Ok(())
+}
+
+fn locate_runa_mcp() -> Result<PathBuf, StepError> {
+    let current_exe = std::env::current_exe().map_err(StepError::CurrentExecutablePath)?;
+    locate_companion_binary(&current_exe, "runa-mcp")
+}
+
+fn locate_companion_binary(current_exe: &Path, binary_name: &str) -> Result<PathBuf, StepError> {
+    let candidate = current_exe
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(format!("{binary_name}{}", std::env::consts::EXE_SUFFIX));
+    if candidate.is_file() {
+        Ok(candidate)
+    } else {
+        Err(StepError::McpBinaryNotFound(candidate))
+    }
+}
+
+fn build_mcp_config(
+    mcp_binary: &Path,
+    working_dir: &Path,
+    config_path: &Path,
+    protocol: &str,
+    work_unit: Option<&str>,
+) -> McpServerConfig {
+    let mut args = vec!["--protocol".to_string(), protocol.to_string()];
+    if let Some(work_unit) = work_unit {
+        args.push("--work-unit".to_string());
+        args.push(work_unit.to_string());
+    }
+
+    let mut env = BTreeMap::new();
+    env.insert(
+        "RUNA_CONFIG".to_string(),
+        config_path.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "RUNA_WORKING_DIR".to_string(),
+        working_dir.to_string_lossy().into_owned(),
+    );
+
+    McpServerConfig {
+        command: mcp_binary.to_string_lossy().into_owned(),
+        args,
+        env,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_mcp_config_includes_protocol_scope_and_project_env() {
+        let config = build_mcp_config(
+            Path::new("/tmp/bin/runa-mcp"),
+            Path::new("/tmp/project"),
+            Path::new("/tmp/project/.runa/config.toml"),
+            "implement",
+            Some("wu-a"),
+        );
+
+        assert_eq!(config.command, "/tmp/bin/runa-mcp");
+        assert_eq!(
+            config.args,
+            vec!["--protocol", "implement", "--work-unit", "wu-a"]
+        );
+        assert_eq!(
+            config.env.get("RUNA_WORKING_DIR"),
+            Some(&"/tmp/project".to_string())
+        );
+        assert_eq!(
+            config.env.get("RUNA_CONFIG"),
+            Some(&"/tmp/project/.runa/config.toml".to_string())
+        );
+    }
+
+    #[test]
+    fn locate_companion_binary_reports_missing_runa_mcp() {
+        let err = locate_companion_binary(Path::new("/tmp/bin/runa"), "runa-mcp").unwrap_err();
+
+        match err {
+            StepError::McpBinaryNotFound(path) => {
+                assert_eq!(
+                    path,
+                    PathBuf::from(format!("/tmp/bin/runa-mcp{}", std::env::consts::EXE_SUFFIX))
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
 }

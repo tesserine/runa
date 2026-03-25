@@ -95,7 +95,11 @@ fn write_capture_agent(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
     let script_path = dir.join("capture-agent.sh");
-    fs::write(&script_path, "#!/bin/sh\ncat > \"$1\"\n").unwrap();
+    fs::write(
+        &script_path,
+        "#!/bin/sh\ncat > \"$1\"\nif [ -n \"$2\" ]; then\n  printf '%s' \"$RUNA_MCP_CONFIG\" > \"$2\"\nfi\n",
+    )
+    .unwrap();
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
@@ -166,6 +170,28 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     assert_eq!(execution_plan.len(), 1, "{value:#}");
     assert_eq!(execution_plan[0]["protocol"], "implement");
     assert_eq!(execution_plan[0]["trigger"], "on_artifact(constraints)");
+    assert_eq!(
+        execution_plan[0]["mcp_config"]["args"],
+        serde_json::json!(["--protocol", "implement"])
+    );
+    assert_eq!(
+        execution_plan[0]["mcp_config"]["env"],
+        serde_json::json!({
+            "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
+            "RUNA_WORKING_DIR": project_dir
+        })
+    );
+    let mcp_command = execution_plan[0]["mcp_config"]["command"]
+        .as_str()
+        .expect("mcp command should be a string");
+    assert!(
+        mcp_command.ends_with(&format!(
+            "{}runa-mcp{}",
+            std::path::MAIN_SEPARATOR,
+            std::env::consts::EXE_SUFFIX
+        )),
+        "{mcp_command}"
+    );
     assert_eq!(execution_plan[0]["context"]["protocol"], "implement");
     assert!(
         execution_plan[0]["context"]["work_unit"].is_null(),
@@ -313,6 +339,8 @@ fn step_dry_run_text_shows_preloaded_protocol_instructions_for_ready_protocols()
         stdout.contains("\"instructions\": \"# implement\\n\""),
         "stdout: {stdout}"
     );
+    assert!(stdout.contains("mcp_config:"), "stdout: {stdout}");
+    assert!(stdout.contains("\"args\": ["), "stdout: {stdout}");
 }
 
 #[test]
@@ -381,10 +409,15 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     .unwrap();
 
     let payload_path = dir.path().join("captured-payload.json");
+    let mcp_config_path = dir.path().join("captured-mcp-config.json");
     let agent_path = write_capture_agent(dir.path());
     append_agent_command_config(
         &project_dir,
-        &[agent_path.as_path(), payload_path.as_path()],
+        &[
+            agent_path.as_path(),
+            payload_path.as_path(),
+            mcp_config_path.as_path(),
+        ],
     );
 
     let output = runa_bin()
@@ -414,6 +447,37 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     assert!(
         captured.contains("You must produce: implementation"),
         "{captured}"
+    );
+    assert!(
+        captured.contains(
+            "To deliver each required output, call the tool with the matching name and fill in the required fields."
+        ),
+        "{captured}"
+    );
+
+    let mcp_config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&mcp_config_path).unwrap()).unwrap();
+    let mcp_command = mcp_config["command"]
+        .as_str()
+        .expect("mcp command should be a string");
+    assert!(
+        mcp_command.ends_with(&format!(
+            "{}runa-mcp{}",
+            std::path::MAIN_SEPARATOR,
+            std::env::consts::EXE_SUFFIX
+        )),
+        "{mcp_command}"
+    );
+    assert_eq!(
+        mcp_config["args"],
+        serde_json::json!(["--protocol", "implement"])
+    );
+    assert_eq!(
+        mcp_config["env"],
+        serde_json::json!({
+            "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
+            "RUNA_WORKING_DIR": project_dir
+        })
     );
 }
 
