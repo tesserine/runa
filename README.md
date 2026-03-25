@@ -40,10 +40,12 @@ Optional agent execution config:
 
 ```toml
 [agent]
-command = ["/path/to/agent-runtime", "--flag"]
+command = ["./examples/agent-claude-code.sh"]
 ```
 
-`runa step` without `--dry-run` requires `[agent].command`. Runa executes that argv command in the project root, sends one pretty-printed JSON execution payload on stdin for each planned protocol, and leaves stdout/stderr attached to the child process. `--json` is dry-run only.
+`runa step` without `--dry-run` requires `[agent].command`. Runa executes that argv command in the project root, renders a natural-language execution prompt from the planned protocol context, writes that prompt on stdin, and leaves stdout/stderr attached to the child process. Before each invocation it also exports `RUNA_MCP_CONFIG`, a JSON description of how the wrapper should spawn `runa-mcp` for the selected protocol run. The wrapper adapts that config to the specific agent runtime. `--json` is dry-run only.
+
+The exported `RUNA_MCP_CONFIG` payload stays runtime-agnostic: `{command,args,env}`. Agent wrappers are responsible for adapting that generic server description to their runtime's schema. The Claude example wrapper wraps it as `{"mcpServers":{"runa":...}}` before invoking `claude`. The exported command and env paths are absolute whenever `runa step` resolved them from the local filesystem, so wrappers do not depend on their child process cwd to launch `runa-mcp`.
 
 ```bash
 runa list
@@ -76,11 +78,12 @@ Unreadable produced artifacts do not block protocols directly, but they do conse
 runa step [--dry-run] [--json]
 ```
 
-Builds an operator-facing execution plan after an implicit scan. `step` evaluates protocols per discovered work unit and suppresses activated work when valid outputs are newer than the relevant inputs for that work unit. The execution plan therefore contains `READY` `(protocol, work_unit)` pairs that can be placed in a valid execution order. Each plan entry includes the protocol name, optional `work_unit`, the human-readable trigger that activated it, and a serialized agent-facing context payload. The context payload contains the protocol name, the preloaded `PROTOCOL.md` instruction content, all valid required and available accepted inputs with text paths, content hashes, and relationships, plus expected outputs split into `produces` and `may_produce`.
+Builds an operator-facing execution plan after an implicit scan. `step` evaluates protocols per discovered work unit and suppresses activated work when valid outputs are newer than the relevant inputs for that work unit. The execution plan therefore contains `READY` `(protocol, work_unit)` pairs that can be placed in a valid execution order. Each plan entry includes the protocol name, optional `work_unit`, the human-readable trigger that activated it, an MCP server config for the selected candidate, and a serialized agent-facing context payload. The context payload contains the protocol name, optional `work_unit`, the preloaded `PROTOCOL.md` instruction content, all valid required and available accepted inputs with text paths, content hashes, and relationships, plus expected outputs split into `produces` and `may_produce`.
+`--dry-run` is planning-only: it previews the MCP launch config but does not require a discoverable `runa-mcp` binary. Live execution resolves `runa-mcp` by preferring a sibling binary next to the running `runa` executable and falling back to `PATH`.
 
 If the graph contains a hard dependency cycle, `step` reports the cycle as a warning and excludes the cyclic protocols from `execution_plan`; non-cyclic READY protocols still appear when they are orderable. `--dry-run` prints the execution plan and the same grouped protocol status view used by `runa status`, so operators can still see blocked and waiting reasons when nothing is runnable. `--json` emits `{ "version": 2, "methodology": "...", "scan_warnings": [...], "cycle": ["..."] | null, "execution_plan": [...], "protocols": [...] }`, where `execution_plan` entries and `protocols` status entries may include an optional `work_unit`, and `protocols` reuses the same status entries as `runa status --json`.
 
-Without `--dry-run`, `step` requires `[agent].command`, then invokes that command once per execution-plan entry in order. For each invocation, runa writes the exact plan entry JSON to the child process on stdin and waits for exit status `0` before continuing to the next entry. A non-zero exit stops execution immediately and skips post-execution validation; scan/reconciliation and cascading readiness remain future work.
+Without `--dry-run`, `step` requires `[agent].command`, then invokes that command once per execution-plan entry in order. For each invocation, runa exports the entry's MCP config in `RUNA_MCP_CONFIG`, renders the entry's context into a natural-language prompt, including the scoped `work_unit` in the heading when present, and writes that prompt to the child process on stdin before waiting for exit status `0`. A non-zero exit stops execution immediately and skips post-execution validation; scan/reconciliation and cascading readiness remain future work.
 Like `runa status`, unreadable produced artifacts conservatively keep all work units of that output type eligible for rerun rather than attempting to scope freshness loss to a single instance.
 
 ## MCP Server
@@ -94,12 +97,13 @@ runa-mcp --protocol <name> [--work-unit <name>]
 On startup, the server loads the project from the current directory (or `RUNA_WORKING_DIR`), resolves the named protocol from the manifest, validates that its output types can be served as MCP tools, and then serves an MCP session over stdio with:
 
 - **Tools** — One tool per output artifact type (`produces` + `may_produce`). The tool input schema is the artifact's JSON Schema with `work_unit` removed. The server injects `work_unit` automatically.
-- **Prompts** — A single `"context"` prompt that delivers the protocol name, preloaded instructions, required and available inputs as prose, and expected outputs.
 
 Environment variables:
 - `RUNA_WORKING_DIR` — Project directory (defaults to current directory)
 - `RUNA_CONFIG` — Config file override (same as `--config` in the CLI)
 - `RUST_LOG` — Tracing filter override for stderr diagnostics
+
+`runa step` does not spawn `runa-mcp` directly. It passes the agent wrapper a `RUNA_MCP_CONFIG` JSON payload containing the resolved `runa-mcp` command location, candidate-specific arguments, and required environment so the agent runtime can launch the MCP server as its own child process.
 
 ## Build
 

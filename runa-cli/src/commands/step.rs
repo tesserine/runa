@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fmt;
 use std::io;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
 
-use libagent::context::{ArtifactRelationship, ContextInjection};
+use libagent::context::{ArtifactRelationship, ContextInjection, render_context_prompt};
 use serde::Serialize;
 use tracing::{info, warn};
 
@@ -17,6 +19,10 @@ pub enum StepError {
     Json(serde_json::Error),
     AgentCommandNotConfigured,
     JsonRequiresDryRun,
+    McpBinaryNotFound {
+        binary_name: String,
+        sibling_path: Option<PathBuf>,
+    },
     AgentCommandIo {
         command: String,
         stage: &'static str,
@@ -42,6 +48,20 @@ impl fmt::Display for StepError {
             StepError::JsonRequiresDryRun => {
                 write!(f, "--json is only supported with --dry-run")
             }
+            StepError::McpBinaryNotFound {
+                binary_name,
+                sibling_path,
+            } => match sibling_path {
+                Some(path) => write!(
+                    f,
+                    "could not locate MCP server binary '{binary_name}' via sibling lookup ({}) or PATH",
+                    path.display()
+                ),
+                None => write!(
+                    f,
+                    "could not locate MCP server binary '{binary_name}' via sibling lookup or PATH"
+                ),
+            },
             StepError::AgentCommandIo {
                 command,
                 stage,
@@ -76,6 +96,7 @@ impl std::error::Error for StepError {
             StepError::Json(err) => Some(err),
             StepError::AgentCommandNotConfigured => None,
             StepError::JsonRequiresDryRun => None,
+            StepError::McpBinaryNotFound { .. } => None,
             StepError::AgentCommandIo { source, .. } => Some(source),
             StepError::AgentCommandFailed { .. } => None,
         }
@@ -105,14 +126,34 @@ struct PlanEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     work_unit: Option<String>,
     trigger: String,
+    mcp_config: McpServerConfig,
     context: ContextInjection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct McpServerConfig {
+    command: String,
+    args: Vec<String>,
+    env: BTreeMap<String, String>,
+}
+
+struct PlannedEntry {
+    protocol: String,
+    work_unit: Option<String>,
+    trigger: String,
+    context: ContextInjection,
+}
+
+struct BinaryLookup {
+    sibling_path: Option<PathBuf>,
+    resolved_path: Option<PathBuf>,
 }
 
 fn build_execution_plan(
     loaded: &crate::project::LoadedProject,
     scan_findings: &protocol_eval::ScanFindings,
     evaluated: &protocol_eval::EvaluatedProtocols,
-) -> Vec<PlanEntry> {
+) -> Vec<PlannedEntry> {
     let protocol_map: std::collections::HashMap<&str, &libagent::ProtocolDeclaration> = loaded
         .manifest
         .protocols
@@ -126,10 +167,18 @@ fn build_execution_plan(
         .map(|cycle| cycle.path.iter().map(|name| name.as_str()).collect())
         .unwrap_or_default();
 
-    evaluated
+    let ready_entries: Vec<_> = evaluated
         .ready
         .iter()
         .filter(|entry| !cycle_participants.contains(entry.name.as_str()))
+        .collect();
+
+    if ready_entries.is_empty() {
+        return Vec::new();
+    }
+
+    ready_entries
+        .into_iter()
         .map(|entry| {
             let protocol = protocol_map
                 .get(entry.name.as_str())
@@ -145,7 +194,7 @@ fn build_execution_plan(
                         .affected_types
                         .contains(input.artifact_type.as_str())
             });
-            PlanEntry {
+            PlannedEntry {
                 protocol: entry.name.clone(),
                 work_unit: entry.work_unit.clone(),
                 trigger: protocol.trigger.to_string(),
@@ -185,6 +234,10 @@ fn execute_plan(
         let mut child = ProcessCommand::new(&agent_command[0]);
         child
             .args(&agent_command[1..])
+            .env(
+                "RUNA_MCP_CONFIG",
+                serde_json::to_string(&entry.mcp_config).map_err(StepError::Json)?,
+            )
             .current_dir(working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::inherit())
@@ -208,9 +261,10 @@ fn execute_plan(
                         "child stdin was not available",
                     ),
                 })?;
-            serde_json::to_writer_pretty(&mut *stdin, entry).map_err(StepError::Json)?;
+            let prompt = render_context_prompt(&entry.context);
             stdin
-                .write_all(b"\n")
+                .write_all(prompt.as_bytes())
+                .and_then(|_| stdin.write_all(b"\n"))
                 .map_err(|source| StepError::AgentCommandIo {
                     command: command_display.clone(),
                     stage: "stdin_write",
@@ -269,7 +323,10 @@ pub fn run(
     let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
     let evaluated = protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings);
     let warnings = scan_findings.warnings.clone();
-    let execution_plan = build_execution_plan(&loaded, &scan_findings, &evaluated);
+    let config_path = crate::project::resolve_config(working_dir, config_override)
+        .map_err(CommandError::from)
+        .map_err(StepError::from)?;
+    let planned_entries = build_execution_plan(&loaded, &scan_findings, &evaluated);
 
     let agent_command = if dry_run {
         None
@@ -287,10 +344,17 @@ pub fn run(
     };
 
     if !dry_run {
-        if execution_plan.is_empty() {
+        if planned_entries.is_empty() {
             println!("No READY protocols.");
             return Ok(());
         }
+        let mcp_binary = locate_runa_mcp()?;
+        let execution_plan = build_plan_entries(
+            planned_entries,
+            &mcp_binary.to_string_lossy(),
+            working_dir,
+            &config_path,
+        );
         return execute_plan(
             working_dir,
             agent_command
@@ -299,6 +363,13 @@ pub fn run(
             &execution_plan,
         );
     }
+
+    let execution_plan = build_plan_entries(
+        planned_entries,
+        &preview_runa_mcp_command(),
+        working_dir,
+        &config_path,
+    );
 
     if json_output {
         let payload = StepJson {
@@ -354,6 +425,12 @@ pub fn run(
                 for line in context.lines() {
                     println!("       {line}");
                 }
+                println!("     mcp_config:");
+                let mcp_config =
+                    serde_json::to_string_pretty(&entry.mcp_config).map_err(StepError::Json)?;
+                for line in mcp_config.lines() {
+                    println!("       {line}");
+                }
             }
         }
 
@@ -366,4 +443,386 @@ pub fn run(
     }
 
     Ok(())
+}
+
+fn build_plan_entries(
+    planned_entries: Vec<PlannedEntry>,
+    mcp_command: &str,
+    working_dir: &Path,
+    config_path: &Path,
+) -> Vec<PlanEntry> {
+    planned_entries
+        .into_iter()
+        .map(|entry| PlanEntry {
+            protocol: entry.protocol.clone(),
+            work_unit: entry.work_unit.clone(),
+            trigger: entry.trigger,
+            mcp_config: build_mcp_config(
+                mcp_command,
+                working_dir,
+                config_path,
+                &entry.protocol,
+                entry.work_unit.as_deref(),
+            ),
+            context: entry.context,
+        })
+        .collect()
+}
+
+fn locate_runa_mcp() -> Result<PathBuf, StepError> {
+    let executable_name = binary_executable_name("runa-mcp");
+    let path_env = std::env::var_os("PATH");
+    let lookup = discover_binary(std::env::current_exe(), path_env.as_deref(), "runa-mcp");
+
+    lookup.resolved_path.ok_or(StepError::McpBinaryNotFound {
+        binary_name: executable_name,
+        sibling_path: lookup.sibling_path,
+    })
+}
+
+fn preview_runa_mcp_command() -> String {
+    let executable_name = binary_executable_name("runa-mcp");
+    let path_env = std::env::var_os("PATH");
+    let lookup = discover_binary(std::env::current_exe(), path_env.as_deref(), "runa-mcp");
+
+    lookup
+        .resolved_path
+        .unwrap_or_else(|| PathBuf::from(executable_name))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn discover_binary(
+    current_exe: Result<PathBuf, io::Error>,
+    path_env: Option<&OsStr>,
+    binary_name: &str,
+) -> BinaryLookup {
+    let sibling_path = current_exe
+        .ok()
+        .map(|path| sibling_binary_path(&path, binary_name));
+
+    if sibling_path
+        .as_ref()
+        .is_some_and(|path| is_executable_binary(path))
+    {
+        return BinaryLookup {
+            resolved_path: sibling_path.clone(),
+            sibling_path,
+        };
+    }
+
+    BinaryLookup {
+        sibling_path,
+        resolved_path: find_binary_on_path(path_env, binary_name),
+    }
+}
+
+fn sibling_binary_path(current_exe: &Path, binary_name: &str) -> PathBuf {
+    current_exe
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(binary_executable_name(binary_name))
+}
+
+fn find_binary_on_path(path_env: Option<&OsStr>, binary_name: &str) -> Option<PathBuf> {
+    let executable_name = binary_executable_name(binary_name);
+    let path_env = path_env?;
+    for directory in std::env::split_paths(path_env) {
+        let candidate = directory.join(&executable_name);
+        if is_executable_binary(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn is_executable_binary(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    path.is_file()
+        && std::fs::metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_binary(path: &Path) -> bool {
+    path.is_file()
+}
+
+fn binary_executable_name(binary_name: &str) -> String {
+    format!("{binary_name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+fn build_mcp_config(
+    mcp_command: &str,
+    working_dir: &Path,
+    config_path: &Path,
+    protocol: &str,
+    work_unit: Option<&str>,
+) -> McpServerConfig {
+    let mut args = vec!["--protocol".to_string(), protocol.to_string()];
+    if let Some(work_unit) = work_unit {
+        args.push("--work-unit".to_string());
+        args.push(work_unit.to_string());
+    }
+
+    let working_dir = absolutize_path(working_dir, working_dir);
+    let config_path = absolutize_path(config_path, &working_dir);
+    let mut env = BTreeMap::new();
+    env.insert(
+        "RUNA_CONFIG".to_string(),
+        config_path.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "RUNA_WORKING_DIR".to_string(),
+        working_dir.to_string_lossy().into_owned(),
+    );
+
+    McpServerConfig {
+        command: normalize_mcp_command(mcp_command, &working_dir),
+        args,
+        env,
+    }
+}
+
+fn normalize_mcp_command(command: &str, working_dir: &Path) -> String {
+    let command_path = Path::new(command);
+    if command_path.is_absolute() {
+        return command.to_string();
+    }
+
+    // Preserve the dry-run preview fallback when the binary is unresolved.
+    if command_path.components().count() == 1 && !working_dir.join(command_path).exists() {
+        return command.to_string();
+    }
+
+    absolutize_path(command_path, working_dir)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn absolutize_path(path: &Path, base_dir: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base_dir.join(path)
+    };
+
+    if absolute.exists() {
+        std::fs::canonicalize(&absolute).unwrap_or(absolute)
+    } else {
+        absolute
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[cfg(unix)]
+    fn write_executable_file(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, b"").unwrap();
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(not(unix))]
+    fn write_executable_file(path: &Path) {
+        fs::write(path, b"").unwrap();
+    }
+
+    #[test]
+    fn build_mcp_config_includes_protocol_scope_and_project_env() {
+        let config = build_mcp_config(
+            "/tmp/bin/runa-mcp",
+            Path::new("/tmp/project"),
+            Path::new("/tmp/project/.runa/config.toml"),
+            "implement",
+            Some("wu-a"),
+        );
+
+        assert_eq!(config.command, "/tmp/bin/runa-mcp");
+        assert_eq!(
+            config.args,
+            vec!["--protocol", "implement", "--work-unit", "wu-a"]
+        );
+        assert_eq!(
+            config.env.get("RUNA_WORKING_DIR"),
+            Some(&"/tmp/project".to_string())
+        );
+        assert_eq!(
+            config.env.get("RUNA_CONFIG"),
+            Some(&"/tmp/project/.runa/config.toml".to_string())
+        );
+    }
+
+    #[test]
+    fn build_mcp_config_absolutizes_relative_command_and_config_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let working_dir = temp.path().join("project");
+        let runa_dir = working_dir.join(".runa");
+        let bin_dir = working_dir.join("target/debug");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(runa_dir.join("config.toml"), "methodology_path = \"x\"").unwrap();
+        write_executable_file(&bin_dir.join(binary_executable_name("runa-mcp")));
+
+        let config = build_mcp_config(
+            "target/debug/runa-mcp",
+            &working_dir,
+            Path::new(".runa/config.toml"),
+            "implement",
+            None,
+        );
+
+        assert_eq!(
+            config.command,
+            working_dir
+                .join("target/debug")
+                .join(binary_executable_name("runa-mcp"))
+                .to_string_lossy()
+                .into_owned()
+        );
+        assert_eq!(
+            config.env.get("RUNA_WORKING_DIR"),
+            Some(&working_dir.to_string_lossy().into_owned())
+        );
+        assert_eq!(
+            config.env.get("RUNA_CONFIG"),
+            Some(
+                &working_dir
+                    .join(".runa/config.toml")
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn build_mcp_config_preserves_unresolved_bare_preview_command() {
+        let config = build_mcp_config(
+            "runa-mcp",
+            Path::new("/tmp/project"),
+            Path::new("/tmp/project/.runa/config.toml"),
+            "implement",
+            None,
+        );
+
+        assert_eq!(config.command, "runa-mcp");
+    }
+
+    #[test]
+    fn discover_binary_prefers_sibling_over_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let sibling_dir = temp.path().join("sibling");
+        let path_dir = temp.path().join("path");
+        std::fs::create_dir_all(&sibling_dir).unwrap();
+        std::fs::create_dir_all(&path_dir).unwrap();
+
+        let current_exe = sibling_dir.join(binary_executable_name("runa"));
+        let sibling = sibling_dir.join(binary_executable_name("runa-mcp"));
+        let path_binary = path_dir.join(binary_executable_name("runa-mcp"));
+        write_executable_file(&sibling);
+        write_executable_file(&path_binary);
+
+        let path_env = std::env::join_paths([path_dir.as_path()]).unwrap();
+        let lookup = discover_binary(Ok(current_exe), Some(path_env.as_os_str()), "runa-mcp");
+
+        assert_eq!(lookup.sibling_path, Some(sibling.clone()));
+        assert_eq!(lookup.resolved_path, Some(sibling));
+    }
+
+    #[test]
+    fn discover_binary_uses_path_when_sibling_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let sibling_dir = temp.path().join("sibling");
+        let path_dir = temp.path().join("path");
+        std::fs::create_dir_all(&sibling_dir).unwrap();
+        std::fs::create_dir_all(&path_dir).unwrap();
+
+        let current_exe = sibling_dir.join(binary_executable_name("runa"));
+        let sibling = sibling_dir.join(binary_executable_name("runa-mcp"));
+        let path_binary = path_dir.join(binary_executable_name("runa-mcp"));
+        write_executable_file(&path_binary);
+
+        let path_env = std::env::join_paths([path_dir.as_path()]).unwrap();
+        let lookup = discover_binary(Ok(current_exe), Some(path_env.as_os_str()), "runa-mcp");
+
+        assert_eq!(lookup.sibling_path, Some(sibling));
+        assert_eq!(lookup.resolved_path, Some(path_binary));
+    }
+
+    #[test]
+    fn discover_binary_uses_path_when_current_exe_is_unavailable() {
+        let temp = tempfile::tempdir().unwrap();
+        let path_dir = temp.path().join("path");
+        std::fs::create_dir_all(&path_dir).unwrap();
+
+        let path_binary = path_dir.join(binary_executable_name("runa-mcp"));
+        write_executable_file(&path_binary);
+
+        let path_env = std::env::join_paths([path_dir.as_path()]).unwrap();
+        let lookup = discover_binary(
+            Err(io::Error::other("no current exe")),
+            Some(path_env.as_os_str()),
+            "runa-mcp",
+        );
+
+        assert_eq!(lookup.sibling_path, None);
+        assert_eq!(lookup.resolved_path, Some(path_binary));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn discover_binary_skips_non_executable_sibling_and_uses_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let sibling_dir = temp.path().join("sibling");
+        let path_dir = temp.path().join("path");
+        std::fs::create_dir_all(&sibling_dir).unwrap();
+        std::fs::create_dir_all(&path_dir).unwrap();
+
+        let current_exe = sibling_dir.join(binary_executable_name("runa"));
+        let sibling = sibling_dir.join(binary_executable_name("runa-mcp"));
+        let path_binary = path_dir.join(binary_executable_name("runa-mcp"));
+        std::fs::write(&sibling, b"").unwrap();
+        write_executable_file(&path_binary);
+
+        let path_env = std::env::join_paths([path_dir.as_path()]).unwrap();
+        let lookup = discover_binary(Ok(current_exe), Some(path_env.as_os_str()), "runa-mcp");
+
+        assert_eq!(lookup.sibling_path, Some(sibling));
+        assert_eq!(lookup.resolved_path, Some(path_binary));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn discover_binary_skips_non_executable_path_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let first_path_dir = temp.path().join("path-1");
+        let second_path_dir = temp.path().join("path-2");
+        std::fs::create_dir_all(&first_path_dir).unwrap();
+        std::fs::create_dir_all(&second_path_dir).unwrap();
+
+        let first_candidate = first_path_dir.join(binary_executable_name("runa-mcp"));
+        let second_candidate = second_path_dir.join(binary_executable_name("runa-mcp"));
+        std::fs::write(&first_candidate, b"").unwrap();
+        write_executable_file(&second_candidate);
+
+        let path_env =
+            std::env::join_paths([first_path_dir.as_path(), second_path_dir.as_path()]).unwrap();
+        let lookup = discover_binary(
+            Err(io::Error::other("no current exe")),
+            Some(path_env.as_os_str()),
+            "runa-mcp",
+        );
+
+        assert_eq!(lookup.sibling_path, None);
+        assert_eq!(lookup.resolved_path, Some(second_candidate));
+    }
 }

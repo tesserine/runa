@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{ArtifactStore, ProtocolDeclaration, ValidationStatus};
 
@@ -27,6 +28,7 @@ pub struct ExpectedOutputs {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextInjection {
     pub protocol: String,
+    pub work_unit: Option<String>,
     pub instructions: String,
     pub inputs: Vec<ArtifactRef>,
     pub expected_outputs: ExpectedOutputs,
@@ -56,6 +58,7 @@ pub fn build_context(
 
     ContextInjection {
         protocol: protocol.name.clone(),
+        work_unit: work_unit.map(str::to_owned),
         instructions: protocol.instructions.clone().unwrap_or_default(),
         inputs,
         expected_outputs: ExpectedOutputs {
@@ -63,6 +66,65 @@ pub fn build_context(
             may_produce: protocol.may_produce.clone(),
         },
     }
+}
+
+/// Render the agent-facing context as natural language prose.
+///
+/// Reads artifact files from the paths in `ContextInjection`, parses them as
+/// JSON, and transforms them to readable prose. Errors reading or parsing
+/// individual artifacts are rendered inline rather than failing the prompt.
+pub fn render_context_prompt(context: &ContextInjection) -> String {
+    let mut sections = Vec::new();
+    sections.push(match &context.work_unit {
+        Some(work_unit) => format!("# Protocol: {} (work_unit={work_unit})", context.protocol),
+        None => format!("# Protocol: {}", context.protocol),
+    });
+
+    if !context.instructions.is_empty() {
+        sections.push("\n## Protocol instructions".to_string());
+        sections.push(context.instructions.clone());
+    }
+
+    let required: Vec<_> = context
+        .inputs
+        .iter()
+        .filter(|input| input.relationship == ArtifactRelationship::Requires)
+        .collect();
+    if !required.is_empty() {
+        sections.push("\n## What you've been given".to_string());
+        for input in required {
+            sections.push(render_input(input));
+        }
+    }
+
+    let available: Vec<_> = context
+        .inputs
+        .iter()
+        .filter(|input| input.relationship == ArtifactRelationship::Accepts)
+        .collect();
+    if !available.is_empty() {
+        sections.push("\n## Additional context".to_string());
+        for input in available {
+            sections.push(render_input(input));
+        }
+    }
+
+    sections.push("\n## What you need to deliver".to_string());
+    if !context.expected_outputs.produces.is_empty() {
+        let list = context.expected_outputs.produces.join(", ");
+        sections.push(format!("\nYou must produce: {list}"));
+    }
+    if !context.expected_outputs.may_produce.is_empty() {
+        let list = context.expected_outputs.may_produce.join(", ");
+        sections.push(format!("You may also produce: {list}"));
+    }
+    sections.push(
+        "\nTo deliver each required output, call the tool with the matching name \
+         and fill in the required fields."
+            .to_string(),
+    );
+
+    sections.join("\n")
 }
 
 fn collect_inputs(
@@ -89,6 +151,81 @@ fn collect_inputs(
 
 fn display_path(path: &std::path::Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn render_input(input: &ArtifactRef) -> String {
+    let mut result = format!("\n### {} — {}", input.artifact_type, input.instance_id);
+
+    match std::fs::read_to_string(&input.path) {
+        Ok(content) => match serde_json::from_str::<Value>(&content) {
+            Ok(value) => {
+                result.push('\n');
+                result.push_str(&json_to_prose(&value, 0));
+            }
+            Err(error) => {
+                result.push_str(&format!("\n(Could not parse artifact: {error})"));
+            }
+        },
+        Err(error) => {
+            result.push_str(&format!("\n(Could not read artifact: {error})"));
+        }
+    }
+
+    result
+}
+
+/// Convert a JSON value to human-readable prose.
+pub fn json_to_prose(value: &Value, indent: usize) -> String {
+    let prefix = "  ".repeat(indent);
+    match value {
+        Value::Object(map) => {
+            let mut lines = Vec::new();
+            for (key, val) in map {
+                let label = humanize_key(key);
+                match val {
+                    Value::Object(_) | Value::Array(_) => {
+                        lines.push(format!("{prefix}**{label}:**"));
+                        lines.push(json_to_prose(val, indent + 1));
+                    }
+                    _ => lines.push(format!("{prefix}**{label}:** {}", inline_value(val))),
+                }
+            }
+            lines.join("\n")
+        }
+        Value::Array(arr) => {
+            let mut lines = Vec::new();
+            for (index, item) in arr.iter().enumerate() {
+                let num = index + 1;
+                match item {
+                    Value::Object(_) | Value::Array(_) => {
+                        lines.push(format!("{prefix}{num}."));
+                        lines.push(json_to_prose(item, indent + 1));
+                    }
+                    _ => lines.push(format!("{prefix}{num}. {}", inline_value(item))),
+                }
+            }
+            lines.join("\n")
+        }
+        other => format!("{prefix}{}", inline_value(other)),
+    }
+}
+
+fn inline_value(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        _ => serde_json::to_string(value).unwrap_or_default(),
+    }
+}
+
+fn humanize_key(key: &str) -> String {
+    let mut result = key.replace('_', " ");
+    if let Some(first) = result.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    result
 }
 
 #[cfg(test)]
@@ -131,6 +268,7 @@ mod tests {
 
         let context = build_context(&protocol, &store, None);
         assert_eq!(context.protocol, "implement");
+        assert_eq!(context.work_unit, None);
         assert_eq!(context.instructions, "# implement\n");
         assert_eq!(
             context.expected_outputs,
@@ -199,6 +337,7 @@ mod tests {
 
         let context = build_context(&protocol, &store, None);
         assert_eq!(context.inputs.len(), 1);
+        assert_eq!(context.work_unit, None);
         assert_eq!(context.instructions, "");
         assert_eq!(context.inputs[0].artifact_type, "constraints");
         assert_eq!(
@@ -274,11 +413,104 @@ mod tests {
 
         // Scoped to WU-A: sees a1 + shared, not b1.
         let context = build_context(&protocol, &store, Some("wu-a"));
+        assert_eq!(context.work_unit.as_deref(), Some("wu-a"));
         let ids: Vec<&str> = context
             .inputs
             .iter()
             .map(|i| i.instance_id.as_str())
             .collect();
         assert_eq!(ids, vec!["a1", "shared"]);
+    }
+
+    #[test]
+    fn humanize_key_snake_case() {
+        assert_eq!(humanize_key("work_unit"), "Work unit");
+        assert_eq!(humanize_key("acceptance_criteria"), "Acceptance criteria");
+        assert_eq!(humanize_key("title"), "Title");
+    }
+
+    #[test]
+    fn json_to_prose_formats_nested_values() {
+        let val = json!({
+            "title": "Test",
+            "details": {
+                "author": "agent",
+                "priority": "high"
+            },
+            "scenarios": [
+                {"name": "reject-missing-field", "criterion": "returns 400"}
+            ]
+        });
+
+        let prose = json_to_prose(&val, 0);
+        assert!(prose.contains("**Title:** Test"));
+        assert!(prose.contains("**Details:**"));
+        assert!(prose.contains("  **Author:** agent"));
+        assert!(prose.contains("**Scenarios:**"));
+        assert!(prose.contains("1."));
+        assert!(prose.contains("**Criterion:** returns 400"));
+    }
+
+    #[test]
+    fn render_context_prompt_includes_sections_and_tool_guidance() {
+        let prompt = render_context_prompt(&ContextInjection {
+            protocol: "implement".into(),
+            work_unit: None,
+            instructions: "# Follow the protocol\n".into(),
+            inputs: Vec::new(),
+            expected_outputs: ExpectedOutputs {
+                produces: vec!["implementation".into()],
+                may_produce: vec!["notes".into()],
+            },
+        });
+
+        assert!(prompt.contains("# Protocol: implement"));
+        assert!(prompt.contains("## Protocol instructions"));
+        assert!(prompt.contains("# Follow the protocol"));
+        assert!(prompt.contains("You must produce: implementation"));
+        assert!(prompt.contains("You may also produce: notes"));
+        assert!(prompt.contains(
+            "To deliver each required output, call the tool with the matching name and fill in the required fields."
+        ));
+    }
+
+    #[test]
+    fn render_context_prompt_includes_work_unit_in_heading() {
+        let prompt = render_context_prompt(&ContextInjection {
+            protocol: "implement".into(),
+            work_unit: Some("wu-a".into()),
+            instructions: String::new(),
+            inputs: Vec::new(),
+            expected_outputs: ExpectedOutputs {
+                produces: vec!["implementation".into()],
+                may_produce: Vec::new(),
+            },
+        });
+
+        assert!(prompt.contains("# Protocol: implement (work_unit=wu-a)"));
+    }
+
+    #[test]
+    fn render_context_prompt_inlines_artifact_read_errors() {
+        let prompt = render_context_prompt(&ContextInjection {
+            protocol: "implement".into(),
+            work_unit: None,
+            instructions: String::new(),
+            inputs: vec![ArtifactRef {
+                artifact_type: "constraints".into(),
+                instance_id: "missing".into(),
+                path: "/tmp/does-not-exist.json".into(),
+                content_hash: "sha256:test".into(),
+                relationship: ArtifactRelationship::Requires,
+            }],
+            expected_outputs: ExpectedOutputs {
+                produces: vec!["implementation".into()],
+                may_produce: Vec::new(),
+            },
+        });
+
+        assert!(prompt.contains("## What you've been given"));
+        assert!(prompt.contains("### constraints — missing"));
+        assert!(prompt.contains("Could not read artifact"));
     }
 }

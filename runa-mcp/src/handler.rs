@@ -9,11 +9,8 @@ use rmcp::service::{RequestContext, RoleServer};
 use serde_json::Value;
 use tracing::{info, warn};
 
-use libagent::context::build_context;
 use libagent::validation::validate_artifact;
 use libagent::{ArtifactStore, ArtifactType, ProtocolDeclaration};
-
-use crate::context::render_context_prompt;
 
 pub struct RunaHandler {
     protocol: ProtocolDeclaration,
@@ -267,16 +264,13 @@ impl ServerHandler for RunaHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::default(),
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .enable_prompts()
-                .build(),
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation {
                 name: "runa-mcp".into(),
                 version: libagent::version().into(),
             },
             instructions: Some(format!(
-                "MCP server for protocol '{}'. Use the 'context' prompt to see inputs and expected outputs.",
+                "MCP server for protocol '{}'. Use its tools to validate and write output artifacts.",
                 self.protocol.name
             )),
         }
@@ -392,38 +386,6 @@ impl ServerHandler for RunaHandler {
             "Produced {tool_name}/{instance_id}.json"
         ))]))
     }
-
-    async fn list_prompts(
-        &self,
-        _request: Option<PaginatedRequestParam>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListPromptsResult, McpError> {
-        Ok(ListPromptsResult {
-            next_cursor: None,
-            prompts: vec![Prompt::new(
-                "context",
-                Some("Protocol context and instructions"),
-                None::<Vec<PromptArgument>>,
-            )],
-        })
-    }
-
-    async fn get_prompt(
-        &self,
-        request: GetPromptRequestParam,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, McpError> {
-        if request.name != "context" {
-            return Err(McpError::invalid_params(
-                format!("unknown prompt: {}", request.name),
-                None,
-            ));
-        }
-
-        let state = self.state.lock().unwrap();
-        let injection = build_context(&self.protocol, &state.store, self.work_unit.as_deref());
-        Ok(render_context_prompt(&injection))
-    }
 }
 
 #[cfg(test)]
@@ -537,6 +499,44 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("tool should have required");
         assert!(required.iter().any(|v| v.as_str() == Some("instance_id")));
+    }
+
+    #[test]
+    fn handler_get_info_reports_tools_only_capabilities() {
+        let tmp = tempfile::tempdir().unwrap();
+        let types = vec![ArtifactType {
+            name: "implementation".into(),
+            schema: json!({
+                "type": "object",
+                "properties": { "title": { "type": "string" } }
+            }),
+        }];
+        let store = ArtifactStore::new(types, tmp.path().join("store")).unwrap();
+        let protocol = ProtocolDeclaration {
+            name: "implement".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: vec!["implementation".into()],
+            may_produce: Vec::new(),
+            trigger: TriggerCondition::OnChange {
+                name: "unused".into(),
+            },
+            instructions: None,
+        };
+
+        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
+        let info = handler.get_info();
+
+        assert_eq!(
+            serde_json::to_value(&info.capabilities).unwrap(),
+            json!({"tools": {}})
+        );
+        assert_eq!(
+            info.instructions.as_deref(),
+            Some(
+                "MCP server for protocol 'implement'. Use its tools to validate and write output artifacts."
+            )
+        );
     }
 
     #[test]

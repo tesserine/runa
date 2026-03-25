@@ -1,11 +1,34 @@
 mod common;
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn runa_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_runa"))
+}
+
+fn runa_bin_path() -> &'static Path {
+    Path::new(env!("CARGO_BIN_EXE_runa"))
+}
+
+fn built_runa_mcp_path() -> PathBuf {
+    runa_bin_path()
+        .parent()
+        .unwrap()
+        .join(format!("runa-mcp{}", std::env::consts::EXE_SUFFIX))
+}
+
+fn copy_binary(src: &Path, dest: &Path) {
+    fs::copy(src, dest).unwrap();
+}
+
+fn copy_isolated_runa(dir: &Path) -> PathBuf {
+    let bin_dir = dir.join("isolated-bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let isolated = bin_dir.join(format!("runa{}", std::env::consts::EXE_SUFFIX));
+    copy_binary(runa_bin_path(), &isolated);
+    isolated
 }
 
 fn manifest_toml() -> &'static str {
@@ -95,7 +118,11 @@ fn write_capture_agent(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
     let script_path = dir.join("capture-agent.sh");
-    fs::write(&script_path, "#!/bin/sh\ncat > \"$1\"\n").unwrap();
+    fs::write(
+        &script_path,
+        "#!/bin/sh\ncat > \"$1\"\nif [ -n \"$2\" ]; then\n  printf '%s' \"$RUNA_MCP_CONFIG\" > \"$2\"\nfi\n",
+    )
+    .unwrap();
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
@@ -108,6 +135,20 @@ fn write_failing_agent(dir: &Path) -> std::path::PathBuf {
     fs::write(
         &script_path,
         "#!/bin/sh\ncount_file=\"$1\"\npayload_dir=\"$2\"\ncount=0\nif [ -f \"$count_file\" ]; then count=$(cat \"$count_file\"); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$count_file\"\ncat > \"$payload_dir/$count.json\"\nexit 17\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+#[cfg(unix)]
+fn write_fake_claude(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("claude");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\ncapture=\"$FAKE_CLAUDE_CAPTURE\"\nconfig=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"--mcp-config\" ]; then\n    shift\n    config=\"$1\"\n  fi\n  shift\ndone\ncat \"$config\" > \"$capture\"\n",
     )
     .unwrap();
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -166,7 +207,33 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     assert_eq!(execution_plan.len(), 1, "{value:#}");
     assert_eq!(execution_plan[0]["protocol"], "implement");
     assert_eq!(execution_plan[0]["trigger"], "on_artifact(constraints)");
+    assert_eq!(
+        execution_plan[0]["mcp_config"]["args"],
+        serde_json::json!(["--protocol", "implement"])
+    );
+    assert_eq!(
+        execution_plan[0]["mcp_config"]["env"],
+        serde_json::json!({
+            "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
+            "RUNA_WORKING_DIR": project_dir
+        })
+    );
+    let mcp_command = execution_plan[0]["mcp_config"]["command"]
+        .as_str()
+        .expect("mcp command should be a string");
+    assert!(
+        mcp_command.ends_with(&format!(
+            "{}runa-mcp{}",
+            std::path::MAIN_SEPARATOR,
+            std::env::consts::EXE_SUFFIX
+        )),
+        "{mcp_command}"
+    );
     assert_eq!(execution_plan[0]["context"]["protocol"], "implement");
+    assert!(
+        execution_plan[0]["context"]["work_unit"].is_null(),
+        "{value:#}"
+    );
     assert_eq!(
         execution_plan[0]["context"]["instructions"],
         "# implement\n"
@@ -309,6 +376,58 @@ fn step_dry_run_text_shows_preloaded_protocol_instructions_for_ready_protocols()
         stdout.contains("\"instructions\": \"# implement\\n\""),
         "stdout: {stdout}"
     );
+    assert!(stdout.contains("mcp_config:"), "stdout: {stdout}");
+    assert!(stdout.contains("\"args\": ["), "stdout: {stdout}");
+}
+
+#[test]
+fn step_dry_run_json_succeeds_without_discoverable_runa_mcp() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+
+    let isolated_runa = copy_isolated_runa(dir.path());
+    let empty_path = dir.path().join("empty-path");
+    fs::create_dir(&empty_path).unwrap();
+
+    let output = Command::new(&isolated_runa)
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .env("PATH", &empty_path)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 1, "{value:#}");
+    assert_eq!(
+        execution_plan[0]["mcp_config"]["command"],
+        serde_json::Value::String(format!("runa-mcp{}", std::env::consts::EXE_SUFFIX))
+    );
 }
 
 #[test]
@@ -349,7 +468,7 @@ fn step_without_dry_run_fails_when_agent_command_is_not_configured() {
 
 #[cfg(unix)]
 #[test]
-fn step_without_dry_run_invokes_configured_agent_with_execution_payload() {
+fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
@@ -376,26 +495,16 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_payload() {
     )
     .unwrap();
 
-    let dry_run = runa_bin()
-        .arg("step")
-        .arg("--dry-run")
-        .arg("--json")
-        .current_dir(&project_dir)
-        .output()
-        .unwrap();
-    assert!(
-        dry_run.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&dry_run.stderr)
-    );
-    let dry_run_json: serde_json::Value = serde_json::from_slice(&dry_run.stdout).unwrap();
-    let expected_payload = dry_run_json["execution_plan"][0].clone();
-
     let payload_path = dir.path().join("captured-payload.json");
+    let mcp_config_path = dir.path().join("captured-mcp-config.json");
     let agent_path = write_capture_agent(dir.path());
     append_agent_command_config(
         &project_dir,
-        &[agent_path.as_path(), payload_path.as_path()],
+        &[
+            agent_path.as_path(),
+            payload_path.as_path(),
+            mcp_config_path.as_path(),
+        ],
     );
 
     let output = runa_bin()
@@ -410,9 +519,300 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_payload() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let captured: serde_json::Value =
-        serde_json::from_slice(&fs::read(&payload_path).unwrap()).unwrap();
-    assert_eq!(captured, expected_payload);
+    let captured = fs::read_to_string(&payload_path).unwrap();
+    assert!(captured.contains("# Protocol: implement"), "{captured}");
+    assert!(captured.contains("## Protocol instructions"), "{captured}");
+    assert!(captured.contains("# implement"), "{captured}");
+    assert!(captured.contains("## What you've been given"), "{captured}");
+    assert!(captured.contains("**Title:** ship step"), "{captured}");
+    assert!(captured.contains("## Additional context"), "{captured}");
+    assert!(captured.contains("**Source:** notes"), "{captured}");
+    assert!(
+        captured.contains("## What you need to deliver"),
+        "{captured}"
+    );
+    assert!(
+        captured.contains("You must produce: implementation"),
+        "{captured}"
+    );
+    assert!(
+        captured.contains(
+            "To deliver each required output, call the tool with the matching name and fill in the required fields."
+        ),
+        "{captured}"
+    );
+
+    let mcp_config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&mcp_config_path).unwrap()).unwrap();
+    let mcp_command = mcp_config["command"]
+        .as_str()
+        .expect("mcp command should be a string");
+    assert!(
+        mcp_command.ends_with(&format!(
+            "{}runa-mcp{}",
+            std::path::MAIN_SEPARATOR,
+            std::env::consts::EXE_SUFFIX
+        )),
+        "{mcp_command}"
+    );
+    assert_eq!(
+        mcp_config["args"],
+        serde_json::json!(["--protocol", "implement"])
+    );
+    assert_eq!(
+        mcp_config["env"],
+        serde_json::json!({
+            "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
+            "RUNA_WORKING_DIR": project_dir
+        })
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn step_without_dry_run_uses_path_runa_mcp_when_sibling_is_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+
+    let payload_path = dir.path().join("captured-payload.json");
+    let mcp_config_path = dir.path().join("captured-mcp-config.json");
+    let agent_path = write_capture_agent(dir.path());
+    append_agent_command_config(
+        &project_dir,
+        &[
+            agent_path.as_path(),
+            payload_path.as_path(),
+            mcp_config_path.as_path(),
+        ],
+    );
+
+    let isolated_runa = copy_isolated_runa(dir.path());
+    let path_bin = dir.path().join("path-bin");
+    fs::create_dir(&path_bin).unwrap();
+    let path_runa_mcp = path_bin.join(format!("runa-mcp{}", std::env::consts::EXE_SUFFIX));
+    copy_binary(&built_runa_mcp_path(), &path_runa_mcp);
+
+    let output = Command::new(&isolated_runa)
+        .arg("step")
+        .current_dir(&project_dir)
+        .env("PATH", &path_bin)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mcp_config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&mcp_config_path).unwrap()).unwrap();
+    assert_eq!(
+        mcp_config["command"],
+        serde_json::Value::String(path_runa_mcp.to_string_lossy().into_owned())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn step_without_dry_run_absolutizes_relative_config_override_and_path_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+
+    let payload_path = dir.path().join("captured-payload.json");
+    let mcp_config_path = dir.path().join("captured-mcp-config.json");
+    let agent_path = write_capture_agent(dir.path());
+    append_agent_command_config(
+        &project_dir,
+        &[
+            agent_path.as_path(),
+            payload_path.as_path(),
+            mcp_config_path.as_path(),
+        ],
+    );
+
+    let isolated_runa = copy_isolated_runa(dir.path());
+    let path_bin = project_dir.join("path-bin");
+    fs::create_dir(&path_bin).unwrap();
+    let path_runa_mcp = path_bin.join(format!("runa-mcp{}", std::env::consts::EXE_SUFFIX));
+    copy_binary(&built_runa_mcp_path(), &path_runa_mcp);
+
+    let output = Command::new(&isolated_runa)
+        .arg("--config")
+        .arg(".runa/config.toml")
+        .arg("step")
+        .current_dir(&project_dir)
+        .env(
+            "PATH",
+            format!("path-bin:{}", std::env::var("PATH").unwrap_or_default()),
+        )
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mcp_config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&mcp_config_path).unwrap()).unwrap();
+    assert_eq!(
+        mcp_config["command"],
+        serde_json::Value::String(path_runa_mcp.to_string_lossy().into_owned())
+    );
+    assert_eq!(
+        mcp_config["env"]["RUNA_CONFIG"],
+        serde_json::Value::String(
+            project_dir
+                .join(".runa/config.toml")
+                .to_string_lossy()
+                .into_owned()
+        )
+    );
+    assert_eq!(
+        mcp_config["env"]["RUNA_WORKING_DIR"],
+        serde_json::Value::String(project_dir.to_string_lossy().into_owned())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_wrapper_wraps_runa_mcp_config_under_mcp_servers() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin_dir = dir.path().join("bin");
+    fs::create_dir(&bin_dir).unwrap();
+    let fake_claude = write_fake_claude(&bin_dir);
+    let capture_path = dir.path().join("captured-claude-config.json");
+    let wrapper_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/agent-claude-code.sh");
+
+    let output = Command::new(&wrapper_path)
+        .arg("--print")
+        .arg("hello")
+        .env(
+            "RUNA_MCP_CONFIG",
+            r#"{"command":"/tmp/runa-mcp","args":["--protocol","implement"],"env":{"RUNA_CONFIG":"/tmp/config.toml","RUNA_WORKING_DIR":"/tmp/project"}}"#,
+        )
+        .env("FAKE_CLAUDE_CAPTURE", &capture_path)
+        .env(
+            "PATH",
+            format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap_or_default()),
+        )
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fake_claude, bin_dir.join("claude"));
+
+    let wrapped: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&capture_path).unwrap()).unwrap();
+    assert_eq!(
+        wrapped,
+        serde_json::json!({
+            "mcpServers": {
+                "runa": {
+                    "command": "/tmp/runa-mcp",
+                    "args": ["--protocol", "implement"],
+                    "env": {
+                        "RUNA_CONFIG": "/tmp/config.toml",
+                        "RUNA_WORKING_DIR": "/tmp/project"
+                    }
+                }
+            }
+        })
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn step_without_dry_run_reports_missing_runa_mcp_after_sibling_and_path_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        manifest_toml(),
+        &methodology_schemas(),
+        &methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+
+    let payload_path = dir.path().join("captured-payload.json");
+    let mcp_config_path = dir.path().join("captured-mcp-config.json");
+    let agent_path = write_capture_agent(dir.path());
+    append_agent_command_config(
+        &project_dir,
+        &[
+            agent_path.as_path(),
+            payload_path.as_path(),
+            mcp_config_path.as_path(),
+        ],
+    );
+
+    let isolated_runa = copy_isolated_runa(dir.path());
+    let empty_path = dir.path().join("empty-path");
+    fs::create_dir(&empty_path).unwrap();
+
+    let output = Command::new(&isolated_runa)
+        .arg("step")
+        .current_dir(&project_dir)
+        .env("PATH", &empty_path)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "step should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("runa-mcp"), "stderr: {stderr}");
+    assert!(stderr.contains("sibling"), "stderr: {stderr}");
+    assert!(stderr.contains("PATH"), "stderr: {stderr}");
 }
 
 #[test]
@@ -547,6 +947,11 @@ trigger = { type = "on_artifact", name = "doc" }
     assert!(stderr.contains("protocol 'review'"), "stderr: {stderr}");
     assert!(stderr.contains("work_unit=wu-a"), "stderr: {stderr}");
     assert_eq!(fs::read_to_string(&count_file).unwrap(), "1");
+    let captured = fs::read_to_string(payload_dir.join("1.json")).unwrap();
+    assert!(
+        captured.contains("# Protocol: review (work_unit=wu-a)"),
+        "{captured}"
+    );
     assert!(payload_dir.join("1.json").is_file());
     assert!(!payload_dir.join("2.json").exists());
 }
