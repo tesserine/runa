@@ -15,21 +15,12 @@ struct ArtifactInput<'a> {
     path: &'a Path,
 }
 
-impl ArtifactInput<'_> {
-    fn as_ref(&self) -> ArtifactRef {
-        ArtifactRef {
-            artifact_type: self.artifact_type.to_string(),
-            instance_id: self.instance_id.to_string(),
-            path: self.path.to_path_buf(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArtifactRef {
     pub artifact_type: String,
     pub instance_id: String,
     pub path: PathBuf,
+    pub work_unit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +28,7 @@ pub struct InvalidArtifact {
     pub artifact_type: String,
     pub instance_id: String,
     pub path: PathBuf,
+    pub work_unit: Option<String>,
     pub violations: Vec<Violation>,
 }
 
@@ -45,6 +37,7 @@ pub struct MalformedArtifact {
     pub artifact_type: String,
     pub instance_id: String,
     pub path: PathBuf,
+    pub work_unit: Option<String>,
     pub error: String,
 }
 
@@ -192,6 +185,7 @@ pub fn scan(workspace_dir: &Path, store: &mut ArtifactStore) -> Result<ScanResul
             artifact_type,
             instance_id,
             path: state.path,
+            work_unit: state.work_unit,
         });
     }
 
@@ -380,7 +374,15 @@ fn handle_json_artifact(
                     scan_timestamp_ms,
                 )
                 .map_err(ScanError::Store)?;
-            result.new.push(artifact.as_ref());
+            let state = store
+                .get(artifact.artifact_type, artifact.instance_id)
+                .expect("new artifact must exist after recording");
+            result.new.push(ArtifactRef {
+                artifact_type: artifact.artifact_type.to_string(),
+                instance_id: artifact.instance_id.to_string(),
+                path: artifact.path.to_path_buf(),
+                work_unit: state.work_unit.clone(),
+            });
         }
         ScanDisposition::Modified => {
             store
@@ -392,7 +394,15 @@ fn handle_json_artifact(
                     scan_timestamp_ms,
                 )
                 .map_err(ScanError::Store)?;
-            result.modified.push(artifact.as_ref());
+            let state = store
+                .get(artifact.artifact_type, artifact.instance_id)
+                .expect("modified artifact must exist after recording");
+            result.modified.push(ArtifactRef {
+                artifact_type: artifact.artifact_type.to_string(),
+                instance_id: artifact.instance_id.to_string(),
+                path: artifact.path.to_path_buf(),
+                work_unit: state.work_unit.clone(),
+            });
         }
         ScanDisposition::Revalidated => {
             let last_modified_ms = existing
@@ -407,7 +417,15 @@ fn handle_json_artifact(
                     last_modified_ms,
                 )
                 .map_err(ScanError::Store)?;
-            result.revalidated.push(artifact.as_ref());
+            let state = store
+                .get(artifact.artifact_type, artifact.instance_id)
+                .expect("revalidated artifact must exist after recording");
+            result.revalidated.push(ArtifactRef {
+                artifact_type: artifact.artifact_type.to_string(),
+                instance_id: artifact.instance_id.to_string(),
+                path: artifact.path.to_path_buf(),
+                work_unit: state.work_unit.clone(),
+            });
         }
         ScanDisposition::Unchanged => {
             let existing_state = existing.expect("unchanged artifact must already exist");
@@ -443,6 +461,7 @@ fn handle_json_artifact(
             artifact_type: artifact.artifact_type.to_string(),
             instance_id: artifact.instance_id.to_string(),
             path: artifact.path.to_path_buf(),
+            work_unit: state.work_unit.clone(),
             violations: violations.clone(),
         });
     }
@@ -480,7 +499,15 @@ fn handle_malformed_artifact(
                     previous_work_unit,
                 )
                 .map_err(ScanError::Store)?;
-            result.new.push(artifact.as_ref());
+            let state = store
+                .get(artifact.artifact_type, artifact.instance_id)
+                .expect("new malformed artifact must exist after recording");
+            result.new.push(ArtifactRef {
+                artifact_type: artifact.artifact_type.to_string(),
+                instance_id: artifact.instance_id.to_string(),
+                path: artifact.path.to_path_buf(),
+                work_unit: state.work_unit.clone(),
+            });
         }
         ScanDisposition::Modified => {
             store
@@ -494,7 +521,15 @@ fn handle_malformed_artifact(
                     previous_work_unit,
                 )
                 .map_err(ScanError::Store)?;
-            result.modified.push(artifact.as_ref());
+            let state = store
+                .get(artifact.artifact_type, artifact.instance_id)
+                .expect("modified malformed artifact must exist after recording");
+            result.modified.push(ArtifactRef {
+                artifact_type: artifact.artifact_type.to_string(),
+                instance_id: artifact.instance_id.to_string(),
+                path: artifact.path.to_path_buf(),
+                work_unit: state.work_unit.clone(),
+            });
         }
         ScanDisposition::Revalidated => {
             let last_modified_ms = existing
@@ -511,7 +546,15 @@ fn handle_malformed_artifact(
                     previous_work_unit,
                 )
                 .map_err(ScanError::Store)?;
-            result.revalidated.push(artifact.as_ref());
+            let state = store
+                .get(artifact.artifact_type, artifact.instance_id)
+                .expect("revalidated malformed artifact must exist after recording");
+            result.revalidated.push(ArtifactRef {
+                artifact_type: artifact.artifact_type.to_string(),
+                instance_id: artifact.instance_id.to_string(),
+                path: artifact.path.to_path_buf(),
+                work_unit: state.work_unit.clone(),
+            });
         }
         ScanDisposition::Unchanged => {
             if existing.is_some_and(|state| state.path != artifact.path) {
@@ -526,6 +569,9 @@ fn handle_malformed_artifact(
         artifact_type: artifact.artifact_type.to_string(),
         instance_id: artifact.instance_id.to_string(),
         path: artifact.path.to_path_buf(),
+        work_unit: store
+            .get(artifact.artifact_type, artifact.instance_id)
+            .and_then(|state| state.work_unit.clone()),
         error,
     });
 
@@ -703,6 +749,21 @@ mod tests {
     }
 
     #[test]
+    fn invalid_artifact_observation_preserves_work_unit() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        write_file(
+            &workspace.join("report/bad.json"),
+            r#"{"score":1,"work_unit":"wu-a"}"#,
+        );
+        let mut store = make_store(&tmp.path().join("store"), vec!["report"]);
+
+        let result = scan(&workspace, &mut store).unwrap();
+
+        assert_eq!(result.invalid[0].work_unit.as_deref(), Some("wu-a"));
+    }
+
+    #[test]
     fn malformed_artifact_is_reported_and_recorded() {
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path().join("workspace");
@@ -779,6 +840,26 @@ mod tests {
         assert_eq!(result.removed.len(), 1);
         assert!(store.get("report", "old").is_none());
         assert!(!store_dir.join("report/old.json").exists());
+    }
+
+    #[test]
+    fn removed_artifact_observation_preserves_work_unit() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["report"]);
+        store
+            .record(
+                "report",
+                "old",
+                Path::new("report/old.json"),
+                &json!({"title": "old", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let result = scan(&workspace, &mut store).unwrap();
+
+        assert_eq!(result.removed[0].work_unit.as_deref(), Some("wu-a"));
     }
 
     #[test]
@@ -1055,6 +1136,22 @@ mod tests {
         let state = store.get("report", "item").unwrap();
         assert!(matches!(state.status, ValidationStatus::Malformed(_)));
         assert_eq!(state.work_unit, Some("wu-1".to_string()));
+    }
+
+    #[test]
+    fn malformed_observation_preserves_previous_work_unit() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let artifact_path = workspace.join("report/item.json");
+
+        write_file(&artifact_path, r#"{"title":"ok","work_unit":"wu-1"}"#);
+        let mut store = make_store(&tmp.path().join("store"), vec!["report"]);
+        scan(&workspace, &mut store).unwrap();
+
+        write_file(&artifact_path, r#"{ nope }"#);
+        let result = scan(&workspace, &mut store).unwrap();
+
+        assert_eq!(result.malformed[0].work_unit.as_deref(), Some("wu-1"));
     }
 
     #[test]

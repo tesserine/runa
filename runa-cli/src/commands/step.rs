@@ -300,31 +300,6 @@ fn candidate_key(protocol: &str, work_unit: Option<&str>) -> CandidateKey {
     }
 }
 
-fn scan_result_changed_types(scan_result: &libagent::ScanResult) -> HashSet<String> {
-    scan_result
-        .new
-        .iter()
-        .chain(scan_result.modified.iter())
-        .chain(scan_result.revalidated.iter())
-        .chain(scan_result.removed.iter())
-        .map(|artifact| artifact.artifact_type.clone())
-        .collect()
-}
-
-fn candidate_is_invalidated_by_types(
-    candidate: &CandidateKey,
-    changed_types: &HashSet<String>,
-    protocol_input_types: &HashMap<String, HashSet<String>>,
-) -> bool {
-    protocol_input_types
-        .get(candidate.protocol.as_str())
-        .is_some_and(|relevant_types| {
-            relevant_types
-                .iter()
-                .any(|artifact_type| changed_types.contains(artifact_type))
-        })
-}
-
 fn execute_entry(
     working_dir: &Path,
     agent_command: &[String],
@@ -428,16 +403,11 @@ fn execute_live_step(
 
     let mcp_binary = locate_runa_mcp()?;
     let mcp_command = mcp_binary.to_string_lossy().into_owned();
-    let protocol_input_types: HashMap<String, HashSet<String>> = loaded
+    let protocol_map: HashMap<&str, &libagent::ProtocolDeclaration> = loaded
         .manifest
         .protocols
         .iter()
-        .map(|protocol| {
-            (
-                protocol.name.clone(),
-                libagent::protocol_relevant_input_types(protocol),
-            )
-        })
+        .map(|protocol| (protocol.name.as_str(), protocol))
         .collect();
     let mut exhausted = HashSet::new();
 
@@ -485,13 +455,17 @@ fn execute_live_step(
             &execution_entry.protocol,
             execution_entry.work_unit.as_deref(),
         );
-        let changed_types = scan_result_changed_types(&scan_result);
         exhausted.insert(executed_key);
-        if !changed_types.is_empty() {
-            exhausted.retain(|candidate| {
-                !candidate_is_invalidated_by_types(candidate, &changed_types, &protocol_input_types)
-            });
-        }
+        exhausted.retain(|candidate| {
+            let protocol = protocol_map
+                .get(candidate.protocol.as_str())
+                .expect("planned protocol must exist in manifest");
+            !libagent::protocol_relevant_inputs_changed(
+                protocol,
+                candidate.work_unit.as_deref(),
+                &scan_result,
+            )
+        });
 
         planned_entries =
             evaluate_execution_state(loaded, working_dir, &scan_result).planned_entries;
@@ -821,35 +795,11 @@ mod tests {
     }
 
     #[test]
-    fn candidate_invalidation_preserves_exhaustion_for_unrelated_changed_types() {
-        let candidate = candidate_key("prepare", None);
-        let changed_types = HashSet::from([String::from("implementation")]);
-        let protocol_input_types = HashMap::from([(
-            String::from("prepare"),
-            HashSet::from([String::from("constraints")]),
-        )]);
+    fn candidate_key_preserves_protocol_and_work_unit() {
+        let candidate = candidate_key("prepare", Some("wu-a"));
 
-        assert!(!candidate_is_invalidated_by_types(
-            &candidate,
-            &changed_types,
-            &protocol_input_types,
-        ));
-    }
-
-    #[test]
-    fn candidate_invalidation_clears_exhaustion_for_overlapping_changed_types() {
-        let candidate = candidate_key("prepare", None);
-        let changed_types = HashSet::from([String::from("constraints")]);
-        let protocol_input_types = HashMap::from([(
-            String::from("prepare"),
-            HashSet::from([String::from("constraints")]),
-        )]);
-
-        assert!(candidate_is_invalidated_by_types(
-            &candidate,
-            &changed_types,
-            &protocol_input_types,
-        ));
+        assert_eq!(candidate.protocol, "prepare");
+        assert_eq!(candidate.work_unit.as_deref(), Some("wu-a"));
     }
 
     #[test]

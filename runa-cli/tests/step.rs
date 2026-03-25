@@ -245,6 +245,19 @@ fn write_prepare_then_implement_agent(dir: &Path) -> std::path::PathBuf {
 }
 
 #[cfg(unix)]
+fn write_scoped_prepare_then_revise_agent(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("scoped-prepare-then-revise-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nlog_file=\"$1\"\npayload=$(cat)\ncase \"$payload\" in\n  *\"# Protocol: prepare (work_unit=wu-a)\"*)\n    printf 'prepare:wu-a\\n' >> \"$log_file\"\n    ;;\n  *\"# Protocol: prepare (work_unit=wu-b)\"*)\n    printf 'prepare:wu-b\\n' >> \"$log_file\"\n    ;;\n  *\"# Protocol: revise (work_unit=wu-b)\"*)\n    printf 'revise:wu-b\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/constraints\n    printf '%s\\n' '{\"title\":\"updated-b\",\"work_unit\":\"wu-b\"}' > .runa/workspace/constraints/b.json\n    ;;\n  *)\n    printf '%s\\n' \"$payload\" > \"$log_file.unexpected\"\n    exit 19\n    ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
 fn write_fake_claude(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -897,6 +910,91 @@ trigger = { type = "on_artifact", name = "constraints" }
 }
 
 #[cfg(unix)]
+#[test]
+fn step_without_dry_run_only_reopens_scoped_outputless_work_for_matching_work_unit() {
+    let dir = tempfile::tempdir().unwrap();
+    let wu_schema = r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "seed"
+
+[[protocols]]
+name = "revise"
+requires = ["seed"]
+produces = ["constraints"]
+trigger = { type = "on_artifact", name = "seed" }
+
+[[protocols]]
+name = "prepare"
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[("constraints", wu_schema), ("seed", wu_schema)],
+        &["revise", "prepare"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("seed")).unwrap();
+    fs::write(
+        workspace.join("constraints/a.json"),
+        r#"{"title":"draft-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("constraints/b.json"),
+        r#"{"title":"draft-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+    let first_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        first_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first_scan.stderr)
+    );
+    fs::write(
+        workspace.join("seed/b.json"),
+        r#"{"title":"seed-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_scoped_prepare_then_revise_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = runa_bin()
+        .arg("step")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let executed = fs::read_to_string(&log_path).unwrap();
+    assert_eq!(
+        executed,
+        "prepare:wu-a\nprepare:wu-b\nrevise:wu-b\nprepare:wu-b\n"
+    );
+}
+
 #[test]
 fn step_without_dry_run_reads_non_utf8_artifact_paths_into_prompt() {
     use std::ffi::OsString;
