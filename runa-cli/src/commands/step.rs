@@ -383,7 +383,7 @@ pub fn run(
 
     if json_output {
         let payload = StepJson {
-            version: 2,
+            version: 3,
             methodology: &loaded.manifest.name,
             scan_warnings: warnings.clone(),
             cycle: evaluated.cycle.as_ref().map(|cycle| cycle.path.clone()),
