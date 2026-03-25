@@ -237,9 +237,9 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
         "stdout: {first_doctor_stdout}"
     );
 
-    let first_status = run_json(&project_dir, &["status", "--json"]);
-    let first_skills = first_status["protocols"].as_array().unwrap();
-    assert_eq!(first_skills.len(), 3, "{first_status:#}");
+    let first_state = run_json(&project_dir, &["state", "--json"]);
+    let first_skills = first_state["protocols"].as_array().unwrap();
+    assert_eq!(first_skills.len(), 3, "{first_state:#}");
     assert_eq!(first_skills[0]["name"], "research");
     assert_eq!(first_skills[0]["status"], "ready");
     assert_eq!(
@@ -349,9 +349,9 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
         "stdout: {second_scan_stdout}"
     );
 
-    let second_status = run_json(&project_dir, &["status", "--json"]);
-    let second_skills = second_status["protocols"].as_array().unwrap();
-    assert_eq!(second_skills.len(), 3, "{second_status:#}");
+    let second_state = run_json(&project_dir, &["state", "--json"]);
+    let second_skills = second_state["protocols"].as_array().unwrap();
+    assert_eq!(second_skills.len(), 3, "{second_state:#}");
     assert_eq!(second_skills[0]["name"], "research");
     assert_eq!(second_skills[0]["status"], "ready");
     assert_eq!(second_skills[1]["name"], "implement");
@@ -377,7 +377,7 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
     assert_eq!(second_skills[2]["status"], "waiting");
     assert!(
         second_skills[1].get("precondition_failures").is_none(),
-        "{second_status:#}"
+        "{second_state:#}"
     );
 
     let second_step = run_json(&project_dir, &["step", "--dry-run", "--json"]);

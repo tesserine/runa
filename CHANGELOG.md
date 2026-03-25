@@ -9,6 +9,9 @@ Semantic Versioning.
 
 ### Changed
 
+- Rename the readiness command from `runa status` to `runa state` for naming
+  consistency with the container-runtime model runa follows. This is a
+  breaking CLI change with no compatibility alias.
 - Define methodology layout standard in the interface contract. Schema content
   is derived from `schemas/{artifact_type_name}.schema.json` and protocol
   instruction file existence is validated at `protocols/{protocol_name}/PROTOCOL.md`,

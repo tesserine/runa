@@ -813,18 +813,18 @@ trigger = { type = "on_artifact", name = "implementation" }
     assert!(workspace.join("implementation/impl-1.json").is_file());
     assert!(workspace.join("verified/check-1.json").is_file());
 
-    let status = runa_bin()
-        .arg("status")
+    let state_output = runa_bin()
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
         .unwrap();
     assert!(
-        status.status.success(),
+        state_output.status.success(),
         "stderr: {}",
-        String::from_utf8_lossy(&status.stderr)
+        String::from_utf8_lossy(&state_output.stderr)
     );
-    let value: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&state_output.stdout).unwrap();
     let verify = value["protocols"]
         .as_array()
         .unwrap()

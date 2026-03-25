@@ -88,7 +88,7 @@ fn scan_project(project_dir: &std::path::Path) {
 }
 
 #[test]
-fn status_groups_ready_blocked_and_waiting_after_implicit_scan() {
+fn state_groups_ready_blocked_and_waiting_after_implicit_scan() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
@@ -106,7 +106,7 @@ fn status_groups_ready_blocked_and_waiting_after_implicit_scan() {
     fs::create_dir_all(workspace.join("prior-art")).unwrap();
     fs::write(
         workspace.join("constraints/spec-1.json"),
-        r#"{"title":"ship status"}"#,
+        r#"{"title":"ship state"}"#,
     )
     .unwrap();
     fs::write(
@@ -116,7 +116,7 @@ fn status_groups_ready_blocked_and_waiting_after_implicit_scan() {
     .unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -150,7 +150,7 @@ fn status_groups_ready_blocked_and_waiting_after_implicit_scan() {
 }
 
 #[test]
-fn status_json_reports_ordered_skills_and_status_specific_fields() {
+fn state_json_reports_ordered_skills_and_status_specific_fields() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
@@ -168,7 +168,7 @@ fn status_json_reports_ordered_skills_and_status_specific_fields() {
     fs::create_dir_all(workspace.join("prior-art")).unwrap();
     fs::write(
         workspace.join("constraints/spec-1.json"),
-        r#"{"title":"ship status"}"#,
+        r#"{"title":"ship state"}"#,
     )
     .unwrap();
     fs::write(
@@ -178,7 +178,7 @@ fn status_json_reports_ordered_skills_and_status_specific_fields() {
     .unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -250,7 +250,7 @@ fn status_json_reports_ordered_skills_and_status_specific_fields() {
 }
 
 #[test]
-fn status_json_reports_stale_failures_and_composite_waiting_conditions() {
+fn state_json_reports_stale_failures_and_composite_waiting_conditions() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
@@ -300,7 +300,7 @@ trigger = { type = "all_of", conditions = [
     fs::create_dir_all(workspace.join("implementation")).unwrap();
     fs::write(
         workspace.join("constraints/spec-1.json"),
-        r#"{"title":"ship status"}"#,
+        r#"{"title":"ship state"}"#,
     )
     .unwrap();
     fs::write(
@@ -318,7 +318,7 @@ trigger = { type = "all_of", conditions = [
     fs::write(&store_path, serde_json::to_string_pretty(&state).unwrap()).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -359,23 +359,23 @@ trigger = { type = "all_of", conditions = [
 }
 
 #[test]
-fn status_errors_on_uninitialized_project() {
+fn state_errors_on_uninitialized_project() {
     let dir = tempfile::tempdir().unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .current_dir(dir.path())
         .output()
         .unwrap();
 
-    assert!(!output.status.success(), "status should fail without init");
+    assert!(!output.status.success(), "state should fail without init");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("no config found"), "stderr: {stderr}");
 }
 
 #[cfg(unix)]
 #[test]
-fn status_keeps_skills_ready_when_only_accepted_types_are_partially_scanned() {
+fn state_keeps_skills_ready_when_only_accepted_types_are_partially_scanned() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -395,7 +395,7 @@ fn status_keeps_skills_ready_when_only_accepted_types_are_partially_scanned() {
     fs::create_dir_all(workspace.join("prior-art")).unwrap();
     fs::write(
         workspace.join("constraints/spec-1.json"),
-        r#"{"title":"ship status"}"#,
+        r#"{"title":"ship state"}"#,
     )
     .unwrap();
     let unreadable = workspace.join("prior-art/survey-1.json");
@@ -403,7 +403,7 @@ fn status_keeps_skills_ready_when_only_accepted_types_are_partially_scanned() {
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -443,7 +443,7 @@ fn status_keeps_skills_ready_when_only_accepted_types_are_partially_scanned() {
 
 #[cfg(unix)]
 #[test]
-fn status_blocks_skills_with_partial_required_types_and_reports_scan_warnings() {
+fn state_blocks_skills_with_partial_required_types_and_reports_scan_warnings() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -463,7 +463,7 @@ fn status_blocks_skills_with_partial_required_types_and_reports_scan_warnings() 
     fs::create_dir_all(workspace.join("prior-art")).unwrap();
     fs::write(
         workspace.join("constraints/spec-1.json"),
-        r#"{"title":"ship status"}"#,
+        r#"{"title":"ship state"}"#,
     )
     .unwrap();
     let unreadable = workspace.join("constraints/spec-2.json");
@@ -476,14 +476,14 @@ fn status_blocks_skills_with_partial_required_types_and_reports_scan_warnings() 
     .unwrap();
 
     let json_output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
         .unwrap();
 
     let text_output = runa_bin()
-        .arg("status")
+        .arg("state")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -540,7 +540,7 @@ fn status_blocks_skills_with_partial_required_types_and_reports_scan_warnings() 
 
 #[cfg(unix)]
 #[test]
-fn status_blocks_skills_when_partial_scan_affects_requires_even_if_trigger_is_unsatisfied() {
+fn state_blocks_skills_when_partial_scan_affects_requires_even_if_trigger_is_unsatisfied() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -572,7 +572,7 @@ trigger = { type = "on_invalid", name = "constraints" }
     fs::create_dir_all(workspace.join("constraints")).unwrap();
     fs::write(
         workspace.join("constraints/spec-1.json"),
-        r#"{"title":"ship status"}"#,
+        r#"{"title":"ship state"}"#,
     )
     .unwrap();
     let unreadable = workspace.join("constraints/spec-2.json");
@@ -580,7 +580,7 @@ trigger = { type = "on_invalid", name = "constraints" }
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -613,7 +613,7 @@ trigger = { type = "on_invalid", name = "constraints" }
 
 #[cfg(unix)]
 #[test]
-fn status_reports_all_partial_required_types_as_scan_incomplete_failures() {
+fn state_reports_all_partial_required_types_as_scan_incomplete_failures() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -655,7 +655,7 @@ trigger = { type = "on_artifact", name = "constraints" }
     fs::create_dir_all(workspace.join("implementation")).unwrap();
     fs::write(
         workspace.join("constraints/spec-1.json"),
-        r#"{"title":"ship status"}"#,
+        r#"{"title":"ship state"}"#,
     )
     .unwrap();
     fs::write(
@@ -671,7 +671,7 @@ trigger = { type = "on_artifact", name = "constraints" }
     fs::set_permissions(&unreadable_implementation, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -711,7 +711,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 
 #[cfg(unix)]
 #[test]
-fn status_blocks_skills_when_partial_scan_affects_trigger_only_artifact_types() {
+fn state_blocks_skills_when_partial_scan_affects_trigger_only_artifact_types() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -750,7 +750,7 @@ trigger = { type = "on_artifact", name = "report" }
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -781,7 +781,7 @@ trigger = { type = "on_artifact", name = "report" }
 }
 
 #[test]
-fn status_preserves_reason_for_empty_any_of_triggers() {
+fn state_preserves_reason_for_empty_any_of_triggers() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
@@ -803,7 +803,7 @@ trigger = { type = "any_of", conditions = [] }
     init_project(&project_dir, &manifest_path);
 
     let json_output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -825,7 +825,7 @@ trigger = { type = "any_of", conditions = [] }
     );
 
     let text_output = runa_bin()
-        .arg("status")
+        .arg("state")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -845,7 +845,7 @@ trigger = { type = "any_of", conditions = [] }
 
 #[cfg(unix)]
 #[test]
-fn status_blocks_on_invalid_when_candidate_discovery_scan_trust_is_missing() {
+fn state_blocks_on_invalid_when_candidate_discovery_scan_trust_is_missing() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -880,7 +880,7 @@ trigger = { type = "on_invalid", name = "report" }
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -912,7 +912,7 @@ trigger = { type = "on_invalid", name = "report" }
 
 #[cfg(unix)]
 #[test]
-fn status_blocks_any_of_when_candidate_discovery_scan_trust_is_missing() {
+fn state_blocks_any_of_when_candidate_discovery_scan_trust_is_missing() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -960,7 +960,7 @@ trigger = { type = "any_of", conditions = [
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -992,7 +992,7 @@ trigger = { type = "any_of", conditions = [
 
 #[cfg(unix)]
 #[test]
-fn status_blocks_on_artifact_when_only_unreadable_instances_exist() {
+fn state_blocks_on_artifact_when_only_unreadable_instances_exist() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1026,7 +1026,7 @@ trigger = { type = "on_artifact", name = "report" }
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -1058,7 +1058,7 @@ trigger = { type = "on_artifact", name = "report" }
 
 #[cfg(unix)]
 #[test]
-fn status_blocks_untrustworthy_not_satisfied_on_invalid_and_on_change_triggers() {
+fn state_blocks_untrustworthy_not_satisfied_on_invalid_and_on_change_triggers() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1109,7 +1109,7 @@ trigger = { type = "on_change", name = "doc" }
     fs::set_permissions(&unreadable_doc, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -1162,7 +1162,7 @@ trigger = { type = "on_change", name = "doc" }
 
 #[cfg(unix)]
 #[test]
-fn status_blocks_on_change_when_output_freshness_is_untrustworthy() {
+fn state_blocks_on_change_when_output_freshness_is_untrustworthy() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1208,7 +1208,7 @@ trigger = { type = "on_change", name = "doc" }
     fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -1237,7 +1237,7 @@ trigger = { type = "on_change", name = "doc" }
 
 #[cfg(unix)]
 #[test]
-fn status_unscopes_new_unreadable_outputs_across_all_work_units() {
+fn state_unscopes_new_unreadable_outputs_across_all_work_units() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1330,7 +1330,7 @@ trigger = { type = "on_change", name = "doc" }
     fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -1360,7 +1360,7 @@ trigger = { type = "on_change", name = "doc" }
 }
 
 #[test]
-fn status_reports_per_work_unit_on_change_readiness_when_freshness_is_mixed() {
+fn state_reports_per_work_unit_on_change_readiness_when_freshness_is_mixed() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
@@ -1451,7 +1451,7 @@ trigger = { type = "on_change", name = "doc" }
     .unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -1489,7 +1489,7 @@ trigger = { type = "on_change", name = "doc" }
 
 #[cfg(unix)]
 #[test]
-fn status_does_not_block_on_change_for_partial_optional_outputs() {
+fn state_does_not_block_on_change_for_partial_optional_outputs() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1545,7 +1545,7 @@ trigger = { type = "on_change", name = "doc" }
     fs::set_permissions(&unreadable_optional, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -1579,7 +1579,7 @@ trigger = { type = "on_change", name = "doc" }
 
 #[cfg(unix)]
 #[test]
-fn status_unscopes_partial_output_reruns_across_all_work_units() {
+fn state_unscopes_partial_output_reruns_across_all_work_units() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1667,7 +1667,7 @@ trigger = { type = "on_change", name = "doc" }
     fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -1698,7 +1698,7 @@ trigger = { type = "on_change", name = "doc" }
 
 #[cfg(unix)]
 #[test]
-fn status_unscopes_partial_outputs_when_the_stored_work_unit_is_unverifiable() {
+fn state_unscopes_partial_outputs_when_the_stored_work_unit_is_unverifiable() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1791,7 +1791,7 @@ trigger = { type = "on_change", name = "doc" }
     fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -1822,7 +1822,7 @@ trigger = { type = "on_change", name = "doc" }
 
 #[cfg(unix)]
 #[test]
-fn status_preserves_invalid_preconditions_alongside_scan_incomplete() {
+fn state_preserves_invalid_preconditions_alongside_scan_incomplete() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1858,7 +1858,7 @@ trigger = { type = "on_artifact", name = "constraints" }
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
@@ -1894,7 +1894,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 
 #[cfg(unix)]
 #[test]
-fn status_keeps_on_artifact_waiting_when_visible_invalid_instance_makes_it_definitely_false() {
+fn state_keeps_on_artifact_waiting_when_visible_invalid_instance_makes_it_definitely_false() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1929,7 +1929,7 @@ trigger = { type = "on_artifact", name = "report" }
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
 
     let output = runa_bin()
-        .arg("status")
+        .arg("state")
         .arg("--json")
         .current_dir(&project_dir)
         .output()
