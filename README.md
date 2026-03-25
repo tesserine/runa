@@ -76,7 +76,7 @@ Unreadable produced artifacts do not block protocols directly, but they do conse
 runa step [--dry-run] [--json]
 ```
 
-Builds an operator-facing execution plan after an implicit scan. `step` uses the same candidate-selection logic as `runa-mcp`: protocols are evaluated per discovered work unit, and activated work is suppressed when valid outputs are newer than the relevant inputs for that work unit. The execution plan therefore contains `READY` `(protocol, work_unit)` pairs that can be placed in a valid execution order. Each plan entry includes the protocol name, optional `work_unit`, the human-readable trigger that activated it, and a serialized agent-facing context payload. The context payload contains the protocol name, the preloaded `PROTOCOL.md` instruction content, all valid required and available accepted inputs with text paths, content hashes, and relationships, plus expected outputs split into `produces` and `may_produce`.
+Builds an operator-facing execution plan after an implicit scan. `step` evaluates protocols per discovered work unit and suppresses activated work when valid outputs are newer than the relevant inputs for that work unit. The execution plan therefore contains `READY` `(protocol, work_unit)` pairs that can be placed in a valid execution order. Each plan entry includes the protocol name, optional `work_unit`, the human-readable trigger that activated it, and a serialized agent-facing context payload. The context payload contains the protocol name, the preloaded `PROTOCOL.md` instruction content, all valid required and available accepted inputs with text paths, content hashes, and relationships, plus expected outputs split into `produces` and `may_produce`.
 
 If the graph contains a hard dependency cycle, `step` reports the cycle as a warning and excludes the cyclic protocols from `execution_plan`; non-cyclic READY protocols still appear when they are orderable. `--dry-run` prints the execution plan and the same grouped protocol status view used by `runa status`, so operators can still see blocked and waiting reasons when nothing is runnable. `--json` emits `{ "version": 2, "methodology": "...", "scan_warnings": [...], "cycle": ["..."] | null, "execution_plan": [...], "protocols": [...] }`, where `execution_plan` entries and `protocols` status entries may include an optional `work_unit`, and `protocols` reuses the same status entries as `runa status --json`.
 
@@ -85,18 +85,16 @@ Like `runa status`, unreadable produced artifacts conservatively keep all work u
 
 ## MCP Server
 
-`runa-mcp` is a single-session stdio MCP server that orchestrates one protocol execution per invocation. It is designed to be started by an outer orchestrator (e.g., an MCP client) for each protocol run.
+`runa-mcp` is a single-session stdio MCP server that serves one named protocol invocation per process. It is designed to be started by an outer orchestrator (e.g., an MCP client) for each protocol run.
 
 ```bash
-runa-mcp
+runa-mcp --protocol <name> [--work-unit <name>]
 ```
 
-On startup, the server loads the project from the current directory (or `RUNA_WORKING_DIR`), scans the workspace, and selects the first ready (protocol, work_unit) candidate. It then serves an MCP session over stdio with:
+On startup, the server loads the project from the current directory (or `RUNA_WORKING_DIR`), resolves the named protocol from the manifest, validates that its output types can be served as MCP tools, and then serves an MCP session over stdio with:
 
 - **Tools** — One tool per output artifact type (`produces` + `may_produce`). The tool input schema is the artifact's JSON Schema with `work_unit` removed. The server injects `work_unit` automatically.
 - **Prompts** — A single `"context"` prompt that delivers the protocol name, preloaded instructions, required and available inputs as prose, and expected outputs.
-
-When the session ends, the server re-scans the workspace and checks postconditions. Valid output artifacts in the workspace are the completion evidence; the next run derives freshness directly from their timestamps. The outer orchestrator can then restart `runa-mcp` for the next protocol.
 
 Environment variables:
 - `RUNA_WORKING_DIR` — Project directory (defaults to current directory)
@@ -109,7 +107,7 @@ Rust 2024 edition.
 
 ```bash
 cargo build          # Debug build
-cargo test --lib     # Run all unit tests
+cargo test --workspace
 ```
 
 ## Documentation

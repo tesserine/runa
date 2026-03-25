@@ -8,7 +8,7 @@ Three crates, Rust 2024 edition, resolver v3:
 
 - **`libagent`** — All domain logic: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, context injection construction, pre/post-execution enforcement, project loading, and protocol selection.
 - **`runa-cli`** — Thin CLI binary. Clap-based argument parsing, delegates to libagent. No domain logic.
-- **`runa-mcp`** — MCP server binary. Single-session stdio process that serves one (protocol, work_unit) pair per invocation. Loads the project, selects a ready candidate, exposes protocol outputs as MCP tools and context as an MCP prompt, then relies on the produced artifacts themselves as completion evidence.
+- **`runa-mcp`** — MCP server binary. Single-session stdio process that serves one named protocol invocation per run. Loads the project, resolves the requested protocol from the manifest, exposes protocol outputs as MCP tools and context as an MCP prompt, and writes produced artifacts into the workspace.
 
 ## Data Flow
 
@@ -30,7 +30,7 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 8. **CLI step execution.** `runa step` reuses the same execution-plan construction as dry-run, then, when `[agent].command` is configured, invokes that argv command once per non-cyclic ready plan entry in order. Each invocation receives the exact plan entry JSON (`protocol`, optional `work_unit`, `trigger`, `context`) on stdin, runs in the project working directory, and must exit `0` for step to continue. This issue stops at command execution: no post-execution scan, postcondition enforcement, or cascading re-selection happens yet.
 
-9. **MCP runtime loop.** `runa-mcp` loads the project, scans, selects the first ready candidate, serves an MCP session via stdio, then re-scans and checks postconditions. Successful postconditions leave completion evidence in the workspace via the output artifacts themselves.
+9. **MCP runtime loop.** `runa-mcp` parses `--protocol` and optional `--work-unit`, loads the project, resolves the named protocol from the manifest, validates that its outputs can be served as MCP tools, and serves an MCP session via stdio.
 
 ## Modules
 
@@ -96,7 +96,7 @@ Work-unit discovery and protocol selection. `discover_ready_candidates` evaluate
 
 ### `main.rs`
 
-Runtime loop: loads the project, scans the workspace, discovers ready candidates, selects the first, builds the MCP handler, serves via stdio transport, then re-scans and checks postconditions. Successful outputs become the completion evidence for the next selection pass.
+Runtime loop: parses `--protocol` and optional `--work-unit`, loads the project, resolves the named protocol from the manifest, validates its output types, builds the MCP handler, and serves via stdio transport.
 
 ### `handler.rs`
 
@@ -163,7 +163,7 @@ Exits 0 for successful status evaluation regardless of whether protocols are rea
 
 ### `runa step [--dry-run] [--json]`
 
-Runs the same implicit scan and shared candidate classification used by `runa status`, then builds an execution plan from the `READY` `(protocol, work_unit)` pairs that can be placed in a valid execution order. Candidate discovery, trigger evaluation, and freshness suppression use the same work-unit-scoped selection logic as `runa-mcp`, so `step --dry-run` previews the same ready work that live execution attempts to serve. Plan entries preserve graph order for the non-cyclic frontier and include the protocol name, optional `work_unit`, the trigger condition string, and the JSON-serialized `libagent::context::ContextInjection` payload, including preloaded protocol instructions. If a hard dependency cycle exists, `step` reports the cycle as a warning, excludes the cycle participants from the plan, and still includes any unrelated orderable READY protocols.
+Runs the same implicit scan and shared candidate classification used by `runa status`, then builds an execution plan from the `READY` `(protocol, work_unit)` pairs that can be placed in a valid execution order. Candidate discovery, trigger evaluation, and freshness suppression use the work-unit-scoped selection logic in `selection.rs`, so `step --dry-run` previews the same ready work that `step` execution attempts to invoke. Plan entries preserve graph order for the non-cyclic frontier and include the protocol name, optional `work_unit`, the trigger condition string, and the JSON-serialized `libagent::context::ContextInjection` payload, including preloaded protocol instructions. If a hard dependency cycle exists, `step` reports the cycle as a warning, excludes the cycle participants from the plan, and still includes any unrelated orderable READY protocols.
 
 With `--dry-run`, text output prints the execution plan followed by the grouped READY/BLOCKED/WAITING view. JSON output adds an `execution_plan` array plus an optional `cycle` path while reusing the same `protocols` status entries and `scan_warnings` envelope fields as `runa status`.
 
