@@ -7,7 +7,7 @@ Study the following before working in this project:
 Orientation: `README.md`
 Architecture: `ARCHITECTURE.md`
 Contribution conventions: `CONTRIBUTING.md`
-Bedrock principles: [commons](https://github.com/pentaxis93/commons)
+Bedrock principles: [commons](https://github.com/pentaxis93/commons) — read both `PRINCIPLES.md` and every ADR in `adr/`
 
 This project does not vendor agent skills in-repo. Resolve project skills from
 your global installs under `~/.claude/skills` and `~/.codex/skills`.
