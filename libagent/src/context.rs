@@ -28,6 +28,7 @@ pub struct ExpectedOutputs {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextInjection {
     pub protocol: String,
+    pub work_unit: Option<String>,
     pub instructions: String,
     pub inputs: Vec<ArtifactRef>,
     pub expected_outputs: ExpectedOutputs,
@@ -57,6 +58,7 @@ pub fn build_context(
 
     ContextInjection {
         protocol: protocol.name.clone(),
+        work_unit: work_unit.map(str::to_owned),
         instructions: protocol.instructions.clone().unwrap_or_default(),
         inputs,
         expected_outputs: ExpectedOutputs {
@@ -73,7 +75,10 @@ pub fn build_context(
 /// individual artifacts are rendered inline rather than failing the prompt.
 pub fn render_context_prompt(context: &ContextInjection) -> String {
     let mut sections = Vec::new();
-    sections.push(format!("# Protocol: {}", context.protocol));
+    sections.push(match &context.work_unit {
+        Some(work_unit) => format!("# Protocol: {} (work_unit={work_unit})", context.protocol),
+        None => format!("# Protocol: {}", context.protocol),
+    });
 
     if !context.instructions.is_empty() {
         sections.push("\n## Protocol instructions".to_string());
@@ -263,6 +268,7 @@ mod tests {
 
         let context = build_context(&protocol, &store, None);
         assert_eq!(context.protocol, "implement");
+        assert_eq!(context.work_unit, None);
         assert_eq!(context.instructions, "# implement\n");
         assert_eq!(
             context.expected_outputs,
@@ -331,6 +337,7 @@ mod tests {
 
         let context = build_context(&protocol, &store, None);
         assert_eq!(context.inputs.len(), 1);
+        assert_eq!(context.work_unit, None);
         assert_eq!(context.instructions, "");
         assert_eq!(context.inputs[0].artifact_type, "constraints");
         assert_eq!(
@@ -406,6 +413,7 @@ mod tests {
 
         // Scoped to WU-A: sees a1 + shared, not b1.
         let context = build_context(&protocol, &store, Some("wu-a"));
+        assert_eq!(context.work_unit.as_deref(), Some("wu-a"));
         let ids: Vec<&str> = context
             .inputs
             .iter()
@@ -447,6 +455,7 @@ mod tests {
     fn render_context_prompt_includes_sections_and_tool_guidance() {
         let prompt = render_context_prompt(&ContextInjection {
             protocol: "implement".into(),
+            work_unit: None,
             instructions: "# Follow the protocol\n".into(),
             inputs: Vec::new(),
             expected_outputs: ExpectedOutputs {
@@ -466,9 +475,26 @@ mod tests {
     }
 
     #[test]
+    fn render_context_prompt_includes_work_unit_in_heading() {
+        let prompt = render_context_prompt(&ContextInjection {
+            protocol: "implement".into(),
+            work_unit: Some("wu-a".into()),
+            instructions: String::new(),
+            inputs: Vec::new(),
+            expected_outputs: ExpectedOutputs {
+                produces: vec!["implementation".into()],
+                may_produce: Vec::new(),
+            },
+        });
+
+        assert!(prompt.contains("# Protocol: implement (work_unit=wu-a)"));
+    }
+
+    #[test]
     fn render_context_prompt_inlines_artifact_read_errors() {
         let prompt = render_context_prompt(&ContextInjection {
             protocol: "implement".into(),
+            work_unit: None,
             instructions: String::new(),
             inputs: vec![ArtifactRef {
                 artifact_type: "constraints".into(),

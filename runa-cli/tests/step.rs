@@ -167,6 +167,10 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     assert_eq!(execution_plan[0]["protocol"], "implement");
     assert_eq!(execution_plan[0]["trigger"], "on_artifact(constraints)");
     assert_eq!(execution_plan[0]["context"]["protocol"], "implement");
+    assert!(
+        execution_plan[0]["context"]["work_unit"].is_null(),
+        "{value:#}"
+    );
     assert_eq!(
         execution_plan[0]["context"]["instructions"],
         "# implement\n"
@@ -545,6 +549,11 @@ trigger = { type = "on_artifact", name = "doc" }
     assert!(stderr.contains("protocol 'review'"), "stderr: {stderr}");
     assert!(stderr.contains("work_unit=wu-a"), "stderr: {stderr}");
     assert_eq!(fs::read_to_string(&count_file).unwrap(), "1");
+    let captured = fs::read_to_string(payload_dir.join("1.json")).unwrap();
+    assert!(
+        captured.contains("# Protocol: review (work_unit=wu-a)"),
+        "{captured}"
+    );
     assert!(payload_dir.join("1.json").is_file());
     assert!(!payload_dir.join("2.json").exists());
 }
