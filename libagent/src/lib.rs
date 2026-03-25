@@ -45,7 +45,8 @@ pub use scan::{
 };
 pub use selection::{
     Candidate, CandidateStatus, ClassifiedCandidate, ScanTrust, classify_candidates,
-    collect_unsatisfied_conditions, discover_ready_candidates,
+    collect_unsatisfied_conditions, discover_ready_candidates, protocol_relevant_input_types,
+    protocol_relevant_inputs_changed,
 };
 pub use store::{ArtifactState, ArtifactStore, StoreError, ValidationStatus};
 pub use trigger::{TriggerContext, TriggerResult, evaluate as evaluate_trigger};

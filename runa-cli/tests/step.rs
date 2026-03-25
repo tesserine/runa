@@ -3,6 +3,7 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 fn runa_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_runa"))
@@ -29,6 +30,26 @@ fn copy_isolated_runa(dir: &Path) -> PathBuf {
     let isolated = bin_dir.join(format!("runa{}", std::env::consts::EXE_SUFFIX));
     copy_binary(runa_bin_path(), &isolated);
     isolated
+}
+
+fn command_output_retry_busy(mut command: Command) -> std::process::Output {
+    for attempt in 0..5 {
+        match command.output() {
+            Ok(output) => return output,
+            Err(err)
+                if err.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    || err.raw_os_error() == Some(26) =>
+            {
+                if attempt == 4 {
+                    panic!("command failed after retrying ETXTBSY: {err}");
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(err) => panic!("failed to run command: {err}"),
+        }
+    }
+
+    unreachable!("retry loop must return or panic")
 }
 
 fn manifest_toml() -> &'static str {
@@ -62,6 +83,28 @@ trigger = { type = "on_invalid", name = "implementation" }
 "#
 }
 
+fn implement_only_manifest_toml() -> &'static str {
+    r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "prior-art"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+accepts = ["prior-art"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#
+}
+
 fn methodology_schemas() -> Vec<(&'static str, &'static str)> {
     vec![
         (
@@ -81,6 +124,10 @@ fn methodology_schemas() -> Vec<(&'static str, &'static str)> {
 
 fn methodology_protocols() -> Vec<&'static str> {
     vec!["implement", "verify", "ground"]
+}
+
+fn implement_only_methodology_protocols() -> Vec<&'static str> {
+    vec!["implement"]
 }
 
 fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) {
@@ -120,7 +167,35 @@ fn write_capture_agent(dir: &Path) -> std::path::PathBuf {
     let script_path = dir.join("capture-agent.sh");
     fs::write(
         &script_path,
-        "#!/bin/sh\ncat > \"$1\"\nif [ -n \"$2\" ]; then\n  printf '%s' \"$RUNA_MCP_CONFIG\" > \"$2\"\nfi\n",
+        "#!/bin/sh\ncapture=\"$1\"\nout=/dev/null\nif [ ! -s \"$capture\" ]; then\n  out=\"$capture\"\nfi\nwhile IFS= read -r line || [ -n \"$line\" ]; do\n  printf '%s\\n' \"$line\" >> \"$out\"\ndone\nif [ -n \"$2\" ] && [ ! -s \"$2\" ]; then\n  printf '%s' \"$RUNA_MCP_CONFIG\" > \"$2\"\nfi\nprintf '%s\\n' '{\"done\":true}' > .runa/workspace/implementation/impl-1.json\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+#[cfg(unix)]
+fn write_no_output_agent(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("no-output-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\ncapture=\"$1\"\n: > \"$capture\"\nwhile IFS= read -r line || [ -n \"$line\" ]; do\n  printf '%s\\n' \"$line\" >> \"$capture\"\ndone\nif [ -n \"$2\" ]; then\n  printf '%s' \"$RUNA_MCP_CONFIG\" > \"$2\"\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+#[cfg(unix)]
+fn write_second_run_fails_agent(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("second-run-fails-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\ncount_file=\"$1\"\ncount=0\nif [ -f \"$count_file\" ]; then count=$(cat \"$count_file\"); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$count_file\"\ncat > /dev/null\nif [ \"$count\" -ge 2 ]; then\n  exit 17\nfi\n",
     )
     .unwrap();
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -142,6 +217,47 @@ fn write_failing_agent(dir: &Path) -> std::path::PathBuf {
 }
 
 #[cfg(unix)]
+fn write_reconciling_agent(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("reconciling-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nlog_file=\"$1\"\npayload=$(cat)\ncase \"$payload\" in\n  *\"# Protocol: implement\"*)\n    printf 'implement\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/implementation\n    printf '%s\\n' '{\"done\":true}' > .runa/workspace/implementation/impl-1.json\n    ;;\n  *\"# Protocol: verify\"*)\n    printf 'verify\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/verified\n    printf '%s\\n' '{\"done\":true}' > .runa/workspace/verified/check-1.json\n    ;;\n  *)\n    printf '%s\\n' \"$payload\" > \"$log_file.unexpected\"\n    exit 19\n    ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+#[cfg(unix)]
+fn write_prepare_then_implement_agent(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("prepare-then-implement-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nlog_file=\"$1\"\npayload=$(cat)\ncase \"$payload\" in\n  *\"# Protocol: alpha_prepare\"*)\n    printf 'alpha_prepare\\n' >> \"$log_file\"\n    ;;\n  *\"# Protocol: beta_implement\"*)\n    printf 'beta_implement\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/implementation\n    printf '%s\\n' '{\"done\":true}' > .runa/workspace/implementation/impl-1.json\n    ;;\n  *)\n    printf '%s\\n' \"$payload\" > \"$log_file.unexpected\"\n    exit 19\n    ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+#[cfg(unix)]
+fn write_scoped_prepare_then_revise_agent(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("scoped-prepare-then-revise-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nlog_file=\"$1\"\npayload=$(cat)\ncase \"$payload\" in\n  *\"# Protocol: prepare (work_unit=wu-a)\"*)\n    printf 'prepare:wu-a\\n' >> \"$log_file\"\n    ;;\n  *\"# Protocol: prepare (work_unit=wu-b)\"*)\n    printf 'prepare:wu-b\\n' >> \"$log_file\"\n    ;;\n  *\"# Protocol: revise (work_unit=wu-b)\"*)\n    printf 'revise:wu-b\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/constraints\n    printf '%s\\n' '{\"title\":\"updated-b\",\"work_unit\":\"wu-b\"}' > .runa/workspace/constraints/b.json\n    ;;\n  *)\n    printf '%s\\n' \"$payload\" > \"$log_file.unexpected\"\n    exit 19\n    ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
 fn write_fake_claude(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -172,6 +288,7 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     let workspace = project_dir.join(".runa/workspace");
     fs::create_dir_all(workspace.join("constraints")).unwrap();
     fs::create_dir_all(workspace.join("prior-art")).unwrap();
+    fs::create_dir_all(workspace.join("implementation")).unwrap();
     fs::write(
         workspace.join("constraints/spec-1.json"),
         r#"{"title":"ship step"}"#,
@@ -393,6 +510,7 @@ fn step_dry_run_text_shows_preloaded_protocol_instructions_for_ready_protocols()
     let workspace = project_dir.join(".runa/workspace");
     fs::create_dir_all(workspace.join("constraints")).unwrap();
     fs::create_dir_all(workspace.join("prior-art")).unwrap();
+    fs::create_dir_all(workspace.join("implementation")).unwrap();
     fs::write(
         workspace.join("constraints/spec-1.json"),
         r#"{"title":"ship step"}"#,
@@ -456,14 +574,14 @@ fn step_dry_run_json_succeeds_without_discoverable_runa_mcp() {
     let empty_path = dir.path().join("empty-path");
     fs::create_dir(&empty_path).unwrap();
 
-    let output = Command::new(&isolated_runa)
+    let mut command = Command::new(&isolated_runa);
+    command
         .arg("step")
         .arg("--dry-run")
         .arg("--json")
         .current_dir(&project_dir)
-        .env("PATH", &empty_path)
-        .output()
-        .unwrap();
+        .env("PATH", &empty_path);
+    let output = command_output_retry_busy(command);
 
     assert!(
         output.status.success(),
@@ -522,9 +640,9 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
-        manifest_toml(),
+        implement_only_manifest_toml(),
         &methodology_schemas(),
-        &methodology_protocols(),
+        &implement_only_methodology_protocols(),
     );
 
     let project_dir = dir.path().join("project");
@@ -534,6 +652,7 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     let workspace = project_dir.join(".runa/workspace");
     fs::create_dir_all(workspace.join("constraints")).unwrap();
     fs::create_dir_all(workspace.join("prior-art")).unwrap();
+    fs::create_dir_all(workspace.join("implementation")).unwrap();
     fs::write(
         workspace.join("constraints/spec-1.json"),
         r#"{"title":"ship step"}"#,
@@ -620,16 +739,45 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
 
 #[cfg(unix)]
 #[test]
-fn step_without_dry_run_reads_non_utf8_artifact_paths_into_prompt() {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::OsStringExt;
-
+fn step_without_dry_run_reconciles_successful_output_and_executes_cascading_ready_protocols() {
     let dir = tempfile::tempdir().unwrap();
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
     let manifest_path = common::write_methodology(
         dir.path(),
-        manifest_toml(),
-        &methodology_schemas(),
-        &methodology_protocols(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[artifact_types]]
+name = "verified"
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+
+[[protocols]]
+name = "verify"
+requires = ["implementation"]
+produces = ["verified"]
+trigger = { type = "on_artifact", name = "implementation" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            ("implementation", bool_schema),
+            ("verified", bool_schema),
+        ],
+        &["implement", "verify"],
     );
 
     let project_dir = dir.path().join("project");
@@ -638,6 +786,235 @@ fn step_without_dry_run_reads_non_utf8_artifact_paths_into_prompt() {
 
     let workspace = project_dir.join(".runa/workspace");
     fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_reconciling_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = runa_bin()
+        .arg("step")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let executed = fs::read_to_string(&log_path).unwrap();
+    assert_eq!(executed, "implement\nverify\n");
+    assert!(workspace.join("implementation/impl-1.json").is_file());
+    assert!(workspace.join("verified/check-1.json").is_file());
+
+    let status = runa_bin()
+        .arg("status")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let verify = value["protocols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|protocol| protocol["name"] == "verify")
+        .unwrap();
+    assert_eq!(verify["status"], "waiting");
+    assert_eq!(
+        verify["unsatisfied_conditions"],
+        serde_json::json!(["outputs are current"])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn step_without_dry_run_does_not_rerun_outputless_protocols_after_unrelated_transitions() {
+    let dir = tempfile::tempdir().unwrap();
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "beta_implement"
+requires = ["constraints"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+
+[[protocols]]
+name = "alpha_prepare"
+requires = ["constraints"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            ("implementation", bool_schema),
+        ],
+        &["alpha_prepare", "beta_implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_prepare_then_implement_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = runa_bin()
+        .arg("step")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let executed = fs::read_to_string(&log_path).unwrap();
+    assert_eq!(executed, "alpha_prepare\nbeta_implement\n");
+    assert!(workspace.join("implementation/impl-1.json").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn step_without_dry_run_only_reopens_scoped_outputless_work_for_matching_work_unit() {
+    let dir = tempfile::tempdir().unwrap();
+    let wu_schema = r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "seed"
+
+[[protocols]]
+name = "revise"
+requires = ["seed"]
+produces = ["constraints"]
+trigger = { type = "on_artifact", name = "seed" }
+
+[[protocols]]
+name = "prepare"
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[("constraints", wu_schema), ("seed", wu_schema)],
+        &["revise", "prepare"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("seed")).unwrap();
+    fs::write(
+        workspace.join("constraints/a.json"),
+        r#"{"title":"draft-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("constraints/b.json"),
+        r#"{"title":"draft-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+    let first_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        first_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first_scan.stderr)
+    );
+    fs::write(
+        workspace.join("seed/b.json"),
+        r#"{"title":"seed-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_scoped_prepare_then_revise_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = runa_bin()
+        .arg("step")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let executed = fs::read_to_string(&log_path).unwrap();
+    assert_eq!(
+        executed,
+        "prepare:wu-a\nprepare:wu-b\nrevise:wu-b\nprepare:wu-b\n"
+    );
+}
+
+#[test]
+fn step_without_dry_run_reads_non_utf8_artifact_paths_into_prompt() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        implement_only_manifest_toml(),
+        &methodology_schemas(),
+        &implement_only_methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("implementation")).unwrap();
     let non_utf8_name = OsString::from_vec(b"spec-\xFF.json".to_vec());
     fs::write(
         workspace.join("constraints").join(non_utf8_name),
@@ -676,9 +1053,9 @@ fn step_without_dry_run_uses_path_runa_mcp_when_sibling_is_missing() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
-        manifest_toml(),
+        implement_only_manifest_toml(),
         &methodology_schemas(),
-        &methodology_protocols(),
+        &implement_only_methodology_protocols(),
     );
 
     let project_dir = dir.path().join("project");
@@ -687,6 +1064,7 @@ fn step_without_dry_run_uses_path_runa_mcp_when_sibling_is_missing() {
 
     let workspace = project_dir.join(".runa/workspace");
     fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("implementation")).unwrap();
     fs::write(
         workspace.join("constraints/spec-1.json"),
         r#"{"title":"ship step"}"#,
@@ -711,12 +1089,12 @@ fn step_without_dry_run_uses_path_runa_mcp_when_sibling_is_missing() {
     let path_runa_mcp = path_bin.join(format!("runa-mcp{}", std::env::consts::EXE_SUFFIX));
     copy_binary(&built_runa_mcp_path(), &path_runa_mcp);
 
-    let output = Command::new(&isolated_runa)
+    let mut command = Command::new(&isolated_runa);
+    command
         .arg("step")
         .current_dir(&project_dir)
-        .env("PATH", &path_bin)
-        .output()
-        .unwrap();
+        .env("PATH", &path_bin);
+    let output = command_output_retry_busy(command);
 
     assert!(
         output.status.success(),
@@ -738,9 +1116,9 @@ fn step_without_dry_run_absolutizes_relative_config_override_and_path_entry() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
-        manifest_toml(),
+        implement_only_manifest_toml(),
         &methodology_schemas(),
-        &methodology_protocols(),
+        &implement_only_methodology_protocols(),
     );
 
     let project_dir = dir.path().join("project");
@@ -749,6 +1127,7 @@ fn step_without_dry_run_absolutizes_relative_config_override_and_path_entry() {
 
     let workspace = project_dir.join(".runa/workspace");
     fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("implementation")).unwrap();
     fs::write(
         workspace.join("constraints/spec-1.json"),
         r#"{"title":"ship step"}"#,
@@ -773,7 +1152,8 @@ fn step_without_dry_run_absolutizes_relative_config_override_and_path_entry() {
     let path_runa_mcp = path_bin.join(format!("runa-mcp{}", std::env::consts::EXE_SUFFIX));
     copy_binary(&built_runa_mcp_path(), &path_runa_mcp);
 
-    let output = Command::new(&isolated_runa)
+    let mut command = Command::new(&isolated_runa);
+    command
         .arg("--config")
         .arg(".runa/config.toml")
         .arg("step")
@@ -781,9 +1161,8 @@ fn step_without_dry_run_absolutizes_relative_config_override_and_path_entry() {
         .env(
             "PATH",
             format!("path-bin:{}", std::env::var("PATH").unwrap_or_default()),
-        )
-        .output()
-        .unwrap();
+        );
+    let output = command_output_retry_busy(command);
 
     assert!(
         output.status.success(),
@@ -889,7 +1268,7 @@ fn step_without_dry_run_reports_missing_runa_mcp_after_sibling_and_path_lookup()
 
     let payload_path = dir.path().join("captured-payload.json");
     let mcp_config_path = dir.path().join("captured-mcp-config.json");
-    let agent_path = write_capture_agent(dir.path());
+    let agent_path = write_no_output_agent(dir.path());
     append_agent_command_config(
         &project_dir,
         &[
@@ -903,12 +1282,12 @@ fn step_without_dry_run_reports_missing_runa_mcp_after_sibling_and_path_lookup()
     let empty_path = dir.path().join("empty-path");
     fs::create_dir(&empty_path).unwrap();
 
-    let output = Command::new(&isolated_runa)
+    let mut command = Command::new(&isolated_runa);
+    command
         .arg("step")
         .current_dir(&project_dir)
-        .env("PATH", &empty_path)
-        .output()
-        .unwrap();
+        .env("PATH", &empty_path);
+    let output = command_output_retry_busy(command);
 
     assert!(!output.status.success(), "step should fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -941,6 +1320,49 @@ fn step_without_dry_run_rejects_json_output() {
     assert!(!output.status.success(), "step should reject --json");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--json is only supported with --dry-run"));
+}
+
+#[cfg(unix)]
+#[test]
+fn step_without_dry_run_with_no_ready_protocols_skips_runa_mcp_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        implement_only_manifest_toml(),
+        &methodology_schemas(),
+        &implement_only_methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let payload_path = dir.path().join("captured-payload.txt");
+    let agent_path = write_no_output_agent(dir.path());
+    append_agent_command_config(
+        &project_dir,
+        &[agent_path.as_path(), payload_path.as_path()],
+    );
+
+    let isolated_runa = copy_isolated_runa(dir.path());
+    let empty_path = dir.path().join("empty-path");
+    fs::create_dir(&empty_path).unwrap();
+
+    let mut command = Command::new(&isolated_runa);
+    command
+        .arg("step")
+        .current_dir(&project_dir)
+        .env("PATH", &empty_path);
+    let output = command_output_retry_busy(command);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No READY protocols."), "stdout: {stdout}");
+    assert!(!payload_path.exists(), "agent should not execute");
 }
 
 #[test]
@@ -1056,6 +1478,159 @@ trigger = { type = "on_artifact", name = "doc" }
     );
     assert!(payload_dir.join("1.json").is_file());
     assert!(!payload_dir.join("2.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn step_without_dry_run_reports_postcondition_failure_after_successful_agent_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "implementation",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+        ],
+        &["implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+
+    let payload_path = dir.path().join("captured-payload.txt");
+    let agent_path = write_no_output_agent(dir.path());
+    append_agent_command_config(
+        &project_dir,
+        &[agent_path.as_path(), payload_path.as_path()],
+    );
+
+    let output = runa_bin()
+        .arg("step")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "step should fail when postconditions remain unsatisfied"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("post-execution reconciliation failed for protocol 'implement'"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr
+            .contains("agent command succeeded but protocol outputs did not satisfy the contract"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("implementation' which is missing after execution"),
+        "stderr: {stderr}"
+    );
+
+    let captured = fs::read_to_string(&payload_path).unwrap();
+    assert!(captured.contains("# Protocol: implement"), "{captured}");
+    assert!(!workspace.join("implementation/impl-1.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn step_without_dry_run_does_not_rerun_ready_protocols_for_persistent_scan_warnings() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "verify"
+requires = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "implementation",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+        ],
+        &["verify"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("implementation")).unwrap();
+    fs::create_dir_all(workspace.join("unknown")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("implementation/impl-1.json"),
+        r#"{"done":true}"#,
+    )
+    .unwrap();
+
+    let count_file = dir.path().join("invocations.txt");
+    let agent_path = write_second_run_fails_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), count_file.as_path()]);
+
+    let output = runa_bin()
+        .arg("step")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(&count_file).unwrap(), "1");
 }
 
 #[test]

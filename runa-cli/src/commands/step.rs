@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fmt;
 use std::io;
@@ -35,6 +35,16 @@ pub enum StepError {
         protocol: String,
         work_unit: Option<String>,
         status: String,
+    },
+    PostExecutionScan {
+        protocol: String,
+        work_unit: Option<String>,
+        source: libagent::ScanError,
+    },
+    PostExecutionEnforcement {
+        protocol: String,
+        work_unit: Option<String>,
+        source: libagent::EnforcementError,
     },
 }
 
@@ -87,6 +97,34 @@ impl fmt::Display for StepError {
                     "agent command '{command}' failed for protocol '{protocol}': {status}"
                 ),
             },
+            StepError::PostExecutionScan {
+                protocol,
+                work_unit,
+                source,
+            } => match work_unit {
+                Some(work_unit) => write!(
+                    f,
+                    "post-execution reconciliation failed for protocol '{protocol}' (work_unit={work_unit}): agent command succeeded but workspace re-scan failed: {source}"
+                ),
+                None => write!(
+                    f,
+                    "post-execution reconciliation failed for protocol '{protocol}': agent command succeeded but workspace re-scan failed: {source}"
+                ),
+            },
+            StepError::PostExecutionEnforcement {
+                protocol,
+                work_unit,
+                source,
+            } => match work_unit {
+                Some(work_unit) => write!(
+                    f,
+                    "post-execution reconciliation failed for protocol '{protocol}' (work_unit={work_unit}): agent command succeeded but protocol outputs did not satisfy the contract\n{source}"
+                ),
+                None => write!(
+                    f,
+                    "post-execution reconciliation failed for protocol '{protocol}': agent command succeeded but protocol outputs did not satisfy the contract\n{source}"
+                ),
+            },
         }
     }
 }
@@ -101,6 +139,8 @@ impl std::error::Error for StepError {
             StepError::McpBinaryNotFound { .. } => None,
             StepError::AgentCommandIo { source, .. } => Some(source),
             StepError::AgentCommandFailed { .. } => None,
+            StepError::PostExecutionScan { source, .. } => Some(source),
+            StepError::PostExecutionEnforcement { source, .. } => Some(source),
         }
     }
 }
@@ -152,11 +192,39 @@ struct BinaryLookup {
     resolved_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CandidateKey {
+    protocol: String,
+    work_unit: Option<String>,
+}
+
+struct ExecutionState {
+    scan_findings: protocol_eval::ScanFindings,
+    evaluated: protocol_eval::EvaluatedProtocols,
+    planned_entries: Vec<PlannedEntry>,
+}
+
 fn serialize_context<S>(context: &ContextInjection, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
     ContextInjectionView::from(context).serialize(serializer)
+}
+
+fn evaluate_execution_state(
+    loaded: &crate::project::LoadedProject,
+    working_dir: &Path,
+    scan_result: &libagent::ScanResult,
+) -> ExecutionState {
+    let scan_findings = protocol_eval::collect_scan_findings(scan_result, &loaded.workspace_dir);
+    let evaluated = protocol_eval::evaluate_protocols(loaded, working_dir, &scan_findings);
+    let planned_entries = build_execution_plan(loaded, &scan_findings, &evaluated);
+
+    ExecutionState {
+        scan_findings,
+        evaluated,
+        planned_entries,
+    }
 }
 
 fn build_execution_plan(
@@ -225,98 +293,183 @@ fn format_exit_status(status: ExitStatus) -> String {
     }
 }
 
-fn execute_plan(
+fn candidate_key(protocol: &str, work_unit: Option<&str>) -> CandidateKey {
+    CandidateKey {
+        protocol: protocol.to_string(),
+        work_unit: work_unit.map(str::to_owned),
+    }
+}
+
+fn execute_entry(
     working_dir: &Path,
     agent_command: &[String],
-    execution_plan: &[PlanEntry],
+    entry: &PlanEntry,
 ) -> Result<(), StepError> {
     let command_display = format_command(agent_command);
-    for entry in execution_plan {
-        info!(
-            operation = "agent_execution",
-            outcome = "starting",
-            protocol = %entry.protocol,
-            work_unit = ?entry.work_unit,
-            command = %command_display,
-            "starting agent command"
-        );
+    info!(
+        operation = "agent_execution",
+        outcome = "starting",
+        protocol = %entry.protocol,
+        work_unit = ?entry.work_unit,
+        command = %command_display,
+        "starting agent command"
+    );
 
-        let mut child = ProcessCommand::new(&agent_command[0]);
-        child
-            .args(&agent_command[1..])
-            .env(
-                "RUNA_MCP_CONFIG",
-                serde_json::to_string(&entry.mcp_config).map_err(StepError::Json)?,
-            )
-            .current_dir(working_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
+    let mut child = ProcessCommand::new(&agent_command[0]);
+    child
+        .args(&agent_command[1..])
+        .env(
+            "RUNA_MCP_CONFIG",
+            serde_json::to_string(&entry.mcp_config).map_err(StepError::Json)?,
+        )
+        .current_dir(working_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
 
-        let mut child = child.spawn().map_err(|source| StepError::AgentCommandIo {
-            command: command_display.clone(),
-            stage: "spawn",
-            source,
-        })?;
+    let mut child = child.spawn().map_err(|source| StepError::AgentCommandIo {
+        command: command_display.clone(),
+        stage: "spawn",
+        source,
+    })?;
 
-        {
-            let stdin = child
-                .stdin
-                .as_mut()
-                .ok_or_else(|| StepError::AgentCommandIo {
-                    command: command_display.clone(),
-                    stage: "stdin_open",
-                    source: io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "child stdin was not available",
-                    ),
-                })?;
-            let prompt = render_context_prompt(&entry.context);
-            stdin
-                .write_all(prompt.as_bytes())
-                .and_then(|_| stdin.write_all(b"\n"))
-                .map_err(|source| StepError::AgentCommandIo {
-                    command: command_display.clone(),
-                    stage: "stdin_write",
-                    source,
-                })?;
-        }
-
-        let status = child.wait().map_err(|source| StepError::AgentCommandIo {
-            command: command_display.clone(),
-            stage: "wait",
-            source,
-        })?;
-
-        if !status.success() {
-            warn!(
-                operation = "agent_execution",
-                outcome = "failed",
-                protocol = %entry.protocol,
-                work_unit = ?entry.work_unit,
-                command = %command_display,
-                status = %format_exit_status(status),
-                "agent command failed"
-            );
-            return Err(StepError::AgentCommandFailed {
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| StepError::AgentCommandIo {
                 command: command_display.clone(),
-                protocol: entry.protocol.clone(),
-                work_unit: entry.work_unit.clone(),
-                status: format_exit_status(status),
-            });
-        }
-
-        info!(
-            operation = "agent_execution",
-            outcome = "succeeded",
-            protocol = %entry.protocol,
-            work_unit = ?entry.work_unit,
-            command = %command_display,
-            "agent command succeeded"
-        );
+                stage: "stdin_open",
+                source: io::Error::new(io::ErrorKind::BrokenPipe, "child stdin was not available"),
+            })?;
+        let prompt = render_context_prompt(&entry.context);
+        stdin
+            .write_all(prompt.as_bytes())
+            .and_then(|_| stdin.write_all(b"\n"))
+            .map_err(|source| StepError::AgentCommandIo {
+                command: command_display.clone(),
+                stage: "stdin_write",
+                source,
+            })?;
     }
 
+    let status = child.wait().map_err(|source| StepError::AgentCommandIo {
+        command: command_display.clone(),
+        stage: "wait",
+        source,
+    })?;
+
+    if !status.success() {
+        warn!(
+            operation = "agent_execution",
+            outcome = "failed",
+            protocol = %entry.protocol,
+            work_unit = ?entry.work_unit,
+            command = %command_display,
+            status = %format_exit_status(status),
+            "agent command failed"
+        );
+        return Err(StepError::AgentCommandFailed {
+            command: command_display,
+            protocol: entry.protocol.clone(),
+            work_unit: entry.work_unit.clone(),
+            status: format_exit_status(status),
+        });
+    }
+
+    info!(
+        operation = "agent_execution",
+        outcome = "succeeded",
+        protocol = %entry.protocol,
+        work_unit = ?entry.work_unit,
+        command = %command_display,
+        "agent command succeeded"
+    );
+
     Ok(())
+}
+
+fn execute_live_step(
+    working_dir: &Path,
+    agent_command: &[String],
+    config_path: &Path,
+    loaded: &mut crate::project::LoadedProject,
+    mut planned_entries: Vec<PlannedEntry>,
+) -> Result<(), StepError> {
+    if planned_entries.is_empty() {
+        println!("No READY protocols.");
+        return Ok(());
+    }
+
+    let mcp_binary = locate_runa_mcp()?;
+    let mcp_command = mcp_binary.to_string_lossy().into_owned();
+    let protocol_map: HashMap<&str, &libagent::ProtocolDeclaration> = loaded
+        .manifest
+        .protocols
+        .iter()
+        .map(|protocol| (protocol.name.as_str(), protocol))
+        .collect();
+    let mut exhausted = HashSet::new();
+
+    loop {
+        let Some(next_entry) = planned_entries.into_iter().find(|entry| {
+            !exhausted.contains(&candidate_key(&entry.protocol, entry.work_unit.as_deref()))
+        }) else {
+            return Ok(());
+        };
+        let execution_entry =
+            build_plan_entries(vec![next_entry], &mcp_command, working_dir, config_path)
+                .into_iter()
+                .next()
+                .expect("single planned entry must produce one execution entry");
+
+        execute_entry(working_dir, agent_command, &execution_entry)?;
+
+        let scan_result =
+            libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(|source| {
+                StepError::PostExecutionScan {
+                    protocol: execution_entry.protocol.clone(),
+                    work_unit: execution_entry.work_unit.clone(),
+                    source,
+                }
+            })?;
+
+        let protocol = loaded
+            .manifest
+            .protocols
+            .iter()
+            .find(|protocol| protocol.name == execution_entry.protocol)
+            .expect("planned protocol must exist in manifest");
+        libagent::enforce_postconditions(
+            protocol,
+            &loaded.store,
+            execution_entry.work_unit.as_deref(),
+        )
+        .map_err(|source| StepError::PostExecutionEnforcement {
+            protocol: execution_entry.protocol.clone(),
+            work_unit: execution_entry.work_unit.clone(),
+            source,
+        })?;
+
+        let executed_key = candidate_key(
+            &execution_entry.protocol,
+            execution_entry.work_unit.as_deref(),
+        );
+        exhausted.insert(executed_key);
+        exhausted.retain(|candidate| {
+            let protocol = protocol_map
+                .get(candidate.protocol.as_str())
+                .expect("planned protocol must exist in manifest");
+            !libagent::protocol_relevant_inputs_changed(
+                protocol,
+                candidate.work_unit.as_deref(),
+                &scan_result,
+            )
+        });
+
+        planned_entries =
+            evaluate_execution_state(loaded, working_dir, &scan_result).planned_entries;
+    }
 }
 
 pub fn run(
@@ -329,14 +482,16 @@ pub fn run(
         return Err(StepError::JsonRequiresDryRun);
     }
 
-    let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
-    let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
-    let evaluated = protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings);
+    let (mut loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
+    let ExecutionState {
+        scan_findings,
+        evaluated,
+        planned_entries,
+    } = evaluate_execution_state(&loaded, working_dir, &scan_result);
     let warnings = scan_findings.warnings.clone();
     let config_path = crate::project::resolve_config(working_dir, config_override)
         .map_err(CommandError::from)
         .map_err(StepError::from)?;
-    let planned_entries = build_execution_plan(&loaded, &scan_findings, &evaluated);
 
     let agent_command = if dry_run {
         None
@@ -354,23 +509,14 @@ pub fn run(
     };
 
     if !dry_run {
-        if planned_entries.is_empty() {
-            println!("No READY protocols.");
-            return Ok(());
-        }
-        let mcp_binary = locate_runa_mcp()?;
-        let execution_plan = build_plan_entries(
-            planned_entries,
-            &mcp_binary.to_string_lossy(),
-            working_dir,
-            &config_path,
-        );
-        return execute_plan(
+        return execute_live_step(
             working_dir,
             agent_command
                 .as_ref()
                 .expect("live execution requires agent command"),
-            &execution_plan,
+            &config_path,
+            &mut loaded,
+            planned_entries,
         );
     }
 
@@ -646,6 +792,14 @@ mod tests {
     #[cfg(not(unix))]
     fn write_executable_file(path: &Path) {
         fs::write(path, b"").unwrap();
+    }
+
+    #[test]
+    fn candidate_key_preserves_protocol_and_work_unit() {
+        let candidate = candidate_key("prepare", Some("wu-a"));
+
+        assert_eq!(candidate.protocol, "prepare");
+        assert_eq!(candidate.work_unit.as_deref(), Some("wu-a"));
     }
 
     #[test]

@@ -120,6 +120,82 @@ pub fn protocol_work_units(
     collect_work_units(store, &referenced_types, partially_scanned_types)
 }
 
+pub fn protocol_relevant_input_types(protocol: &ProtocolDeclaration) -> HashSet<String> {
+    let mut trigger_types = HashSet::new();
+    trigger_artifact_types(&protocol.trigger, &mut trigger_types);
+
+    protocol_freshness_types(protocol, &trigger_types)
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+pub fn protocol_relevant_inputs_changed(
+    protocol: &ProtocolDeclaration,
+    work_unit: Option<&str>,
+    scan_result: &crate::ScanResult,
+) -> bool {
+    let relevant_types = protocol_relevant_input_types(protocol);
+
+    scan_result.new.iter().any(|artifact| {
+        scan_change_affects_candidate(
+            artifact.artifact_type.as_str(),
+            artifact.work_unit.as_deref(),
+            work_unit,
+            &relevant_types,
+        )
+    }) || scan_result.modified.iter().any(|artifact| {
+        scan_change_affects_candidate(
+            artifact.artifact_type.as_str(),
+            artifact.work_unit.as_deref(),
+            work_unit,
+            &relevant_types,
+        )
+    }) || scan_result.revalidated.iter().any(|artifact| {
+        scan_change_affects_candidate(
+            artifact.artifact_type.as_str(),
+            artifact.work_unit.as_deref(),
+            work_unit,
+            &relevant_types,
+        )
+    }) || scan_result.removed.iter().any(|artifact| {
+        scan_change_affects_candidate(
+            artifact.artifact_type.as_str(),
+            artifact.work_unit.as_deref(),
+            work_unit,
+            &relevant_types,
+        )
+    }) || scan_result.invalid.iter().any(|artifact| {
+        scan_change_affects_candidate(
+            artifact.artifact_type.as_str(),
+            artifact.work_unit.as_deref(),
+            work_unit,
+            &relevant_types,
+        )
+    }) || scan_result.malformed.iter().any(|artifact| {
+        scan_change_affects_candidate(
+            artifact.artifact_type.as_str(),
+            artifact.work_unit.as_deref(),
+            work_unit,
+            &relevant_types,
+        )
+    })
+}
+
+fn scan_change_affects_candidate(
+    artifact_type: &str,
+    change_work_unit: Option<&str>,
+    candidate_work_unit: Option<&str>,
+    relevant_types: &HashSet<String>,
+) -> bool {
+    relevant_types.contains(artifact_type)
+        && match candidate_work_unit {
+            None => true,
+            Some(candidate_work_unit) => change_work_unit
+                .is_none_or(|change_work_unit| change_work_unit == candidate_work_unit),
+        }
+}
+
 /// Walk a trigger condition tree and collect artifact type names
 /// from `OnArtifact`, `OnChange`, and `OnInvalid` variants.
 fn trigger_artifact_types<'a>(condition: &'a TriggerCondition, out: &mut HashSet<&'a str>) {
@@ -717,6 +793,115 @@ mod tests {
         assert!(types.contains("constraints"));
         assert!(types.contains("spec"));
         assert!(types.contains("report"));
+    }
+
+    #[test]
+    fn protocol_relevant_input_types_collects_requires_and_trigger_types() {
+        let protocol = make_protocol(
+            "implement",
+            &["constraints"],
+            &["prior-art"],
+            &["implementation"],
+            &[],
+            TriggerCondition::AnyOf {
+                conditions: vec![
+                    TriggerCondition::OnArtifact {
+                        name: "constraints".into(),
+                    },
+                    TriggerCondition::OnChange {
+                        name: "review".into(),
+                    },
+                ],
+            },
+        );
+
+        let types = protocol_relevant_input_types(&protocol);
+        assert_eq!(types.len(), 2);
+        assert!(types.contains("constraints"));
+        assert!(types.contains("review"));
+        assert!(!types.contains("prior-art"));
+    }
+
+    #[test]
+    fn protocol_relevant_inputs_changed_ignores_other_work_units() {
+        let protocol = make_protocol(
+            "review",
+            &["doc"],
+            &[],
+            &[],
+            &[],
+            TriggerCondition::OnArtifact { name: "doc".into() },
+        );
+        let scan_result = crate::ScanResult {
+            modified: vec![crate::ArtifactRef {
+                artifact_type: "doc".into(),
+                instance_id: "b".into(),
+                path: Path::new("doc/b.json").to_path_buf(),
+                work_unit: Some("wu-b".into()),
+            }],
+            ..Default::default()
+        };
+
+        assert!(!protocol_relevant_inputs_changed(
+            &protocol,
+            Some("wu-a"),
+            &scan_result,
+        ));
+        assert!(protocol_relevant_inputs_changed(
+            &protocol,
+            Some("wu-b"),
+            &scan_result,
+        ));
+        assert!(protocol_relevant_inputs_changed(
+            &protocol,
+            None,
+            &scan_result
+        ));
+    }
+
+    #[test]
+    fn protocol_relevant_inputs_changed_counts_invalid_and_malformed_observations() {
+        let protocol = make_protocol(
+            "repair",
+            &[],
+            &[],
+            &[],
+            &[],
+            TriggerCondition::OnInvalid {
+                name: "report".into(),
+            },
+        );
+        let invalid_scan = crate::ScanResult {
+            invalid: vec![crate::InvalidArtifact {
+                artifact_type: "report".into(),
+                instance_id: "bad".into(),
+                path: Path::new("report/bad.json").to_path_buf(),
+                work_unit: Some("wu-a".into()),
+                violations: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let malformed_scan = crate::ScanResult {
+            malformed: vec![crate::MalformedArtifact {
+                artifact_type: "report".into(),
+                instance_id: "bad".into(),
+                path: Path::new("report/bad.json").to_path_buf(),
+                work_unit: None,
+                error: "oops".into(),
+            }],
+            ..Default::default()
+        };
+
+        assert!(protocol_relevant_inputs_changed(
+            &protocol,
+            Some("wu-a"),
+            &invalid_scan,
+        ));
+        assert!(protocol_relevant_inputs_changed(
+            &protocol,
+            Some("wu-a"),
+            &malformed_scan,
+        ));
     }
 
     #[test]
