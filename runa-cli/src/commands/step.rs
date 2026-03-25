@@ -474,12 +474,10 @@ fn locate_runa_mcp() -> Result<PathBuf, StepError> {
     let path_env = std::env::var_os("PATH");
     let lookup = discover_binary(std::env::current_exe(), path_env.as_deref(), "runa-mcp");
 
-    lookup
-        .resolved_path
-        .ok_or(StepError::McpBinaryNotFound {
-            binary_name: executable_name,
-            sibling_path: lookup.sibling_path,
-        })
+    lookup.resolved_path.ok_or(StepError::McpBinaryNotFound {
+        binary_name: executable_name,
+        sibling_path: lookup.sibling_path,
+    })
 }
 
 fn preview_runa_mcp_command() -> String {
@@ -503,7 +501,10 @@ fn discover_binary(
         .ok()
         .map(|path| sibling_binary_path(&path, binary_name));
 
-    if sibling_path.as_ref().is_some_and(|path| path.is_file()) {
+    if sibling_path
+        .as_ref()
+        .is_some_and(|path| is_executable_binary(path))
+    {
         return BinaryLookup {
             resolved_path: sibling_path.clone(),
             sibling_path,
@@ -528,11 +529,26 @@ fn find_binary_on_path(path_env: Option<&OsStr>, binary_name: &str) -> Option<Pa
     let path_env = path_env?;
     for directory in std::env::split_paths(path_env) {
         let candidate = directory.join(&executable_name);
-        if candidate.is_file() {
+        if is_executable_binary(&candidate) {
             return Some(candidate);
         }
     }
     None
+}
+
+#[cfg(unix)]
+fn is_executable_binary(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    path.is_file()
+        && std::fs::metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_binary(path: &Path) -> bool {
+    path.is_file()
 }
 
 fn binary_executable_name(binary_name: &str) -> String {
@@ -606,6 +622,21 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[cfg(unix)]
+    fn write_executable_file(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, b"").unwrap();
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(not(unix))]
+    fn write_executable_file(path: &Path) {
+        fs::write(path, b"").unwrap();
+    }
+
     #[test]
     fn build_mcp_config_includes_protocol_scope_and_project_env() {
         let config = build_mcp_config(
@@ -640,7 +671,7 @@ mod tests {
         fs::create_dir_all(&runa_dir).unwrap();
         fs::create_dir_all(&bin_dir).unwrap();
         fs::write(runa_dir.join("config.toml"), "methodology_path = \"x\"").unwrap();
-        fs::write(bin_dir.join(binary_executable_name("runa-mcp")), b"").unwrap();
+        write_executable_file(&bin_dir.join(binary_executable_name("runa-mcp")));
 
         let config = build_mcp_config(
             "target/debug/runa-mcp",
@@ -697,8 +728,8 @@ mod tests {
         let current_exe = sibling_dir.join(binary_executable_name("runa"));
         let sibling = sibling_dir.join(binary_executable_name("runa-mcp"));
         let path_binary = path_dir.join(binary_executable_name("runa-mcp"));
-        std::fs::write(&sibling, b"").unwrap();
-        std::fs::write(&path_binary, b"").unwrap();
+        write_executable_file(&sibling);
+        write_executable_file(&path_binary);
 
         let path_env = std::env::join_paths([path_dir.as_path()]).unwrap();
         let lookup = discover_binary(Ok(current_exe), Some(path_env.as_os_str()), "runa-mcp");
@@ -718,7 +749,7 @@ mod tests {
         let current_exe = sibling_dir.join(binary_executable_name("runa"));
         let sibling = sibling_dir.join(binary_executable_name("runa-mcp"));
         let path_binary = path_dir.join(binary_executable_name("runa-mcp"));
-        std::fs::write(&path_binary, b"").unwrap();
+        write_executable_file(&path_binary);
 
         let path_env = std::env::join_paths([path_dir.as_path()]).unwrap();
         let lookup = discover_binary(Ok(current_exe), Some(path_env.as_os_str()), "runa-mcp");
@@ -734,7 +765,7 @@ mod tests {
         std::fs::create_dir_all(&path_dir).unwrap();
 
         let path_binary = path_dir.join(binary_executable_name("runa-mcp"));
-        std::fs::write(&path_binary, b"").unwrap();
+        write_executable_file(&path_binary);
 
         let path_env = std::env::join_paths([path_dir.as_path()]).unwrap();
         let lookup = discover_binary(
@@ -745,5 +776,53 @@ mod tests {
 
         assert_eq!(lookup.sibling_path, None);
         assert_eq!(lookup.resolved_path, Some(path_binary));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn discover_binary_skips_non_executable_sibling_and_uses_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let sibling_dir = temp.path().join("sibling");
+        let path_dir = temp.path().join("path");
+        std::fs::create_dir_all(&sibling_dir).unwrap();
+        std::fs::create_dir_all(&path_dir).unwrap();
+
+        let current_exe = sibling_dir.join(binary_executable_name("runa"));
+        let sibling = sibling_dir.join(binary_executable_name("runa-mcp"));
+        let path_binary = path_dir.join(binary_executable_name("runa-mcp"));
+        std::fs::write(&sibling, b"").unwrap();
+        write_executable_file(&path_binary);
+
+        let path_env = std::env::join_paths([path_dir.as_path()]).unwrap();
+        let lookup = discover_binary(Ok(current_exe), Some(path_env.as_os_str()), "runa-mcp");
+
+        assert_eq!(lookup.sibling_path, Some(sibling));
+        assert_eq!(lookup.resolved_path, Some(path_binary));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn discover_binary_skips_non_executable_path_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let first_path_dir = temp.path().join("path-1");
+        let second_path_dir = temp.path().join("path-2");
+        std::fs::create_dir_all(&first_path_dir).unwrap();
+        std::fs::create_dir_all(&second_path_dir).unwrap();
+
+        let first_candidate = first_path_dir.join(binary_executable_name("runa-mcp"));
+        let second_candidate = second_path_dir.join(binary_executable_name("runa-mcp"));
+        std::fs::write(&first_candidate, b"").unwrap();
+        write_executable_file(&second_candidate);
+
+        let path_env =
+            std::env::join_paths([first_path_dir.as_path(), second_path_dir.as_path()]).unwrap();
+        let lookup = discover_binary(
+            Err(io::Error::other("no current exe")),
+            Some(path_env.as_os_str()),
+            "runa-mcp",
+        );
+
+        assert_eq!(lookup.sibling_path, None);
+        assert_eq!(lookup.resolved_path, Some(second_candidate));
     }
 }
