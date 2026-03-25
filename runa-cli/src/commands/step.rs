@@ -300,16 +300,11 @@ fn candidate_key(protocol: &str, work_unit: Option<&str>) -> CandidateKey {
     }
 }
 
-fn scan_result_has_changes(scan_result: &libagent::ScanResult) -> bool {
+fn scan_result_has_state_transitions(scan_result: &libagent::ScanResult) -> bool {
     !scan_result.new.is_empty()
         || !scan_result.modified.is_empty()
         || !scan_result.revalidated.is_empty()
-        || !scan_result.invalid.is_empty()
-        || !scan_result.malformed.is_empty()
-        || !scan_result.unreadable.is_empty()
-        || !scan_result.partially_scanned_types.is_empty()
         || !scan_result.removed.is_empty()
-        || !scan_result.unrecognized_dirs.is_empty()
 }
 
 fn execute_entry(
@@ -405,7 +400,6 @@ fn execute_live_step(
     working_dir: &Path,
     agent_command: &[String],
     config_path: &Path,
-    mcp_command: &str,
     loaded: &mut crate::project::LoadedProject,
     mut planned_entries: Vec<PlannedEntry>,
 ) -> Result<(), StepError> {
@@ -414,6 +408,8 @@ fn execute_live_step(
         return Ok(());
     }
 
+    let mcp_binary = locate_runa_mcp()?;
+    let mcp_command = mcp_binary.to_string_lossy().into_owned();
     let mut exhausted = HashSet::new();
 
     loop {
@@ -423,7 +419,7 @@ fn execute_live_step(
             return Ok(());
         };
         let execution_entry =
-            build_plan_entries(vec![next_entry], mcp_command, working_dir, config_path)
+            build_plan_entries(vec![next_entry], &mcp_command, working_dir, config_path)
                 .into_iter()
                 .next()
                 .expect("single planned entry must produce one execution entry");
@@ -460,7 +456,7 @@ fn execute_live_step(
             &execution_entry.protocol,
             execution_entry.work_unit.as_deref(),
         );
-        if scan_result_has_changes(&scan_result) {
+        if scan_result_has_state_transitions(&scan_result) {
             exhausted.clear();
         } else {
             exhausted.insert(executed_key);
@@ -508,14 +504,12 @@ pub fn run(
     };
 
     if !dry_run {
-        let mcp_binary = locate_runa_mcp()?;
         return execute_live_step(
             working_dir,
             agent_command
                 .as_ref()
                 .expect("live execution requires agent command"),
             &config_path,
-            &mcp_binary.to_string_lossy(),
             &mut loaded,
             planned_entries,
         );

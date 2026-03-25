@@ -83,6 +83,28 @@ trigger = { type = "on_invalid", name = "implementation" }
 "#
 }
 
+fn implement_only_manifest_toml() -> &'static str {
+    r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "prior-art"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+accepts = ["prior-art"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#
+}
+
 fn methodology_schemas() -> Vec<(&'static str, &'static str)> {
     vec![
         (
@@ -102,6 +124,10 @@ fn methodology_schemas() -> Vec<(&'static str, &'static str)> {
 
 fn methodology_protocols() -> Vec<&'static str> {
     vec!["implement", "verify", "ground"]
+}
+
+fn implement_only_methodology_protocols() -> Vec<&'static str> {
+    vec!["implement"]
 }
 
 fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) {
@@ -156,6 +182,20 @@ fn write_no_output_agent(dir: &Path) -> std::path::PathBuf {
     fs::write(
         &script_path,
         "#!/bin/sh\ncapture=\"$1\"\n: > \"$capture\"\nwhile IFS= read -r line || [ -n \"$line\" ]; do\n  printf '%s\\n' \"$line\" >> \"$capture\"\ndone\nif [ -n \"$2\" ]; then\n  printf '%s' \"$RUNA_MCP_CONFIG\" > \"$2\"\nfi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+#[cfg(unix)]
+fn write_second_run_fails_agent(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("second-run-fails-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\ncount_file=\"$1\"\ncount=0\nif [ -f \"$count_file\" ]; then count=$(cat \"$count_file\"); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$count_file\"\ncat > /dev/null\nif [ \"$count\" -ge 2 ]; then\n  exit 17\nfi\n",
     )
     .unwrap();
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -573,9 +613,9 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
-        manifest_toml(),
+        implement_only_manifest_toml(),
         &methodology_schemas(),
-        &methodology_protocols(),
+        &implement_only_methodology_protocols(),
     );
 
     let project_dir = dir.path().join("project");
@@ -780,9 +820,9 @@ fn step_without_dry_run_reads_non_utf8_artifact_paths_into_prompt() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
-        manifest_toml(),
+        implement_only_manifest_toml(),
         &methodology_schemas(),
-        &methodology_protocols(),
+        &implement_only_methodology_protocols(),
     );
 
     let project_dir = dir.path().join("project");
@@ -830,9 +870,9 @@ fn step_without_dry_run_uses_path_runa_mcp_when_sibling_is_missing() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
-        manifest_toml(),
+        implement_only_manifest_toml(),
         &methodology_schemas(),
-        &methodology_protocols(),
+        &implement_only_methodology_protocols(),
     );
 
     let project_dir = dir.path().join("project");
@@ -893,9 +933,9 @@ fn step_without_dry_run_absolutizes_relative_config_override_and_path_entry() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
-        manifest_toml(),
+        implement_only_manifest_toml(),
         &methodology_schemas(),
-        &methodology_protocols(),
+        &implement_only_methodology_protocols(),
     );
 
     let project_dir = dir.path().join("project");
@@ -1099,6 +1139,49 @@ fn step_without_dry_run_rejects_json_output() {
     assert!(stderr.contains("--json is only supported with --dry-run"));
 }
 
+#[cfg(unix)]
+#[test]
+fn step_without_dry_run_with_no_ready_protocols_skips_runa_mcp_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        implement_only_manifest_toml(),
+        &methodology_schemas(),
+        &implement_only_methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let payload_path = dir.path().join("captured-payload.txt");
+    let agent_path = write_no_output_agent(dir.path());
+    append_agent_command_config(
+        &project_dir,
+        &[agent_path.as_path(), payload_path.as_path()],
+    );
+
+    let isolated_runa = copy_isolated_runa(dir.path());
+    let empty_path = dir.path().join("empty-path");
+    fs::create_dir(&empty_path).unwrap();
+
+    let mut command = Command::new(&isolated_runa);
+    command
+        .arg("step")
+        .current_dir(&project_dir)
+        .env("PATH", &empty_path);
+    let output = command_output_retry_busy(command);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No READY protocols."), "stdout: {stdout}");
+    assert!(!payload_path.exists(), "agent should not execute");
+}
+
 #[test]
 fn step_without_dry_run_reports_project_load_failure_before_agent_config_failure() {
     let dir = tempfile::tempdir().unwrap();
@@ -1295,6 +1378,76 @@ trigger = { type = "on_artifact", name = "constraints" }
     let captured = fs::read_to_string(&payload_path).unwrap();
     assert!(captured.contains("# Protocol: implement"), "{captured}");
     assert!(!workspace.join("implementation/impl-1.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn step_without_dry_run_does_not_rerun_ready_protocols_for_persistent_scan_warnings() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "verify"
+requires = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "implementation",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+        ],
+        &["verify"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("implementation")).unwrap();
+    fs::create_dir_all(workspace.join("unknown")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("implementation/impl-1.json"),
+        r#"{"done":true}"#,
+    )
+    .unwrap();
+
+    let count_file = dir.path().join("invocations.txt");
+    let agent_path = write_second_run_fails_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), count_file.as_path()]);
+
+    let output = runa_bin()
+        .arg("step")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(&count_file).unwrap(), "1");
 }
 
 #[test]
