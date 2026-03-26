@@ -373,7 +373,7 @@ fn minimal_value_for_schema(schema: &serde_json::Value) -> serde_json::Value {
         }
     }
 
-    match schema.get("type").and_then(serde_json::Value::as_str) {
+    match projection_type_name(schema.get("type")) {
         Some("object") => minimal_object_value(schema),
         Some("array") => minimal_array_value(schema),
         Some("string") => minimal_string_value(schema),
@@ -382,6 +382,35 @@ fn minimal_value_for_schema(schema: &serde_json::Value) -> serde_json::Value {
         Some("boolean") => serde_json::Value::Bool(false),
         Some("null") => serde_json::Value::Null,
         _ => serde_json::Value::Null,
+    }
+}
+
+fn projection_type_name(type_value: Option<&serde_json::Value>) -> Option<&str> {
+    match type_value {
+        Some(serde_json::Value::String(value)) => Some(value.as_str()),
+        Some(serde_json::Value::Array(values)) => {
+            let mut first_non_null = None;
+            let mut saw_null = false;
+
+            for value in values {
+                let Some(value) = value.as_str() else {
+                    continue;
+                };
+                if value == "object" {
+                    return Some("object");
+                }
+                if value == "null" {
+                    saw_null = true;
+                    continue;
+                }
+                if first_non_null.is_none() {
+                    first_non_null = Some(value);
+                }
+            }
+
+            first_non_null.or(saw_null.then_some("null"))
+        }
+        _ => None,
     }
 }
 
@@ -423,7 +452,7 @@ fn merge_schema_branches(
         .unwrap_or_default();
     let mut explicit_types: Vec<String> = merged
         .get("type")
-        .and_then(serde_json::Value::as_str)
+        .and_then(|value| projection_type_name(Some(value)))
         .map(|value| vec![value.to_string()])
         .unwrap_or_default();
     let mut min_length = schema_keyword_u64(schema, "minLength");
@@ -457,7 +486,7 @@ fn merge_schema_branches(
                 properties.insert(name.clone(), property_schema.clone());
             }
         }
-        if let Some(branch_type) = normalized.get("type").and_then(serde_json::Value::as_str) {
+        if let Some(branch_type) = projection_type_name(normalized.get("type")) {
             explicit_types.push(branch_type.to_string());
         }
 
@@ -1075,10 +1104,27 @@ mod tests {
     }
 
     #[test]
+    fn minimal_value_for_schema_prefers_object_member_of_type_union_for_projection() {
+        let schema = json!({
+            "type":["object","null"],
+            "required":["work_unit"],
+            "properties":{
+                "work_unit":{"type":"string"}
+            }
+        });
+
+        let value = minimal_value_for_schema(&schema);
+        assert!(value.is_object(), "{value}");
+
+        let injected = inject_projected_work_unit(value, Some("wu-a"));
+        assert_eq!(injected, json!({"work_unit":"wu-a"}));
+    }
+
+    #[test]
     fn minimal_value_for_schema_keeps_parent_constraints_without_injecting_work_unit() {
         for keyword in ["oneOf", "anyOf"] {
             let mut schema = json!({
-                "type":"object",
+                "type":["object","null"],
                 "required":["work_unit"],
                 "additionalProperties":{"type":"string","minLength":1}
             });
@@ -1113,7 +1159,7 @@ mod tests {
     fn projection_injects_work_unit_for_one_of_and_any_of_parent_constraints() {
         for keyword in ["oneOf", "anyOf"] {
             let mut schema = json!({
-                "type":"object",
+                "type":["object","null"],
                 "required":["work_unit"],
                 "additionalProperties":{"type":"string","minLength":1}
             });

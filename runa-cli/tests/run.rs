@@ -964,6 +964,105 @@ trigger = { type = "on_artifact", name = "constrained" }
 }
 
 #[test]
+fn run_dry_run_projects_scoped_downstream_work_for_type_union_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let wu_title_schema = r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#;
+    let wu_bool_schema = r#"{"type":"object","required":["done","work_unit"],"properties":{"done":{"type":"boolean"},"work_unit":{"type":"string"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "seed"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "prepared"
+
+[[protocols]]
+name = "make_constraints"
+requires = ["seed"]
+produces = ["constraints"]
+trigger = { type = "on_artifact", name = "seed" }
+
+[[protocols]]
+name = "prepare"
+requires = ["constraints"]
+produces = ["prepared"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            ("seed", wu_title_schema),
+            (
+                "constraints",
+                r#"{
+  "type":["object","null"],
+  "required":["work_unit"],
+  "properties":{
+    "work_unit":{"type":"string"}
+  }
+}"#,
+            ),
+            ("prepared", wu_bool_schema),
+        ],
+        &["make_constraints", "prepare"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("seed")).unwrap();
+    fs::write(
+        workspace.join("seed/a.json"),
+        r#"{"title":"draft-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("seed/b.json"),
+        r#"{"title":"draft-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 4, "{value:#}");
+    assert_eq!(execution_plan[0]["protocol"], "make_constraints");
+    assert_eq!(execution_plan[0]["work_unit"], "wu-a");
+    assert_eq!(execution_plan[0]["projection"], "current");
+    assert_eq!(execution_plan[1]["protocol"], "make_constraints");
+    assert_eq!(execution_plan[1]["work_unit"], "wu-b");
+    assert_eq!(execution_plan[1]["projection"], "current");
+    assert_eq!(execution_plan[2]["protocol"], "prepare");
+    assert_eq!(execution_plan[2]["work_unit"], "wu-a");
+    assert_eq!(execution_plan[2]["projection"], "projected");
+    assert_eq!(execution_plan[3]["protocol"], "prepare");
+    assert_eq!(execution_plan[3]["work_unit"], "wu-b");
+    assert_eq!(execution_plan[3]["projection"], "projected");
+    assert!(
+        execution_plan
+            .iter()
+            .filter(|entry| entry["protocol"] == "prepare")
+            .all(|entry| entry["work_unit"].is_string()),
+        "{value:#}"
+    );
+}
+
+#[test]
 fn run_dry_run_projects_downstream_work_for_pattern_constrained_outputs() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
