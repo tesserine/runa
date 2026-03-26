@@ -22,6 +22,7 @@ pub mod logging;
 pub mod manifest;
 pub mod model;
 pub mod project;
+pub mod projection;
 pub mod scan;
 pub mod selection;
 pub mod store;
@@ -39,6 +40,7 @@ pub use logging::{LoggingError, ResolvedLoggingConfig, configure_tracing, resolv
 pub use manifest::ManifestError;
 pub use model::{ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition};
 pub use project::{Config, LoadedProject, LogFormat, LoggingConfig, ProjectError, State};
+pub use projection::{ProjectionCandidate, ProjectionClass, project_cascade};
 pub use scan::{
     ArtifactRef, InvalidArtifact, MalformedArtifact, PartiallyScannedType, ScanError, ScanResult,
     UnreadableArtifact, scan,

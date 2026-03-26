@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod init;
 pub mod list;
 pub mod protocol_eval;
+pub mod run;
 pub mod scan;
 pub mod state;
 pub mod step;

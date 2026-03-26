@@ -9,6 +9,8 @@ Semantic Versioning.
 
 ### Changed
 
+- Split CLI execution into `runa step` and `runa run`. `step` now executes or previews only the next concrete protocol invocation, while `run` owns cascade-to-quiescence behavior, tolerant continuation after per-protocol failures, and outcome-specific exit codes (`0`, `2`, `3`).
+
 - Rename the readiness command from `runa status` to `runa state` for naming
   consistency with the container-runtime model runa follows. This is a
   breaking CLI change with no compatibility alias.
@@ -30,6 +32,10 @@ Semantic Versioning.
 - Simplify `runa-mcp` into a pure tool server with required `--protocol` and
   optional `--work-unit` arguments, removing workspace scanning, candidate
   selection, and shutdown postcondition checks from the MCP process.
+- Replace `run --dry-run`'s schema-synthesis shadow-store simulation with a
+  graph-based projection that derives downstream execution entirely from
+  manifest topology, current evaluated work-unit state, and assumed-success
+  `produces` outputs.
 
 ### Fixed
 
@@ -53,3 +59,10 @@ Semantic Versioning.
 - Restore `runa step` MCP discovery so `--dry-run` remains a planning-only
   preview when `runa-mcp` is absent, while live execution prefers a sibling
   `runa-mcp` binary and falls back to `PATH` for split-install layouts.
+- Make `runa run` reopen exhausted work after postcondition-failing
+  reconciliations or agent-failing reconciliations that still emitted usable
+  artifacts when those reconciliations changed relevant inputs, and stop
+  treating `may_produce` outputs as guaranteed in `run --dry-run`.
+- Make `runa run` treat unresolved hard dependency cycles as blocked quiescence
+  instead of false success, and keep `run --dry-run --json` current-entry
+  contexts tied to real on-disk inputs instead of projected accepted artifacts.

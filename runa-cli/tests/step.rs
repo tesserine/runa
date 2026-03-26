@@ -315,7 +315,7 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     );
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["version"], 3);
+    assert_eq!(value["version"], 4);
     assert_eq!(value["methodology"], "groundwork");
     assert_eq!(value["scan_warnings"], serde_json::json!([]));
     assert!(value.get("cycle").is_none(), "{value:#}");
@@ -739,7 +739,7 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
 
 #[cfg(unix)]
 #[test]
-fn step_without_dry_run_reconciles_successful_output_and_executes_cascading_ready_protocols() {
+fn step_without_dry_run_executes_one_protocol_and_leaves_downstream_work_ready() {
     let dir = tempfile::tempdir().unwrap();
     let bool_schema =
         r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
@@ -809,9 +809,9 @@ trigger = { type = "on_artifact", name = "implementation" }
     );
 
     let executed = fs::read_to_string(&log_path).unwrap();
-    assert_eq!(executed, "implement\nverify\n");
+    assert_eq!(executed, "implement\n");
     assert!(workspace.join("implementation/impl-1.json").is_file());
-    assert!(workspace.join("verified/check-1.json").is_file());
+    assert!(!workspace.join("verified/check-1.json").exists());
 
     let state_output = runa_bin()
         .arg("state")
@@ -831,16 +831,12 @@ trigger = { type = "on_artifact", name = "implementation" }
         .iter()
         .find(|protocol| protocol["name"] == "verify")
         .unwrap();
-    assert_eq!(verify["status"], "waiting");
-    assert_eq!(
-        verify["unsatisfied_conditions"],
-        serde_json::json!(["outputs are current"])
-    );
+    assert_eq!(verify["status"], "ready");
 }
 
 #[cfg(unix)]
 #[test]
-fn step_without_dry_run_does_not_rerun_outputless_protocols_after_unrelated_transitions() {
+fn step_without_dry_run_stops_after_the_first_ready_protocol_when_multiple_are_ready() {
     let dir = tempfile::tempdir().unwrap();
     let bool_schema =
         r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
@@ -905,13 +901,83 @@ trigger = { type = "on_artifact", name = "constraints" }
     );
 
     let executed = fs::read_to_string(&log_path).unwrap();
-    assert_eq!(executed, "alpha_prepare\nbeta_implement\n");
-    assert!(workspace.join("implementation/impl-1.json").is_file());
+    assert_eq!(executed, "alpha_prepare\n");
+    assert!(!workspace.join("implementation/impl-1.json").exists());
+}
+
+#[test]
+fn step_dry_run_json_only_reports_the_next_ready_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "alpha_prepare"
+requires = ["constraints"]
+trigger = { type = "on_artifact", name = "constraints" }
+
+[[protocols]]
+name = "beta_implement"
+requires = ["constraints"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            ("implementation", bool_schema),
+        ],
+        &["alpha_prepare", "beta_implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 1, "{value:#}");
+    let planned = execution_plan[0]["protocol"].as_str().unwrap();
+    assert!(matches!(planned, "alpha_prepare" | "beta_implement"));
 }
 
 #[cfg(unix)]
 #[test]
-fn step_without_dry_run_only_reopens_scoped_outputless_work_for_matching_work_unit() {
+fn step_without_dry_run_stops_after_the_first_scoped_ready_protocol() {
     let dir = tempfile::tempdir().unwrap();
     let wu_schema = r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#;
     let manifest_path = common::write_methodology(
@@ -989,10 +1055,7 @@ trigger = { type = "on_artifact", name = "constraints" }
     );
 
     let executed = fs::read_to_string(&log_path).unwrap();
-    assert_eq!(
-        executed,
-        "prepare:wu-a\nprepare:wu-b\nrevise:wu-b\nprepare:wu-b\n"
-    );
+    assert_eq!(executed, "prepare:wu-a\n");
 }
 
 #[test]

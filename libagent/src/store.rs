@@ -574,7 +574,7 @@ impl ArtifactStore {
         self.artifact_types.get(name)
     }
 
-    pub(crate) fn record_with_timestamp(
+    pub fn record_with_timestamp(
         &mut self,
         artifact_type: &str,
         instance_id: &str,
