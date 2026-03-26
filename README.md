@@ -91,7 +91,7 @@ runa run [--dry-run] [--json]
 
 `run` is the cascade command. Live execution walks the same non-cyclic READY frontier as `step`, but continues until quiescence instead of stopping after one protocol. Successful executions still reopen previously exhausted work only when later candidate-visible input changes make that work relevant again. Agent failures and postcondition failures are tolerated for the remainder of the invocation: the failed candidate is skipped, other READY work continues, and the command exits `2` after quiescence if any protocol failed. If no READY work exists and some work remains blocked or waiting on external input, `run` exits `3`. A fully satisfied topology exits `0`.
 
-`run --dry-run` projects the full optimistic cascade. Current concrete entries include the same MCP config and context shape used by `step --dry-run`; downstream projected entries are marked as projected because their artifacts do not yet exist on disk.
+`run --dry-run` projects the full optimistic cascade. Current concrete entries include the same MCP config and context shape used by `step --dry-run`; downstream projected entries are marked as projected because their artifacts do not yet exist on disk. Its exit status still reflects the current evaluated topology after the initial scan rather than forcing success because a projection was printed.
 
 ## MCP Server
 

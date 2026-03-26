@@ -95,6 +95,20 @@ fn write_fail_first_then_continue_agent(dir: &Path) -> PathBuf {
 }
 
 #[cfg(unix)]
+fn write_prepare_notes_only_agent(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("prepare-notes-only-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nlog_file=\"$1\"\npayload=$(cat)\ncase \"$payload\" in\n  *\"# Protocol: prepare\"*)\n    printf 'prepare\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/notes\n    printf '%s\\n' '{\"title\":\"note\"}' > .runa/workspace/notes/note-1.json\n    ;;\n  *\"# Protocol: publish\"*)\n    printf 'publish\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/published\n    printf '%s\\n' '{\"done\":true}' > .runa/workspace/published/out-1.json\n    ;;\n  *)\n    printf '%s\\n' \"$payload\" > \"$log_file.unexpected\"\n    exit 19\n    ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+#[cfg(unix)]
 #[test]
 fn run_without_dry_run_cascades_through_ready_protocols() {
     let dir = tempfile::tempdir().unwrap();
@@ -233,17 +247,322 @@ trigger = { type = "on_artifact", name = "implementation" }
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let execution_plan = value["execution_plan"].as_array().unwrap();
     assert_eq!(execution_plan.len(), 2, "{value:#}");
     assert_eq!(execution_plan[0]["protocol"], "implement");
     assert_eq!(execution_plan[1]["protocol"], "verify");
+}
+
+#[test]
+fn run_dry_run_with_blocked_work_and_no_ready_protocols_returns_exit_3() {
+    let dir = tempfile::tempdir().unwrap();
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "verify"
+requires = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            ("implementation", bool_schema),
+        ],
+        &["verify"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--dry-run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Execution plan: none"), "stdout: {stdout}");
+}
+
+#[test]
+fn run_dry_run_projects_may_produce_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "doc"
+
+[[artifact_types]]
+name = "reviewed"
+
+[[artifact_types]]
+name = "notes"
+
+[[artifact_types]]
+name = "published"
+
+[[protocols]]
+name = "review"
+requires = ["doc"]
+produces = ["reviewed"]
+may_produce = ["notes"]
+trigger = { type = "on_artifact", name = "doc" }
+
+[[protocols]]
+name = "publish"
+requires = ["notes"]
+produces = ["published"]
+trigger = { type = "on_artifact", name = "notes" }
+"#,
+        &[
+            (
+                "doc",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "reviewed",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+            (
+                "notes",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "published",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+        ],
+        &["review", "publish"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("doc")).unwrap();
+    fs::write(workspace.join("doc/input.json"), r#"{"title":"draft"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 2, "{value:#}");
+    assert_eq!(execution_plan[0]["protocol"], "review");
+    assert_eq!(execution_plan[0]["projection"], "current");
+    assert_eq!(execution_plan[1]["protocol"], "publish");
+    assert_eq!(execution_plan[1]["projection"], "projected");
+}
+
+#[test]
+fn run_dry_run_projects_schema_valid_artifacts_for_constrained_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "input"
+
+[[artifact_types]]
+name = "constrained"
+
+[[artifact_types]]
+name = "verified"
+
+[[protocols]]
+name = "build"
+requires = ["input"]
+produces = ["constrained"]
+trigger = { type = "on_artifact", name = "input" }
+
+[[protocols]]
+name = "verify"
+requires = ["constrained"]
+produces = ["verified"]
+trigger = { type = "on_artifact", name = "constrained" }
+"#,
+        &[
+            (
+                "input",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "constrained",
+                r#"{
+  "type":"object",
+  "required":["title"],
+  "minProperties":3,
+  "properties":{
+    "title":{"type":"string","minLength":1},
+    "priority":{"type":"integer","minimum":1},
+    "tags":{"type":"array","minItems":2,"items":{"type":"string","minLength":1}}
+  },
+  "additionalProperties":false
+}"#,
+            ),
+            (
+                "verified",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+        ],
+        &["build", "verify"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("input")).unwrap();
+    fs::write(workspace.join("input/source.json"), r#"{"title":"draft"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 2, "{value:#}");
+    assert_eq!(execution_plan[0]["protocol"], "build");
+    assert_eq!(execution_plan[1]["protocol"], "verify");
+}
+
+#[cfg(unix)]
+#[test]
+fn run_dry_run_preserves_partial_scan_blocking_in_projection() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "seed"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[artifact_types]]
+name = "verified"
+
+[[protocols]]
+name = "prepare"
+requires = ["seed"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "seed" }
+
+[[protocols]]
+name = "verify"
+requires = ["implementation", "constraints"]
+produces = ["verified"]
+trigger = { type = "on_artifact", name = "implementation" }
+"#,
+        &[
+            (
+                "seed",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "implementation",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+            (
+                "verified",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+        ],
+        &["prepare", "verify"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("seed")).unwrap();
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(workspace.join("seed/source.json"), r#"{"title":"draft"}"#).unwrap();
+    fs::write(
+        workspace.join("constraints/visible.json"),
+        r#"{"title":"visible"}"#,
+    )
+    .unwrap();
+    let unreadable = workspace.join("constraints/hidden.json");
+    fs::write(&unreadable, r#"{"title":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 1, "{value:#}");
+    assert_eq!(execution_plan[0]["protocol"], "prepare");
 }
 
 #[cfg(unix)]
@@ -527,4 +846,104 @@ trigger = { type = "on_artifact", name = "constraints" }
         .unwrap();
 
     assert_eq!(output.status.code(), Some(3), "{output:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn run_preserves_scan_gap_blocking_after_postcondition_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "seed"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[artifact_types]]
+name = "notes"
+
+[[artifact_types]]
+name = "published"
+
+[[protocols]]
+name = "prepare"
+requires = ["seed"]
+produces = ["implementation"]
+may_produce = ["notes"]
+trigger = { type = "on_artifact", name = "seed" }
+
+[[protocols]]
+name = "publish"
+requires = ["constraints", "notes"]
+produces = ["published"]
+trigger = { type = "on_artifact", name = "notes" }
+"#,
+        &[
+            (
+                "seed",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "implementation",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+            (
+                "notes",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "published",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+        ],
+        &["prepare", "publish"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("seed")).unwrap();
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(workspace.join("seed/source.json"), r#"{"title":"draft"}"#).unwrap();
+    fs::write(
+        workspace.join("constraints/visible.json"),
+        r#"{"title":"visible"}"#,
+    )
+    .unwrap();
+    let unreadable = workspace.join("constraints/hidden.json");
+    fs::write(&unreadable, r#"{"title":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
+
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_prepare_notes_only_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = runa_bin()
+        .arg("run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+
+    let executed = fs::read_to_string(&log_path).unwrap();
+    assert_eq!(executed, "prepare\n");
+    assert!(!workspace.join("published/out-1.json").exists());
 }

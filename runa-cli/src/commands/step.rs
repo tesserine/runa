@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::io;
@@ -193,6 +193,7 @@ struct BinaryLookup {
     resolved_path: Option<PathBuf>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CandidateKey {
     protocol: String,
@@ -294,6 +295,7 @@ fn format_exit_status(status: ExitStatus) -> String {
     }
 }
 
+#[cfg(test)]
 fn candidate_key(protocol: &str, work_unit: Option<&str>) -> CandidateKey {
     CandidateKey {
         protocol: protocol.to_string(),
@@ -390,89 +392,6 @@ pub(crate) fn execute_entry(
     Ok(())
 }
 
-fn execute_live_cascade(
-    working_dir: &Path,
-    agent_command: &[String],
-    config_path: &Path,
-    loaded: &mut crate::project::LoadedProject,
-    mut planned_entries: Vec<PlannedEntry>,
-) -> Result<(), StepError> {
-    if planned_entries.is_empty() {
-        println!("No READY protocols.");
-        return Ok(());
-    }
-
-    let mcp_binary = locate_runa_mcp()?;
-    let mcp_command = mcp_binary.to_string_lossy().into_owned();
-    let protocol_map: HashMap<&str, &libagent::ProtocolDeclaration> = loaded
-        .manifest
-        .protocols
-        .iter()
-        .map(|protocol| (protocol.name.as_str(), protocol))
-        .collect();
-    let mut exhausted = HashSet::new();
-
-    loop {
-        let Some(next_entry) = planned_entries.into_iter().find(|entry| {
-            !exhausted.contains(&candidate_key(&entry.protocol, entry.work_unit.as_deref()))
-        }) else {
-            return Ok(());
-        };
-        let execution_entry =
-            build_plan_entries(vec![next_entry], &mcp_command, working_dir, config_path)
-                .into_iter()
-                .next()
-                .expect("single planned entry must produce one execution entry");
-
-        execute_entry(working_dir, agent_command, &execution_entry)?;
-
-        let scan_result =
-            libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(|source| {
-                StepError::PostExecutionScan {
-                    protocol: execution_entry.protocol.clone(),
-                    work_unit: execution_entry.work_unit.clone(),
-                    source,
-                }
-            })?;
-
-        let protocol = loaded
-            .manifest
-            .protocols
-            .iter()
-            .find(|protocol| protocol.name == execution_entry.protocol)
-            .expect("planned protocol must exist in manifest");
-        libagent::enforce_postconditions(
-            protocol,
-            &loaded.store,
-            execution_entry.work_unit.as_deref(),
-        )
-        .map_err(|source| StepError::PostExecutionEnforcement {
-            protocol: execution_entry.protocol.clone(),
-            work_unit: execution_entry.work_unit.clone(),
-            source,
-        })?;
-
-        let executed_key = candidate_key(
-            &execution_entry.protocol,
-            execution_entry.work_unit.as_deref(),
-        );
-        exhausted.insert(executed_key);
-        exhausted.retain(|candidate| {
-            let protocol = protocol_map
-                .get(candidate.protocol.as_str())
-                .expect("planned protocol must exist in manifest");
-            !libagent::protocol_relevant_inputs_changed(
-                protocol,
-                candidate.work_unit.as_deref(),
-                &scan_result,
-            )
-        });
-
-        planned_entries =
-            evaluate_execution_state(loaded, working_dir, &scan_result).planned_entries;
-    }
-}
-
 fn execute_live_single(
     working_dir: &Path,
     agent_command: &[String],
@@ -545,7 +464,6 @@ fn run_internal(
     config_override: Option<&Path>,
     dry_run: bool,
     json_output: bool,
-    cascade_live: bool,
     single_dry_run: bool,
 ) -> Result<(), StepError> {
     if !dry_run && json_output {
@@ -579,27 +497,15 @@ fn run_internal(
     };
 
     if !dry_run {
-        return if cascade_live {
-            execute_live_cascade(
-                working_dir,
-                agent_command
-                    .as_ref()
-                    .expect("live execution requires agent command"),
-                &config_path,
-                &mut loaded,
-                planned_entries,
-            )
-        } else {
-            execute_live_single(
-                working_dir,
-                agent_command
-                    .as_ref()
-                    .expect("live execution requires agent command"),
-                &config_path,
-                &mut loaded,
-                planned_entries,
-            )
-        };
+        return execute_live_single(
+            working_dir,
+            agent_command
+                .as_ref()
+                .expect("live execution requires agent command"),
+            &config_path,
+            &mut loaded,
+            planned_entries,
+        );
     }
 
     let planned_entries = if single_dry_run {
@@ -695,14 +601,7 @@ pub fn run(
     dry_run: bool,
     json_output: bool,
 ) -> Result<(), StepError> {
-    run_internal(
-        working_dir,
-        config_override,
-        dry_run,
-        json_output,
-        false,
-        true,
-    )
+    run_internal(working_dir, config_override, dry_run, json_output, true)
 }
 
 pub(crate) fn build_plan_entries(
