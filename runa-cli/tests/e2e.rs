@@ -382,26 +382,8 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
 
     let second_step = run_json(&project_dir, &["step", "--dry-run", "--json"]);
     let second_plan = second_step["execution_plan"].as_array().unwrap();
-    assert_eq!(second_plan.len(), 2, "{second_step:#}");
+    assert_eq!(second_plan.len(), 1, "{second_step:#}");
     assert_eq!(second_plan[0]["protocol"], "research");
-    assert_eq!(second_plan[1]["protocol"], "implement");
-    assert_context_inputs(
-        &second_plan[1]["context"]["inputs"],
-        &[
-            (
-                "design-doc",
-                "plan-1",
-                project_dir.join(".runa/workspace/design-doc/plan-1.json"),
-                "requires",
-            ),
-            (
-                "notes",
-                "context-1",
-                project_dir.join(".runa/workspace/notes/context-1.json"),
-                "accepts",
-            ),
-        ],
-    );
 
     let list_output = run_command(&project_dir, &["list"]);
     assert!(

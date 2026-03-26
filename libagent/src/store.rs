@@ -574,7 +574,19 @@ impl ArtifactStore {
         self.artifact_types.get(name)
     }
 
-    pub(crate) fn record_with_timestamp(
+    pub fn fork(&self, store_dir: PathBuf) -> Result<Self, StoreError> {
+        std::fs::create_dir_all(&store_dir).map_err(StoreError::Io)?;
+
+        Ok(Self {
+            artifact_types: self.artifact_types.clone(),
+            artifacts: self.artifacts.clone(),
+            store_dir,
+            type_level_scan_gaps: self.type_level_scan_gaps.clone(),
+            instance_level_scan_gaps: self.instance_level_scan_gaps.clone(),
+        })
+    }
+
+    pub fn record_with_timestamp(
         &mut self,
         artifact_type: &str,
         instance_id: &str,

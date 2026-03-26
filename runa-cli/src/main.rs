@@ -53,6 +53,16 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Cascade through ready protocols until quiescence
+    Run {
+        /// Show the projected cascade without attempting agent execution
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Emit machine-readable JSON instead of text output
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() {
@@ -151,6 +161,17 @@ fn main() {
             if let Err(err) = commands::step::run(&working_dir, config_override_ref, dry_run, json)
             {
                 fatal_command_error("step", &err);
+            }
+        }
+        Commands::Run { dry_run, json } => {
+            match commands::run::run(&working_dir, config_override_ref, dry_run, json) {
+                Ok(outcome) => {
+                    let exit_code = outcome.exit_code();
+                    if exit_code != 0 {
+                        process::exit(exit_code);
+                    }
+                }
+                Err(err) => fatal_command_error("run", &err),
             }
         }
     }

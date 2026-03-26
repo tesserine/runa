@@ -163,28 +163,29 @@ struct StepJson<'a> {
 }
 
 #[derive(Serialize)]
-struct PlanEntry {
-    protocol: String,
+pub(crate) struct PlanEntry {
+    pub(crate) protocol: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    work_unit: Option<String>,
-    trigger: String,
-    mcp_config: McpServerConfig,
+    pub(crate) work_unit: Option<String>,
+    pub(crate) trigger: String,
+    pub(crate) mcp_config: McpServerConfig,
     #[serde(serialize_with = "serialize_context")]
-    context: ContextInjection,
+    pub(crate) context: ContextInjection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct McpServerConfig {
-    command: String,
-    args: Vec<String>,
-    env: BTreeMap<String, String>,
+pub(crate) struct McpServerConfig {
+    pub(crate) command: String,
+    pub(crate) args: Vec<String>,
+    pub(crate) env: BTreeMap<String, String>,
 }
 
-struct PlannedEntry {
-    protocol: String,
-    work_unit: Option<String>,
-    trigger: String,
-    context: ContextInjection,
+#[derive(Clone)]
+pub(crate) struct PlannedEntry {
+    pub(crate) protocol: String,
+    pub(crate) work_unit: Option<String>,
+    pub(crate) trigger: String,
+    pub(crate) context: ContextInjection,
 }
 
 struct BinaryLookup {
@@ -198,10 +199,10 @@ struct CandidateKey {
     work_unit: Option<String>,
 }
 
-struct ExecutionState {
-    scan_findings: protocol_eval::ScanFindings,
-    evaluated: protocol_eval::EvaluatedProtocols,
-    planned_entries: Vec<PlannedEntry>,
+pub(crate) struct ExecutionState {
+    pub(crate) scan_findings: protocol_eval::ScanFindings,
+    pub(crate) evaluated: protocol_eval::EvaluatedProtocols,
+    pub(crate) planned_entries: Vec<PlannedEntry>,
 }
 
 fn serialize_context<S>(context: &ContextInjection, serializer: S) -> Result<S::Ok, S::Error>
@@ -211,7 +212,7 @@ where
     ContextInjectionView::from(context).serialize(serializer)
 }
 
-fn evaluate_execution_state(
+pub(crate) fn evaluate_execution_state(
     loaded: &crate::project::LoadedProject,
     working_dir: &Path,
     scan_result: &libagent::ScanResult,
@@ -227,7 +228,7 @@ fn evaluate_execution_state(
     }
 }
 
-fn build_execution_plan(
+pub(crate) fn build_execution_plan(
     loaded: &crate::project::LoadedProject,
     scan_findings: &protocol_eval::ScanFindings,
     evaluated: &protocol_eval::EvaluatedProtocols,
@@ -300,7 +301,7 @@ fn candidate_key(protocol: &str, work_unit: Option<&str>) -> CandidateKey {
     }
 }
 
-fn execute_entry(
+pub(crate) fn execute_entry(
     working_dir: &Path,
     agent_command: &[String],
     entry: &PlanEntry,
@@ -389,7 +390,7 @@ fn execute_entry(
     Ok(())
 }
 
-fn execute_live_step(
+fn execute_live_cascade(
     working_dir: &Path,
     agent_command: &[String],
     config_path: &Path,
@@ -472,11 +473,80 @@ fn execute_live_step(
     }
 }
 
-pub fn run(
+fn execute_live_single(
+    working_dir: &Path,
+    agent_command: &[String],
+    config_path: &Path,
+    loaded: &mut crate::project::LoadedProject,
+    planned_entries: Vec<PlannedEntry>,
+) -> Result<(), StepError> {
+    let Some(next_entry) = planned_entries.into_iter().next() else {
+        println!("No READY protocols.");
+        return Ok(());
+    };
+
+    let mcp_binary = locate_runa_mcp()?;
+    let mcp_command = mcp_binary.to_string_lossy().into_owned();
+    let execution_entry =
+        build_plan_entries(vec![next_entry], &mcp_command, working_dir, config_path)
+            .into_iter()
+            .next()
+            .expect("single planned entry must produce one execution entry");
+
+    execute_entry(working_dir, agent_command, &execution_entry)?;
+
+    let scan_result =
+        libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(|source| {
+            StepError::PostExecutionScan {
+                protocol: execution_entry.protocol.clone(),
+                work_unit: execution_entry.work_unit.clone(),
+                source,
+            }
+        })?;
+
+    let protocol = loaded
+        .manifest
+        .protocols
+        .iter()
+        .find(|protocol| protocol.name == execution_entry.protocol)
+        .expect("planned protocol must exist in manifest");
+    libagent::enforce_postconditions(
+        protocol,
+        &loaded.store,
+        execution_entry.work_unit.as_deref(),
+    )
+    .map_err(|source| StepError::PostExecutionEnforcement {
+        protocol: execution_entry.protocol.clone(),
+        work_unit: execution_entry.work_unit.clone(),
+        source,
+    })?;
+
+    let refreshed = evaluate_execution_state(loaded, working_dir, &scan_result);
+
+    match &execution_entry.work_unit {
+        Some(work_unit) => println!(
+            "Executed: {} (work_unit={work_unit})",
+            execution_entry.protocol
+        ),
+        None => println!("Executed: {}", execution_entry.protocol),
+    }
+    println!();
+    protocol_eval::print_group("READY", &refreshed.evaluated.ready);
+    println!();
+    protocol_eval::print_group("BLOCKED", &refreshed.evaluated.blocked);
+    println!();
+    protocol_eval::print_group("WAITING", &refreshed.evaluated.waiting);
+
+    Ok(())
+}
+
+fn run_internal(
     working_dir: &Path,
     config_override: Option<&Path>,
     dry_run: bool,
     json_output: bool,
+    cascade_live: bool,
+    single_dry_run: bool,
 ) -> Result<(), StepError> {
     if !dry_run && json_output {
         return Err(StepError::JsonRequiresDryRun);
@@ -509,17 +579,34 @@ pub fn run(
     };
 
     if !dry_run {
-        return execute_live_step(
-            working_dir,
-            agent_command
-                .as_ref()
-                .expect("live execution requires agent command"),
-            &config_path,
-            &mut loaded,
-            planned_entries,
-        );
+        return if cascade_live {
+            execute_live_cascade(
+                working_dir,
+                agent_command
+                    .as_ref()
+                    .expect("live execution requires agent command"),
+                &config_path,
+                &mut loaded,
+                planned_entries,
+            )
+        } else {
+            execute_live_single(
+                working_dir,
+                agent_command
+                    .as_ref()
+                    .expect("live execution requires agent command"),
+                &config_path,
+                &mut loaded,
+                planned_entries,
+            )
+        };
     }
 
+    let planned_entries = if single_dry_run {
+        planned_entries.into_iter().take(1).collect()
+    } else {
+        planned_entries
+    };
     let execution_plan = build_plan_entries(
         planned_entries,
         &preview_runa_mcp_command(),
@@ -529,7 +616,7 @@ pub fn run(
 
     if json_output {
         let payload = StepJson {
-            version: 3,
+            version: 4,
             methodology: &loaded.manifest.name,
             scan_warnings: warnings.clone(),
             cycle: evaluated.cycle.as_ref().map(|cycle| cycle.path.clone()),
@@ -602,7 +689,23 @@ pub fn run(
     Ok(())
 }
 
-fn build_plan_entries(
+pub fn run(
+    working_dir: &Path,
+    config_override: Option<&Path>,
+    dry_run: bool,
+    json_output: bool,
+) -> Result<(), StepError> {
+    run_internal(
+        working_dir,
+        config_override,
+        dry_run,
+        json_output,
+        false,
+        true,
+    )
+}
+
+pub(crate) fn build_plan_entries(
     planned_entries: Vec<PlannedEntry>,
     mcp_command: &str,
     working_dir: &Path,
@@ -626,7 +729,7 @@ fn build_plan_entries(
         .collect()
 }
 
-fn locate_runa_mcp() -> Result<PathBuf, StepError> {
+pub(crate) fn locate_runa_mcp() -> Result<PathBuf, StepError> {
     let executable_name = binary_executable_name("runa-mcp");
     let path_env = std::env::var_os("PATH");
     let lookup = discover_binary(std::env::current_exe(), path_env.as_deref(), "runa-mcp");
@@ -637,7 +740,7 @@ fn locate_runa_mcp() -> Result<PathBuf, StepError> {
     })
 }
 
-fn preview_runa_mcp_command() -> String {
+pub(crate) fn preview_runa_mcp_command() -> String {
     let executable_name = binary_executable_name("runa-mcp");
     let path_env = std::env::var_os("PATH");
     let lookup = discover_binary(std::env::current_exe(), path_env.as_deref(), "runa-mcp");
