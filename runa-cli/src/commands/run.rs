@@ -283,7 +283,10 @@ fn build_run_json_plan(
                 .iter()
                 .find(|artifact| artifact.name == *produced_type)
                 .expect("produced artifact type must exist in manifest");
-            let value = minimal_artifact_value(artifact_type, next_entry.work_unit.as_deref());
+            let value = inject_projected_work_unit(
+                minimal_artifact_value(artifact_type),
+                next_entry.work_unit.as_deref(),
+            );
             let instance_id = format!(
                 "projected-{}-{}-{}",
                 protocol.name,
@@ -330,17 +333,25 @@ fn build_run_json_plan(
     Ok(projected)
 }
 
-fn minimal_artifact_value(
-    artifact_type: &libagent::ArtifactType,
-    work_unit: Option<&str>,
-) -> serde_json::Value {
-    minimal_value_for_schema(&artifact_type.schema, work_unit)
+fn minimal_artifact_value(artifact_type: &libagent::ArtifactType) -> serde_json::Value {
+    minimal_value_for_schema(&artifact_type.schema)
 }
 
-fn minimal_value_for_schema(
-    schema: &serde_json::Value,
+fn inject_projected_work_unit(
+    mut value: serde_json::Value,
     work_unit: Option<&str>,
 ) -> serde_json::Value {
+    if let (serde_json::Value::Object(object), Some(work_unit)) = (&mut value, work_unit) {
+        object.insert(
+            "work_unit".to_string(),
+            serde_json::Value::String(work_unit.to_string()),
+        );
+    }
+
+    value
+}
+
+fn minimal_value_for_schema(schema: &serde_json::Value) -> serde_json::Value {
     if let Some(constant) = schema.get("const") {
         return constant.clone();
     }
@@ -351,20 +362,20 @@ fn minimal_value_for_schema(
     }
     if schema.get("allOf").is_some() {
         let merged = merge_all_of_schema(schema);
-        return minimal_value_for_schema(&merged, work_unit);
+        return minimal_value_for_schema(&merged);
     }
     for key in ["oneOf", "anyOf"] {
         if let Some(branches) = schema.get(key).and_then(serde_json::Value::as_array)
             && let Some(first) = branches.first()
         {
             let merged = merge_schema_branches(schema, key, vec![first.clone()]);
-            return minimal_value_for_schema(&merged, work_unit);
+            return minimal_value_for_schema(&merged);
         }
     }
 
     match schema.get("type").and_then(serde_json::Value::as_str) {
-        Some("object") => minimal_object_value(schema, work_unit),
-        Some("array") => minimal_array_value(schema, work_unit),
+        Some("object") => minimal_object_value(schema),
+        Some("array") => minimal_array_value(schema),
         Some("string") => minimal_string_value(schema),
         Some("integer") => minimal_integer_value(schema),
         Some("number") => minimal_number_value(schema),
@@ -604,7 +615,7 @@ fn scan_result_with_inherited_gaps(
     }
 }
 
-fn minimal_object_value(schema: &serde_json::Value, work_unit: Option<&str>) -> serde_json::Value {
+fn minimal_object_value(schema: &serde_json::Value) -> serde_json::Value {
     let required: HashSet<&str> = schema
         .get("required")
         .and_then(serde_json::Value::as_array)
@@ -630,47 +641,26 @@ fn minimal_object_value(schema: &serde_json::Value, work_unit: Option<&str>) -> 
             .get(name)
             .expect("property names must resolve within the same object");
 
-        if name == "work_unit" {
-            if let Some(work_unit) = work_unit {
-                object.insert(
-                    name.clone(),
-                    serde_json::Value::String(work_unit.to_string()),
-                );
-            } else if required.contains("work_unit") {
-                object.insert(
-                    name.clone(),
-                    serde_json::Value::String("projected".to_string()),
-                );
-            }
-            continue;
-        }
-
         if required.contains(name.as_str()) {
-            object.insert(
-                name.clone(),
-                minimal_value_for_schema(property_schema, work_unit),
-            );
+            object.insert(name.clone(), minimal_value_for_schema(property_schema));
         }
     }
 
     for name in &property_names {
-        if object.len() >= min_properties || object.contains_key(name) || name == "work_unit" {
+        if object.len() >= min_properties || object.contains_key(name) {
             continue;
         }
 
         let property_schema = properties
             .get(name)
             .expect("property names must resolve within the same object");
-        object.insert(
-            name.clone(),
-            minimal_value_for_schema(property_schema, work_unit),
-        );
+        object.insert(name.clone(), minimal_value_for_schema(property_schema));
     }
 
     serde_json::Value::Object(object)
 }
 
-fn minimal_array_value(schema: &serde_json::Value, work_unit: Option<&str>) -> serde_json::Value {
+fn minimal_array_value(schema: &serde_json::Value) -> serde_json::Value {
     let min_items = schema
         .get("minItems")
         .and_then(serde_json::Value::as_u64)
@@ -688,7 +678,7 @@ fn minimal_array_value(schema: &serde_json::Value, work_unit: Option<&str>) -> s
             .or(items);
         values.push(
             item_schema
-                .map(|item_schema| minimal_value_for_schema(item_schema, work_unit))
+                .map(minimal_value_for_schema)
                 .unwrap_or(serde_json::Value::Null),
         );
     }
@@ -983,22 +973,21 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::minimal_value_for_schema;
+    use super::{inject_projected_work_unit, minimal_value_for_schema};
     use libagent::{ArtifactType, validation::validate_artifact};
     use serde_json::json;
 
     #[test]
     fn minimal_value_for_schema_satisfies_string_min_length() {
-        let value = minimal_value_for_schema(&json!({"type":"string","minLength":3}), None);
+        let value = minimal_value_for_schema(&json!({"type":"string","minLength":3}));
 
         assert_eq!(value, json!("xxx"));
     }
 
     #[test]
     fn minimal_value_for_schema_satisfies_numeric_lower_bounds() {
-        let integer = minimal_value_for_schema(&json!({"type":"integer","minimum":2}), None);
-        let number =
-            minimal_value_for_schema(&json!({"type":"number","exclusiveMinimum":1.5}), None);
+        let integer = minimal_value_for_schema(&json!({"type":"integer","minimum":2}));
+        let number = minimal_value_for_schema(&json!({"type":"number","exclusiveMinimum":1.5}));
 
         assert_eq!(integer, json!(2));
         assert!(number.as_f64().unwrap() > 1.5, "{number}");
@@ -1006,34 +995,28 @@ mod tests {
 
     #[test]
     fn minimal_value_for_schema_satisfies_min_items_with_constrained_items() {
-        let value = minimal_value_for_schema(
-            &json!({
-                "type":"array",
-                "minItems":2,
-                "items":{"type":"string","minLength":1}
-            }),
-            None,
-        );
+        let value = minimal_value_for_schema(&json!({
+            "type":"array",
+            "minItems":2,
+            "items":{"type":"string","minLength":1}
+        }));
 
         assert_eq!(value, json!(["x", "x"]));
     }
 
     #[test]
     fn minimal_value_for_schema_satisfies_min_properties() {
-        let value = minimal_value_for_schema(
-            &json!({
-                "type":"object",
-                "required":["title"],
-                "minProperties":3,
-                "properties":{
-                    "title":{"type":"string","minLength":1},
-                    "priority":{"type":"integer","minimum":1},
-                    "tags":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}
-                },
-                "additionalProperties":false
-            }),
-            None,
-        );
+        let value = minimal_value_for_schema(&json!({
+            "type":"object",
+            "required":["title"],
+            "minProperties":3,
+            "properties":{
+                "title":{"type":"string","minLength":1},
+                "priority":{"type":"integer","minimum":1},
+                "tags":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}
+            },
+            "additionalProperties":false
+        }));
 
         assert_eq!(
             value,
@@ -1070,7 +1053,7 @@ mod tests {
                 }
             ]
         });
-        let value = minimal_value_for_schema(&schema, None);
+        let value = minimal_value_for_schema(&schema);
 
         validate_artifact(
             &value,
@@ -1083,14 +1066,12 @@ mod tests {
     }
 
     #[test]
-    fn minimal_value_for_schema_preserves_parent_constraints_for_one_of_and_any_of() {
+    fn minimal_value_for_schema_keeps_parent_constraints_without_injecting_work_unit() {
         for keyword in ["oneOf", "anyOf"] {
             let mut schema = json!({
                 "type":"object",
                 "required":["work_unit"],
-                "properties":{
-                    "work_unit":{"type":"string"}
-                }
+                "additionalProperties":{"type":"string","minLength":1}
             });
             schema
                 .as_object_mut()
@@ -1113,7 +1094,42 @@ mod tests {
                     ]),
                 );
 
-            let value = minimal_value_for_schema(&schema, Some("wu-a"));
+            let value = minimal_value_for_schema(&schema);
+
+            assert_eq!(value, json!({"title":"x"}));
+        }
+    }
+
+    #[test]
+    fn projection_injects_work_unit_for_one_of_and_any_of_parent_constraints() {
+        for keyword in ["oneOf", "anyOf"] {
+            let mut schema = json!({
+                "type":"object",
+                "required":["work_unit"],
+                "additionalProperties":{"type":"string","minLength":1}
+            });
+            schema
+                .as_object_mut()
+                .expect("schema must be an object")
+                .insert(
+                    keyword.to_string(),
+                    json!([
+                        {
+                            "required":["title"],
+                            "properties":{
+                                "title":{"type":"string","minLength":1}
+                            }
+                        },
+                        {
+                            "required":["priority"],
+                            "properties":{
+                                "priority":{"type":"integer","minimum":1}
+                            }
+                        }
+                    ]),
+                );
+
+            let value = inject_projected_work_unit(minimal_value_for_schema(&schema), Some("wu-a"));
 
             assert_eq!(value, json!({"title":"x","work_unit":"wu-a"}));
             validate_artifact(
