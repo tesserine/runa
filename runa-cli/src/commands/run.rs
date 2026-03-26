@@ -366,9 +366,9 @@ fn minimal_value_for_schema(schema: &serde_json::Value) -> serde_json::Value {
     }
     for key in ["oneOf", "anyOf"] {
         if let Some(branches) = schema.get(key).and_then(serde_json::Value::as_array)
-            && let Some(first) = branches.first()
+            && let Some(selected) = preferred_projection_branch(branches)
         {
-            let merged = merge_schema_branches(schema, key, vec![first.clone()]);
+            let merged = merge_schema_branches(schema, key, vec![selected]);
             return minimal_value_for_schema(&merged);
         }
     }
@@ -383,6 +383,24 @@ fn minimal_value_for_schema(schema: &serde_json::Value) -> serde_json::Value {
         Some("null") => serde_json::Value::Null,
         _ => serde_json::Value::Null,
     }
+}
+
+fn preferred_projection_branch(branches: &[serde_json::Value]) -> Option<serde_json::Value> {
+    let fallback = branches.first()?.clone();
+
+    for branch in branches {
+        let normalized = if branch.get("allOf").is_some() {
+            merge_all_of_schema(branch)
+        } else {
+            branch.clone()
+        };
+
+        if matches!(projection_type_name(normalized.get("type")), Some("object")) {
+            return Some(branch.clone());
+        }
+    }
+
+    Some(fallback)
 }
 
 fn projection_type_name(type_value: Option<&serde_json::Value>) -> Option<&str> {
@@ -1118,6 +1136,52 @@ mod tests {
 
         let injected = inject_projected_work_unit(value, Some("wu-a"));
         assert_eq!(injected, json!({"work_unit":"wu-a"}));
+    }
+
+    #[test]
+    fn minimal_value_for_schema_prefers_object_branch_for_one_of_and_any_of_projection() {
+        for keyword in ["oneOf", "anyOf"] {
+            let mut schema = json!({
+                "type":"object",
+                "required":["work_unit"],
+                "properties":{
+                    "work_unit":{"type":"string"}
+                }
+            });
+            schema
+                .as_object_mut()
+                .expect("schema must be an object")
+                .insert(
+                    keyword.to_string(),
+                    json!([
+                        {
+                            "type":"string",
+                            "minLength":1
+                        },
+                        {
+                            "type":"object",
+                            "required":["title"],
+                            "properties":{
+                                "title":{"type":"string","minLength":1}
+                            }
+                        }
+                    ]),
+                );
+
+            let value = minimal_value_for_schema(&schema);
+            assert_eq!(value, json!({"title":"x","work_unit":""}));
+
+            let injected = inject_projected_work_unit(value, Some("wu-a"));
+            assert_eq!(injected, json!({"title":"x","work_unit":"wu-a"}));
+            validate_artifact(
+                &injected,
+                &ArtifactType {
+                    name: format!("preferred-object-{keyword}"),
+                    schema,
+                },
+            )
+            .unwrap();
+        }
     }
 
     #[test]
