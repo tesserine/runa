@@ -59,3 +59,6 @@ Semantic Versioning.
   reconciliations when those reconciliations changed relevant inputs, stop
   treating `may_produce` outputs as guaranteed in `run --dry-run`, and merge
   `allOf` output schemas before synthesizing projected artifacts.
+- Make `runa run` treat unresolved hard dependency cycles as blocked quiescence
+  instead of false success, and keep `run --dry-run --json` current-entry
+  contexts tied to real on-disk inputs instead of projected accepted artifacts.

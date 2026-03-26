@@ -327,6 +327,180 @@ trigger = { type = "on_artifact", name = "constraints" }
 }
 
 #[test]
+fn run_dry_run_with_cyclic_ready_work_returns_exit_3() {
+    let dir = tempfile::tempdir().unwrap();
+    let title_schema =
+        r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "seed-a"
+
+[[artifact_types]]
+name = "seed-b"
+
+[[artifact_types]]
+name = "a"
+
+[[artifact_types]]
+name = "b"
+
+[[protocols]]
+name = "first"
+requires = ["b"]
+produces = ["a"]
+trigger = { type = "on_artifact", name = "seed-a" }
+
+[[protocols]]
+name = "second"
+requires = ["a"]
+produces = ["b"]
+trigger = { type = "on_artifact", name = "seed-b" }
+"#,
+        &[
+            ("seed-a", title_schema),
+            ("seed-b", title_schema),
+            ("a", title_schema),
+            ("b", title_schema),
+        ],
+        &["first", "second"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("a")).unwrap();
+    fs::create_dir_all(workspace.join("b")).unwrap();
+    fs::create_dir_all(workspace.join("seed-a")).unwrap();
+    fs::create_dir_all(workspace.join("seed-b")).unwrap();
+    fs::write(workspace.join("a/current.json"), r#"{"title":"a"}"#).unwrap();
+    fs::write(workspace.join("b/current.json"), r#"{"title":"b"}"#).unwrap();
+    let first_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        first_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first_scan.stderr)
+    );
+    fs::write(workspace.join("seed-a/input.json"), r#"{"title":"seed-a"}"#).unwrap();
+    fs::write(workspace.join("seed-b/input.json"), r#"{"title":"seed-b"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["cycle"],
+        serde_json::json!(["first", "second"]),
+        "{value:#}"
+    );
+    assert_eq!(value["execution_plan"], serde_json::json!([]), "{value:#}");
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 2, "{value:#}");
+    assert_eq!(protocols[0]["name"], "first");
+    assert_eq!(protocols[0]["status"], "ready");
+    assert_eq!(protocols[1]["name"], "second");
+    assert_eq!(protocols[1]["status"], "ready");
+}
+
+#[test]
+fn run_with_cyclic_ready_work_returns_exit_3_without_agent_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let title_schema =
+        r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "seed-a"
+
+[[artifact_types]]
+name = "seed-b"
+
+[[artifact_types]]
+name = "a"
+
+[[artifact_types]]
+name = "b"
+
+[[protocols]]
+name = "first"
+requires = ["b"]
+produces = ["a"]
+trigger = { type = "on_artifact", name = "seed-a" }
+
+[[protocols]]
+name = "second"
+requires = ["a"]
+produces = ["b"]
+trigger = { type = "on_artifact", name = "seed-b" }
+"#,
+        &[
+            ("seed-a", title_schema),
+            ("seed-b", title_schema),
+            ("a", title_schema),
+            ("b", title_schema),
+        ],
+        &["first", "second"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("a")).unwrap();
+    fs::create_dir_all(workspace.join("b")).unwrap();
+    fs::create_dir_all(workspace.join("seed-a")).unwrap();
+    fs::create_dir_all(workspace.join("seed-b")).unwrap();
+    fs::write(workspace.join("a/current.json"), r#"{"title":"a"}"#).unwrap();
+    fs::write(workspace.join("b/current.json"), r#"{"title":"b"}"#).unwrap();
+    let first_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        first_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first_scan.stderr)
+    );
+    fs::write(workspace.join("seed-a/input.json"), r#"{"title":"seed-a"}"#).unwrap();
+    fs::write(workspace.join("seed-b/input.json"), r#"{"title":"seed-b"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Run outcome: quiescent_with_blocked_work"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
 fn run_dry_run_does_not_project_may_produce_outputs() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
@@ -403,6 +577,84 @@ trigger = { type = "on_artifact", name = "notes" }
     assert_eq!(execution_plan.len(), 1, "{value:#}");
     assert_eq!(execution_plan[0]["protocol"], "review");
     assert_eq!(execution_plan[0]["projection"], "current");
+}
+
+#[test]
+fn run_dry_run_json_current_entries_do_not_include_projected_accepted_inputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let title_schema =
+        r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#;
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "seed"
+
+[[artifact_types]]
+name = "notes"
+
+[[artifact_types]]
+name = "published"
+
+[[protocols]]
+name = "prepare"
+requires = ["seed"]
+produces = ["notes"]
+trigger = { type = "on_artifact", name = "seed" }
+
+[[protocols]]
+name = "publish"
+requires = ["seed"]
+accepts = ["notes"]
+produces = ["published"]
+trigger = { type = "on_artifact", name = "seed" }
+"#,
+        &[
+            ("seed", title_schema),
+            ("notes", title_schema),
+            ("published", bool_schema),
+        ],
+        &["prepare", "publish"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("seed")).unwrap();
+    fs::write(workspace.join("seed/input.json"), r#"{"title":"ship"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 2, "{value:#}");
+    assert_eq!(execution_plan[0]["protocol"], "prepare");
+    assert_eq!(execution_plan[0]["projection"], "current");
+    assert_eq!(execution_plan[1]["protocol"], "publish");
+    assert_eq!(execution_plan[1]["projection"], "current");
+    let inputs = execution_plan[1]["context"]["inputs"].as_array().unwrap();
+    assert_eq!(inputs.len(), 1, "{value:#}");
+    assert_eq!(inputs[0]["artifact_type"], "seed");
+    assert_eq!(inputs[0]["instance_id"], "input");
+    assert_eq!(
+        inputs[0]["display_path"],
+        serde_json::Value::String(workspace.join("seed/input.json").display().to_string())
+    );
+    assert_eq!(inputs[0]["relationship"], "requires");
 }
 
 #[test]

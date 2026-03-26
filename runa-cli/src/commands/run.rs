@@ -161,7 +161,8 @@ fn classify_outcome(
         return RunOutcome::QuiescentFailures;
     }
 
-    let has_blocked = !evaluated.blocked.is_empty()
+    let has_blocked = evaluated.cycle.is_some()
+        || !evaluated.blocked.is_empty()
         || evaluated.waiting.iter().any(|entry| {
             entry
                 .unsatisfied_conditions
@@ -195,11 +196,22 @@ fn build_run_json_plan(
         workspace_dir: loaded.workspace_dir.clone(),
     };
 
-    let initial_ready: HashSet<_> = execution_state
-        .planned_entries
-        .iter()
-        .map(|entry| candidate_key(&entry.protocol, entry.work_unit.as_deref()))
-        .collect();
+    let preview_command = preview_runa_mcp_command();
+    let concrete_entries: std::collections::HashMap<_, _> = build_plan_entries(
+        execution_state.planned_entries.clone(),
+        &preview_command,
+        working_dir,
+        config_path,
+    )
+    .into_iter()
+    .map(|entry| {
+        (
+            candidate_key(&entry.protocol, entry.work_unit.as_deref()),
+            entry,
+        )
+    })
+    .collect();
+    let initial_ready: HashSet<_> = concrete_entries.keys().cloned().collect();
     let protocol_map: std::collections::HashMap<&str, &libagent::ProtocolDeclaration> = shadow
         .manifest
         .protocols
@@ -216,7 +228,6 @@ fn build_run_json_plan(
         .max()
         .unwrap_or(0)
         + 1;
-    let preview_command = preview_runa_mcp_command();
     let inherited_scan = scan_result_with_inherited_gaps(initial_scan_result, Vec::new());
 
     loop {
@@ -235,22 +246,16 @@ fn build_run_json_plan(
         };
 
         if matches!(projection, ProjectionKind::Current) {
-            let concrete = build_plan_entries(
-                vec![next_entry.clone()],
-                &preview_command,
-                working_dir,
-                config_path,
-            )
-            .into_iter()
-            .next()
-            .expect("single planned entry must produce one plan entry");
+            let concrete = concrete_entries
+                .get(&key)
+                .expect("initially ready candidate must have a concrete plan entry");
             projected.push(RunPlanJson {
-                protocol: concrete.protocol,
-                work_unit: concrete.work_unit,
-                trigger: concrete.trigger,
+                protocol: concrete.protocol.clone(),
+                work_unit: concrete.work_unit.clone(),
+                trigger: concrete.trigger.clone(),
                 projection,
-                mcp_config: Some(concrete.mcp_config),
-                context: Some(concrete.context),
+                mcp_config: Some(concrete.mcp_config.clone()),
+                context: Some(concrete.context.clone()),
             });
         } else {
             projected.push(RunPlanJson {
