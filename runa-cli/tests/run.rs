@@ -751,6 +751,112 @@ trigger = { type = "on_artifact", name = "constrained" }
 }
 
 #[test]
+fn run_dry_run_projects_scoped_downstream_work_for_one_of_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let wu_title_schema = r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#;
+    let wu_bool_schema = r#"{"type":"object","required":["done","work_unit"],"properties":{"done":{"type":"boolean"},"work_unit":{"type":"string"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "input"
+
+[[artifact_types]]
+name = "constrained"
+
+[[artifact_types]]
+name = "verified"
+
+[[protocols]]
+name = "build"
+requires = ["input"]
+produces = ["constrained"]
+trigger = { type = "on_artifact", name = "input" }
+
+[[protocols]]
+name = "verify"
+requires = ["constrained"]
+produces = ["verified"]
+trigger = { type = "on_artifact", name = "constrained" }
+"#,
+        &[
+            ("input", wu_title_schema),
+            (
+                "constrained",
+                r#"{
+  "type":"object",
+  "required":["work_unit"],
+  "properties":{
+    "work_unit":{"type":"string"}
+  },
+  "oneOf":[
+    {
+      "required":["title"],
+      "properties":{
+        "title":{"type":"string","minLength":1}
+      }
+    },
+    {
+      "required":["priority"],
+      "properties":{
+        "priority":{"type":"integer","minimum":1}
+      }
+    }
+  ]
+}"#,
+            ),
+            ("verified", wu_bool_schema),
+        ],
+        &["build", "verify"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("input")).unwrap();
+    fs::write(
+        workspace.join("input/a.json"),
+        r#"{"title":"draft-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("input/b.json"),
+        r#"{"title":"draft-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 4, "{value:#}");
+    assert_eq!(execution_plan[0]["protocol"], "build");
+    assert_eq!(execution_plan[0]["work_unit"], "wu-a");
+    assert_eq!(execution_plan[0]["projection"], "current");
+    assert_eq!(execution_plan[1]["protocol"], "build");
+    assert_eq!(execution_plan[1]["work_unit"], "wu-b");
+    assert_eq!(execution_plan[1]["projection"], "current");
+    assert_eq!(execution_plan[2]["protocol"], "verify");
+    assert_eq!(execution_plan[2]["work_unit"], "wu-a");
+    assert_eq!(execution_plan[2]["projection"], "projected");
+    assert_eq!(execution_plan[3]["protocol"], "verify");
+    assert_eq!(execution_plan[3]["work_unit"], "wu-b");
+    assert_eq!(execution_plan[3]["projection"], "projected");
+}
+
+#[test]
 fn run_dry_run_projects_downstream_work_for_pattern_constrained_outputs() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
@@ -1152,6 +1258,92 @@ trigger = { type = "on_artifact", name = "constraints" }
         executed,
         "prepare:wu-a\nprepare:wu-b\nrevise:wu-b\nprepare:wu-b\n"
     );
+}
+
+#[test]
+fn run_dry_run_marks_reopened_initial_candidates_as_projected() {
+    let dir = tempfile::tempdir().unwrap();
+    let title_schema =
+        r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#;
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "draft"
+
+[[artifact_types]]
+name = "seed"
+
+[[artifact_types]]
+name = "notes"
+
+[[artifact_types]]
+name = "prepared"
+
+[[protocols]]
+name = "beta_collect"
+produces = ["notes"]
+trigger = { type = "on_artifact", name = "seed" }
+
+[[protocols]]
+name = "alpha_prepare"
+produces = ["prepared"]
+trigger = { type = "on_artifact", name = "draft" }
+
+[[protocols]]
+name = "gamma_revise"
+requires = ["notes"]
+produces = ["draft"]
+trigger = { type = "on_artifact", name = "notes" }
+"#,
+        &[
+            ("draft", title_schema),
+            ("seed", title_schema),
+            ("notes", title_schema),
+            ("prepared", bool_schema),
+        ],
+        &["beta_collect", "alpha_prepare", "gamma_revise"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("draft")).unwrap();
+    fs::create_dir_all(workspace.join("seed")).unwrap();
+    fs::write(workspace.join("draft/current.json"), r#"{"title":"draft"}"#).unwrap();
+    fs::write(workspace.join("seed/current.json"), r#"{"title":"seed"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 4, "{value:#}");
+    assert_eq!(execution_plan[0]["protocol"], "alpha_prepare");
+    assert_eq!(execution_plan[0]["projection"], "current");
+    assert!(execution_plan[0]["context"].is_object(), "{value:#}");
+    assert!(execution_plan[0]["mcp_config"].is_object(), "{value:#}");
+    assert_eq!(execution_plan[1]["protocol"], "beta_collect");
+    assert_eq!(execution_plan[1]["projection"], "current");
+    assert_eq!(execution_plan[2]["protocol"], "gamma_revise");
+    assert_eq!(execution_plan[2]["projection"], "projected");
+    assert_eq!(execution_plan[3]["protocol"], "alpha_prepare");
+    assert_eq!(execution_plan[3]["projection"], "projected");
+    assert!(execution_plan[3]["context"].is_null(), "{value:#}");
+    assert!(execution_plan[3]["mcp_config"].is_null(), "{value:#}");
 }
 
 #[cfg(unix)]

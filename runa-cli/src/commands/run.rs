@@ -219,6 +219,7 @@ fn build_run_json_plan(
         .map(|protocol| (protocol.name.as_str(), protocol))
         .collect();
     let mut exhausted = HashSet::new();
+    let mut emitted = HashSet::new();
     let mut projected = Vec::new();
     let mut timestamp_ms = shadow
         .manifest
@@ -239,7 +240,8 @@ fn build_run_json_plan(
         };
 
         let key = candidate_key(&next_entry.protocol, next_entry.work_unit.as_deref());
-        let projection = if initial_ready.contains(&key) {
+        let first_emission = emitted.insert(key.clone());
+        let projection = if initial_ready.contains(&key) && first_emission {
             ProjectionKind::Current
         } else {
             ProjectionKind::Projected
@@ -355,7 +357,8 @@ fn minimal_value_for_schema(
         if let Some(branches) = schema.get(key).and_then(serde_json::Value::as_array)
             && let Some(first) = branches.first()
         {
-            return minimal_value_for_schema(first, work_unit);
+            let merged = merge_schema_branches(schema, key, vec![first.clone()]);
+            return minimal_value_for_schema(&merged, work_unit);
         }
     }
 
@@ -378,13 +381,21 @@ enum LowerBound {
 }
 
 fn merge_all_of_schema(schema: &serde_json::Value) -> serde_json::Value {
-    let mut merged = schema.as_object().cloned().unwrap_or_default();
     let branches = schema
         .get("allOf")
         .and_then(serde_json::Value::as_array)
         .cloned()
         .unwrap_or_default();
-    merged.remove("allOf");
+    merge_schema_branches(schema, "allOf", branches)
+}
+
+fn merge_schema_branches(
+    schema: &serde_json::Value,
+    consumed_key: &str,
+    branches: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let mut merged = schema.as_object().cloned().unwrap_or_default();
+    merged.remove(consumed_key);
 
     let mut required: BTreeSet<String> = merged
         .get("required")
@@ -1069,5 +1080,50 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn minimal_value_for_schema_preserves_parent_constraints_for_one_of_and_any_of() {
+        for keyword in ["oneOf", "anyOf"] {
+            let mut schema = json!({
+                "type":"object",
+                "required":["work_unit"],
+                "properties":{
+                    "work_unit":{"type":"string"}
+                }
+            });
+            schema
+                .as_object_mut()
+                .expect("schema must be an object")
+                .insert(
+                    keyword.to_string(),
+                    json!([
+                        {
+                            "required":["title"],
+                            "properties":{
+                                "title":{"type":"string","minLength":1}
+                            }
+                        },
+                        {
+                            "required":["priority"],
+                            "properties":{
+                                "priority":{"type":"integer","minimum":1}
+                            }
+                        }
+                    ]),
+                );
+
+            let value = minimal_value_for_schema(&schema, Some("wu-a"));
+
+            assert_eq!(value, json!({"title":"x","work_unit":"wu-a"}));
+            validate_artifact(
+                &value,
+                &ArtifactType {
+                    name: format!("constrained-{keyword}"),
+                    schema,
+                },
+            )
+            .unwrap();
+        }
     }
 }

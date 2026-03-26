@@ -39,6 +39,10 @@ Semantic Versioning.
   its shadow store so downstream readiness no longer disappears when the
   synthetic value generator cannot satisfy constraints such as `pattern` or
   `minProperties` with `additionalProperties`.
+- Make `run --dry-run` preserve top-level sibling constraints when selecting
+  the first `oneOf`/`anyOf` branch during projected artifact synthesis, and
+  mark reopened initially-ready executions as projected reruns instead of
+  reusing stale concrete context.
 - Preserve exhausted live `runa step` candidates across unrelated workspace
   transitions by reopening previously executed work only when the changed
   artifact types overlap that protocol's required or trigger-referenced inputs.
