@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 
@@ -40,20 +40,14 @@ impl RunOutcome {
 #[derive(Debug)]
 pub enum RunError {
     Step(StepError),
-    Store(libagent::StoreError),
-    Graph(libagent::GraphError),
     Json(serde_json::Error),
-    TempDir(std::io::Error),
 }
 
 impl fmt::Display for RunError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RunError::Step(err) => write!(f, "{err}"),
-            RunError::Store(err) => write!(f, "{err}"),
-            RunError::Graph(err) => write!(f, "{err}"),
             RunError::Json(err) => write!(f, "{err}"),
-            RunError::TempDir(err) => write!(f, "{err}"),
         }
     }
 }
@@ -62,10 +56,7 @@ impl std::error::Error for RunError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             RunError::Step(err) => Some(err),
-            RunError::Store(err) => Some(err),
-            RunError::Graph(err) => Some(err),
             RunError::Json(err) => Some(err),
-            RunError::TempDir(err) => Some(err),
         }
     }
 }
@@ -181,21 +172,8 @@ fn build_run_json_plan(
     loaded: &crate::project::LoadedProject,
     working_dir: &Path,
     config_path: &Path,
-    initial_scan_result: &libagent::ScanResult,
     execution_state: &ExecutionState,
 ) -> Result<Vec<RunPlanJson>, RunError> {
-    let temp = tempfile::tempdir().map_err(RunError::TempDir)?;
-    let mut shadow = crate::project::LoadedProject {
-        manifest: loaded.manifest.clone(),
-        graph: libagent::DependencyGraph::build(&loaded.manifest.protocols)
-            .map_err(RunError::Graph)?,
-        store: loaded
-            .store
-            .fork(temp.path().join("store"))
-            .map_err(RunError::Store)?,
-        workspace_dir: loaded.workspace_dir.clone(),
-    };
-
     let preview_command = preview_runa_mcp_command();
     let concrete_entries: std::collections::HashMap<_, _> = build_plan_entries(
         execution_state.planned_entries.clone(),
@@ -211,577 +189,75 @@ fn build_run_json_plan(
         )
     })
     .collect();
-    let initial_ready: HashSet<_> = concrete_entries.keys().cloned().collect();
-    let protocol_map: std::collections::HashMap<&str, &libagent::ProtocolDeclaration> = shadow
+    let protocol_map: std::collections::HashMap<&str, &libagent::ProtocolDeclaration> = loaded
         .manifest
         .protocols
         .iter()
         .map(|protocol| (protocol.name.as_str(), protocol))
         .collect();
-    let mut exhausted = HashSet::new();
-    let mut emitted = HashSet::new();
-    let mut projected = Vec::new();
-    let mut timestamp_ms = shadow
-        .manifest
-        .artifact_types
+    let topological_order = match &execution_state.evaluated.cycle {
+        Some(cycle) => {
+            let cycle_participants: std::collections::HashSet<&str> =
+                cycle.path.iter().map(|name| name.as_str()).collect();
+            loaded
+                .graph
+                .topological_order_excluding(&cycle_participants)
+        }
+        None => loaded
+            .graph
+            .topological_order()
+            .expect("evaluated execution state must already have resolved cycle handling"),
+    };
+    let initial_ready: Vec<_> = execution_state
+        .planned_entries
         .iter()
-        .filter_map(|artifact| shadow.store.latest_modification_ms(&artifact.name, None))
-        .max()
-        .unwrap_or(0)
-        + 1;
-    let inherited_scan = scan_result_with_inherited_gaps(initial_scan_result, Vec::new());
+        .map(|entry| libagent::Candidate {
+            protocol_name: entry.protocol.clone(),
+            work_unit: entry.work_unit.clone(),
+        })
+        .collect();
 
-    loop {
-        let state = evaluate_execution_state(&shadow, working_dir, &inherited_scan);
-        let Some(next_entry) = state.planned_entries.into_iter().find(|entry| {
-            !exhausted.contains(&candidate_key(&entry.protocol, entry.work_unit.as_deref()))
-        }) else {
-            break;
-        };
+    Ok(libagent::project_cascade(
+        &loaded.manifest.protocols,
+        &loaded.store,
+        &topological_order,
+        &initial_ready,
+        &execution_state.scan_findings.affected_types,
+    )
+    .into_iter()
+    .map(|entry| {
+        let key = candidate_key(&entry.protocol_name, entry.work_unit.as_deref());
+        let trigger = protocol_map
+            .get(entry.protocol_name.as_str())
+            .expect("projected protocol must exist in manifest")
+            .trigger
+            .to_string();
 
-        let key = candidate_key(&next_entry.protocol, next_entry.work_unit.as_deref());
-        let first_emission = emitted.insert(key.clone());
-        let projection = if initial_ready.contains(&key) && first_emission {
-            ProjectionKind::Current
-        } else {
-            ProjectionKind::Projected
-        };
-
-        if matches!(projection, ProjectionKind::Current) {
-            let concrete = concrete_entries
-                .get(&key)
-                .expect("initially ready candidate must have a concrete plan entry");
-            projected.push(RunPlanJson {
-                protocol: concrete.protocol.clone(),
-                work_unit: concrete.work_unit.clone(),
-                trigger: concrete.trigger.clone(),
-                projection,
-                mcp_config: Some(concrete.mcp_config.clone()),
-                context: Some(concrete.context.clone()),
-            });
-        } else {
-            projected.push(RunPlanJson {
-                protocol: next_entry.protocol.clone(),
-                work_unit: next_entry.work_unit.clone(),
-                trigger: next_entry.trigger.clone(),
-                projection,
+        match entry.projection {
+            libagent::ProjectionClass::Current => {
+                let concrete = concrete_entries
+                    .get(&key)
+                    .expect("current projection candidate must have concrete plan entry");
+                RunPlanJson {
+                    protocol: concrete.protocol.clone(),
+                    work_unit: concrete.work_unit.clone(),
+                    trigger: concrete.trigger.clone(),
+                    projection: ProjectionKind::Current,
+                    mcp_config: Some(concrete.mcp_config.clone()),
+                    context: Some(concrete.context.clone()),
+                }
+            }
+            libagent::ProjectionClass::Projected => RunPlanJson {
+                protocol: entry.protocol_name,
+                work_unit: entry.work_unit,
+                trigger,
+                projection: ProjectionKind::Projected,
                 mcp_config: None,
                 context: None,
-            });
+            },
         }
-
-        exhausted.insert(key);
-
-        let protocol = protocol_map
-            .get(next_entry.protocol.as_str())
-            .expect("planned protocol must exist in manifest");
-        let mut modified = Vec::new();
-        for produced_type in &protocol.produces {
-            let artifact_type = shadow
-                .manifest
-                .artifact_types
-                .iter()
-                .find(|artifact| artifact.name == *produced_type)
-                .expect("produced artifact type must exist in manifest");
-            let value = inject_projected_work_unit(
-                minimal_artifact_value(artifact_type),
-                next_entry.work_unit.as_deref(),
-            );
-            let instance_id = format!(
-                "projected-{}-{}-{}",
-                protocol.name,
-                produced_type,
-                projected.len()
-            );
-            let path = temp
-                .path()
-                .join("workspace")
-                .join(produced_type)
-                .join(format!("{instance_id}.json"));
-            shadow
-                .store
-                .record_projected_with_timestamp(
-                    produced_type,
-                    &instance_id,
-                    &path,
-                    &value,
-                    timestamp_ms,
-                )
-                .map_err(RunError::Store)?;
-            modified.push(libagent::ArtifactRef {
-                artifact_type: produced_type.clone(),
-                instance_id,
-                path,
-                work_unit: next_entry.work_unit.clone(),
-            });
-            timestamp_ms += 1;
-        }
-
-        let projection_scan = scan_result_with_inherited_gaps(initial_scan_result, modified);
-        exhausted.retain(|candidate| {
-            let protocol = protocol_map
-                .get(candidate.protocol.as_str())
-                .expect("planned protocol must exist in manifest");
-            !libagent::protocol_relevant_inputs_changed(
-                protocol,
-                candidate.work_unit.as_deref(),
-                &projection_scan,
-            )
-        });
-    }
-
-    Ok(projected)
-}
-
-fn minimal_artifact_value(artifact_type: &libagent::ArtifactType) -> serde_json::Value {
-    minimal_value_for_schema(&artifact_type.schema)
-}
-
-fn inject_projected_work_unit(
-    mut value: serde_json::Value,
-    work_unit: Option<&str>,
-) -> serde_json::Value {
-    if let (serde_json::Value::Object(object), Some(work_unit)) = (&mut value, work_unit) {
-        object.insert(
-            "work_unit".to_string(),
-            serde_json::Value::String(work_unit.to_string()),
-        );
-    }
-
-    value
-}
-
-fn minimal_value_for_schema(schema: &serde_json::Value) -> serde_json::Value {
-    if let Some(constant) = schema.get("const") {
-        return constant.clone();
-    }
-    if let Some(values) = schema.get("enum").and_then(serde_json::Value::as_array)
-        && let Some(first) = values.first()
-    {
-        return first.clone();
-    }
-    if schema.get("allOf").is_some() {
-        let merged = merge_all_of_schema(schema);
-        return minimal_value_for_schema(&merged);
-    }
-    for key in ["oneOf", "anyOf"] {
-        if let Some(branches) = schema.get(key).and_then(serde_json::Value::as_array)
-            && let Some(selected) = preferred_projection_branch(branches)
-        {
-            let merged = merge_schema_branches(schema, key, vec![selected]);
-            return minimal_value_for_schema(&merged);
-        }
-    }
-
-    match projection_type_name(schema.get("type")) {
-        Some("object") => minimal_object_value(schema),
-        Some("array") => minimal_array_value(schema),
-        Some("string") => minimal_string_value(schema),
-        Some("integer") => minimal_integer_value(schema),
-        Some("number") => minimal_number_value(schema),
-        Some("boolean") => serde_json::Value::Bool(false),
-        Some("null") => serde_json::Value::Null,
-        _ => serde_json::Value::Null,
-    }
-}
-
-fn preferred_projection_branch(branches: &[serde_json::Value]) -> Option<serde_json::Value> {
-    let fallback = branches.first()?.clone();
-
-    for branch in branches {
-        let normalized = if branch.get("allOf").is_some() {
-            merge_all_of_schema(branch)
-        } else {
-            branch.clone()
-        };
-
-        if matches!(projection_type_name(normalized.get("type")), Some("object")) {
-            return Some(branch.clone());
-        }
-    }
-
-    Some(fallback)
-}
-
-fn projection_type_name(type_value: Option<&serde_json::Value>) -> Option<&str> {
-    match type_value {
-        Some(serde_json::Value::String(value)) => Some(value.as_str()),
-        Some(serde_json::Value::Array(values)) => {
-            let mut first_non_null = None;
-            let mut saw_null = false;
-
-            for value in values {
-                let Some(value) = value.as_str() else {
-                    continue;
-                };
-                if value == "object" {
-                    return Some("object");
-                }
-                if value == "null" {
-                    saw_null = true;
-                    continue;
-                }
-                if first_non_null.is_none() {
-                    first_non_null = Some(value);
-                }
-            }
-
-            first_non_null.or(saw_null.then_some("null"))
-        }
-        _ => None,
-    }
-}
-
-#[derive(Clone, Copy)]
-enum LowerBound {
-    Inclusive(f64),
-    Exclusive(f64),
-}
-
-fn merge_all_of_schema(schema: &serde_json::Value) -> serde_json::Value {
-    let branches = schema
-        .get("allOf")
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    merge_schema_branches(schema, "allOf", branches)
-}
-
-fn merge_schema_branches(
-    schema: &serde_json::Value,
-    consumed_key: &str,
-    branches: Vec<serde_json::Value>,
-) -> serde_json::Value {
-    let mut merged = schema.as_object().cloned().unwrap_or_default();
-    merged.remove(consumed_key);
-
-    let mut required: BTreeSet<String> = merged
-        .get("required")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .collect();
-    let mut properties = merged
-        .get("properties")
-        .and_then(serde_json::Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let mut explicit_types: Vec<String> = merged
-        .get("type")
-        .and_then(|value| projection_type_name(Some(value)))
-        .map(|value| vec![value.to_string()])
-        .unwrap_or_default();
-    let mut min_length = schema_keyword_u64(schema, "minLength");
-    let mut min_items = schema_keyword_u64(schema, "minItems");
-    let mut min_properties = schema_keyword_u64(schema, "minProperties");
-    let mut lower_bound = schema_lower_bound(schema);
-
-    for branch in branches {
-        let normalized = if branch.get("allOf").is_some() {
-            merge_all_of_schema(&branch)
-        } else {
-            branch
-        };
-
-        if let Some(values) = normalized
-            .get("required")
-            .and_then(serde_json::Value::as_array)
-        {
-            required.extend(
-                values
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .map(str::to_owned),
-            );
-        }
-        if let Some(branch_properties) = normalized
-            .get("properties")
-            .and_then(serde_json::Value::as_object)
-        {
-            for (name, property_schema) in branch_properties {
-                properties.insert(name.clone(), property_schema.clone());
-            }
-        }
-        if let Some(branch_type) = projection_type_name(normalized.get("type")) {
-            explicit_types.push(branch_type.to_string());
-        }
-
-        min_length = max_u64(min_length, schema_keyword_u64(&normalized, "minLength"));
-        min_items = max_u64(min_items, schema_keyword_u64(&normalized, "minItems"));
-        min_properties = max_u64(
-            min_properties,
-            schema_keyword_u64(&normalized, "minProperties"),
-        );
-        lower_bound = stricter_lower_bound(lower_bound, schema_lower_bound(&normalized));
-    }
-
-    if required.is_empty() {
-        merged.remove("required");
-    } else {
-        merged.insert(
-            "required".into(),
-            serde_json::Value::Array(
-                required
-                    .into_iter()
-                    .map(serde_json::Value::String)
-                    .collect(),
-            ),
-        );
-    }
-
-    if properties.is_empty() {
-        merged.remove("properties");
-    } else {
-        merged.insert("properties".into(), serde_json::Value::Object(properties));
-    }
-
-    match explicit_types.split_first().and_then(|(first, rest)| {
-        rest.iter()
-            .all(|candidate| candidate == first)
-            .then_some(first)
-    }) {
-        Some(value) => {
-            merged.insert("type".into(), serde_json::Value::String(value.clone()));
-        }
-        None => {
-            merged.remove("type");
-        }
-    }
-
-    set_optional_u64(&mut merged, "minLength", min_length);
-    set_optional_u64(&mut merged, "minItems", min_items);
-    set_optional_u64(&mut merged, "minProperties", min_properties);
-    set_lower_bound(&mut merged, lower_bound);
-
-    serde_json::Value::Object(merged)
-}
-
-fn schema_keyword_u64(schema: &serde_json::Value, key: &str) -> Option<u64> {
-    schema.get(key).and_then(serde_json::Value::as_u64)
-}
-
-fn max_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
-}
-
-fn schema_lower_bound(schema: &serde_json::Value) -> Option<LowerBound> {
-    stricter_lower_bound(
-        schema
-            .get("minimum")
-            .and_then(serde_json::Value::as_f64)
-            .map(LowerBound::Inclusive),
-        schema
-            .get("exclusiveMinimum")
-            .and_then(serde_json::Value::as_f64)
-            .map(LowerBound::Exclusive),
-    )
-}
-
-fn stricter_lower_bound(left: Option<LowerBound>, right: Option<LowerBound>) -> Option<LowerBound> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(match left.value().total_cmp(&right.value()) {
-            std::cmp::Ordering::Less => right,
-            std::cmp::Ordering::Greater => left,
-            std::cmp::Ordering::Equal => {
-                if left.is_exclusive() || !right.is_exclusive() {
-                    left
-                } else {
-                    right
-                }
-            }
-        }),
-        (Some(bound), None) | (None, Some(bound)) => Some(bound),
-        (None, None) => None,
-    }
-}
-
-impl LowerBound {
-    fn value(self) -> f64 {
-        match self {
-            LowerBound::Inclusive(value) | LowerBound::Exclusive(value) => value,
-        }
-    }
-
-    fn is_exclusive(self) -> bool {
-        matches!(self, LowerBound::Exclusive(_))
-    }
-}
-
-fn set_optional_u64(
-    map: &mut serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    value: Option<u64>,
-) {
-    match value {
-        Some(value) => {
-            map.insert(key.to_string(), serde_json::Value::Number(value.into()));
-        }
-        None => {
-            map.remove(key);
-        }
-    }
-}
-
-fn set_lower_bound(
-    map: &mut serde_json::Map<String, serde_json::Value>,
-    bound: Option<LowerBound>,
-) {
-    map.remove("minimum");
-    map.remove("exclusiveMinimum");
-
-    match bound {
-        Some(LowerBound::Inclusive(value)) => {
-            if let Some(number) = serde_json::Number::from_f64(value) {
-                map.insert("minimum".into(), serde_json::Value::Number(number));
-            }
-        }
-        Some(LowerBound::Exclusive(value)) => {
-            if let Some(number) = serde_json::Number::from_f64(value) {
-                map.insert("exclusiveMinimum".into(), serde_json::Value::Number(number));
-            }
-        }
-        None => {}
-    }
-}
-
-fn scan_result_with_inherited_gaps(
-    scan_result: &libagent::ScanResult,
-    modified: Vec<libagent::ArtifactRef>,
-) -> libagent::ScanResult {
-    libagent::ScanResult {
-        modified,
-        unreadable: scan_result.unreadable.clone(),
-        partially_scanned_types: scan_result.partially_scanned_types.clone(),
-        ..Default::default()
-    }
-}
-
-fn minimal_object_value(schema: &serde_json::Value) -> serde_json::Value {
-    let required: HashSet<&str> = schema
-        .get("required")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(serde_json::Value::as_str)
-        .collect();
-    let properties = schema
-        .get("properties")
-        .and_then(serde_json::Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let min_properties = schema
-        .get("minProperties")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as usize;
-    let mut property_names: Vec<_> = properties.keys().cloned().collect();
-    property_names.sort();
-
-    let mut object = serde_json::Map::new();
-    for name in &property_names {
-        let property_schema = properties
-            .get(name)
-            .expect("property names must resolve within the same object");
-
-        if required.contains(name.as_str()) {
-            object.insert(name.clone(), minimal_value_for_schema(property_schema));
-        }
-    }
-
-    for name in &property_names {
-        if object.len() >= min_properties || object.contains_key(name) {
-            continue;
-        }
-
-        let property_schema = properties
-            .get(name)
-            .expect("property names must resolve within the same object");
-        object.insert(name.clone(), minimal_value_for_schema(property_schema));
-    }
-
-    serde_json::Value::Object(object)
-}
-
-fn minimal_array_value(schema: &serde_json::Value) -> serde_json::Value {
-    let min_items = schema
-        .get("minItems")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as usize;
-    let prefix_items = schema
-        .get("prefixItems")
-        .and_then(serde_json::Value::as_array);
-    let items = schema.get("items");
-
-    let mut values = Vec::new();
-    while values.len() < min_items {
-        let index = values.len();
-        let item_schema = prefix_items
-            .and_then(|prefix_items| prefix_items.get(index))
-            .or(items);
-        values.push(
-            item_schema
-                .map(minimal_value_for_schema)
-                .unwrap_or(serde_json::Value::Null),
-        );
-    }
-
-    serde_json::Value::Array(values)
-}
-
-fn minimal_string_value(schema: &serde_json::Value) -> serde_json::Value {
-    let min_length = schema
-        .get("minLength")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as usize;
-    serde_json::Value::String("x".repeat(min_length))
-}
-
-fn minimal_integer_value(schema: &serde_json::Value) -> serde_json::Value {
-    let value = schema
-        .get("exclusiveMinimum")
-        .and_then(serde_json::Value::as_f64)
-        .map(|exclusive_minimum| exclusive_minimum.floor() as i64 + 1)
-        .or_else(|| {
-            schema
-                .get("minimum")
-                .and_then(serde_json::Value::as_f64)
-                .map(|minimum| minimum.ceil() as i64)
-        })
-        .unwrap_or(0);
-    serde_json::Value::Number(value.into())
-}
-
-fn minimal_number_value(schema: &serde_json::Value) -> serde_json::Value {
-    let value = schema
-        .get("exclusiveMinimum")
-        .and_then(serde_json::Value::as_f64)
-        .map(next_greater_f64)
-        .or_else(|| schema.get("minimum").and_then(serde_json::Value::as_f64))
-        .unwrap_or(0.0);
-    serde_json::Number::from_f64(value)
-        .map(serde_json::Value::Number)
-        .unwrap_or_else(|| serde_json::json!(0.0))
-}
-
-fn next_greater_f64(value: f64) -> f64 {
-    if !value.is_finite() {
-        return 0.0;
-    }
-    if value == 0.0 {
-        return f64::from_bits(1);
-    }
-
-    let bits = value.to_bits();
-    if value.is_sign_positive() {
-        f64::from_bits(bits + 1)
-    } else {
-        f64::from_bits(bits - 1)
-    }
+    })
+    .collect())
 }
 
 enum ReconcileOutcome {
@@ -884,13 +360,8 @@ pub fn run(
         .map_err(RunError::from)?;
 
     if dry_run {
-        let execution_plan = build_run_json_plan(
-            &loaded,
-            working_dir,
-            &config_path,
-            &scan_result,
-            &initial_state,
-        )?;
+        let execution_plan =
+            build_run_json_plan(&loaded, working_dir, &config_path, &initial_state)?;
 
         if json_output {
             let payload = RunJson {
@@ -1023,242 +494,6 @@ pub fn run(
                     refresh_state_after_scan(&loaded, working_dir, &mut exhausted, &scan_result);
             }
             Err(err) => return Err(RunError::from(err)),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{inject_projected_work_unit, minimal_value_for_schema};
-    use libagent::{ArtifactType, validation::validate_artifact};
-    use serde_json::json;
-
-    #[test]
-    fn minimal_value_for_schema_satisfies_string_min_length() {
-        let value = minimal_value_for_schema(&json!({"type":"string","minLength":3}));
-
-        assert_eq!(value, json!("xxx"));
-    }
-
-    #[test]
-    fn minimal_value_for_schema_satisfies_numeric_lower_bounds() {
-        let integer = minimal_value_for_schema(&json!({"type":"integer","minimum":2}));
-        let number = minimal_value_for_schema(&json!({"type":"number","exclusiveMinimum":1.5}));
-
-        assert_eq!(integer, json!(2));
-        assert!(number.as_f64().unwrap() > 1.5, "{number}");
-    }
-
-    #[test]
-    fn minimal_value_for_schema_satisfies_min_items_with_constrained_items() {
-        let value = minimal_value_for_schema(&json!({
-            "type":"array",
-            "minItems":2,
-            "items":{"type":"string","minLength":1}
-        }));
-
-        assert_eq!(value, json!(["x", "x"]));
-    }
-
-    #[test]
-    fn minimal_value_for_schema_satisfies_min_properties() {
-        let value = minimal_value_for_schema(&json!({
-            "type":"object",
-            "required":["title"],
-            "minProperties":3,
-            "properties":{
-                "title":{"type":"string","minLength":1},
-                "priority":{"type":"integer","minimum":1},
-                "tags":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}
-            },
-            "additionalProperties":false
-        }));
-
-        assert_eq!(
-            value,
-            json!({
-                "priority": 1,
-                "tags": ["x"],
-                "title": "x"
-            })
-        );
-    }
-
-    #[test]
-    fn minimal_value_for_schema_merges_all_of_branches_before_synthesis() {
-        let schema = json!({
-            "type":"object",
-            "allOf":[
-                {
-                    "required":["title"],
-                    "properties":{
-                        "title":{"type":"string","minLength":1}
-                    }
-                },
-                {
-                    "required":["priority"],
-                    "properties":{
-                        "priority":{"type":"integer","minimum":1}
-                    }
-                },
-                {
-                    "required":["tags"],
-                    "properties":{
-                        "tags":{"type":"array","minItems":2,"items":{"type":"string","minLength":1}}
-                    }
-                }
-            ]
-        });
-        let value = minimal_value_for_schema(&schema);
-
-        validate_artifact(
-            &value,
-            &ArtifactType {
-                name: "constrained".into(),
-                schema,
-            },
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn minimal_value_for_schema_prefers_object_member_of_type_union_for_projection() {
-        let schema = json!({
-            "type":["object","null"],
-            "required":["work_unit"],
-            "properties":{
-                "work_unit":{"type":"string"}
-            }
-        });
-
-        let value = minimal_value_for_schema(&schema);
-        assert!(value.is_object(), "{value}");
-
-        let injected = inject_projected_work_unit(value, Some("wu-a"));
-        assert_eq!(injected, json!({"work_unit":"wu-a"}));
-    }
-
-    #[test]
-    fn minimal_value_for_schema_prefers_object_branch_for_one_of_and_any_of_projection() {
-        for keyword in ["oneOf", "anyOf"] {
-            let mut schema = json!({
-                "type":"object",
-                "required":["work_unit"],
-                "properties":{
-                    "work_unit":{"type":"string"}
-                }
-            });
-            schema
-                .as_object_mut()
-                .expect("schema must be an object")
-                .insert(
-                    keyword.to_string(),
-                    json!([
-                        {
-                            "type":"string",
-                            "minLength":1
-                        },
-                        {
-                            "type":"object",
-                            "required":["title"],
-                            "properties":{
-                                "title":{"type":"string","minLength":1}
-                            }
-                        }
-                    ]),
-                );
-
-            let value = minimal_value_for_schema(&schema);
-            assert_eq!(value, json!({"title":"x","work_unit":""}));
-
-            let injected = inject_projected_work_unit(value, Some("wu-a"));
-            assert_eq!(injected, json!({"title":"x","work_unit":"wu-a"}));
-            validate_artifact(
-                &injected,
-                &ArtifactType {
-                    name: format!("preferred-object-{keyword}"),
-                    schema,
-                },
-            )
-            .unwrap();
-        }
-    }
-
-    #[test]
-    fn minimal_value_for_schema_keeps_parent_constraints_without_injecting_work_unit() {
-        for keyword in ["oneOf", "anyOf"] {
-            let mut schema = json!({
-                "type":["object","null"],
-                "required":["work_unit"],
-                "additionalProperties":{"type":"string","minLength":1}
-            });
-            schema
-                .as_object_mut()
-                .expect("schema must be an object")
-                .insert(
-                    keyword.to_string(),
-                    json!([
-                        {
-                            "required":["title"],
-                            "properties":{
-                                "title":{"type":"string","minLength":1}
-                            }
-                        },
-                        {
-                            "required":["priority"],
-                            "properties":{
-                                "priority":{"type":"integer","minimum":1}
-                            }
-                        }
-                    ]),
-                );
-
-            let value = minimal_value_for_schema(&schema);
-
-            assert_eq!(value, json!({"title":"x"}));
-        }
-    }
-
-    #[test]
-    fn projection_injects_work_unit_for_one_of_and_any_of_parent_constraints() {
-        for keyword in ["oneOf", "anyOf"] {
-            let mut schema = json!({
-                "type":["object","null"],
-                "required":["work_unit"],
-                "additionalProperties":{"type":"string","minLength":1}
-            });
-            schema
-                .as_object_mut()
-                .expect("schema must be an object")
-                .insert(
-                    keyword.to_string(),
-                    json!([
-                        {
-                            "required":["title"],
-                            "properties":{
-                                "title":{"type":"string","minLength":1}
-                            }
-                        },
-                        {
-                            "required":["priority"],
-                            "properties":{
-                                "priority":{"type":"integer","minimum":1}
-                            }
-                        }
-                    ]),
-                );
-
-            let value = inject_projected_work_unit(minimal_value_for_schema(&schema), Some("wu-a"));
-
-            assert_eq!(value, json!({"title":"x","work_unit":"wu-a"}));
-            validate_artifact(
-                &value,
-                &ArtifactType {
-                    name: format!("constrained-{keyword}"),
-                    schema,
-                },
-            )
-            .unwrap();
         }
     }
 }

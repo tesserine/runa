@@ -32,17 +32,13 @@ Semantic Versioning.
 - Simplify `runa-mcp` into a pure tool server with required `--protocol` and
   optional `--work-unit` arguments, removing workspace scanning, candidate
   selection, and shutdown postcondition checks from the MCP process.
+- Replace `run --dry-run`'s schema-synthesis shadow-store simulation with a
+  graph-based projection that derives downstream execution entirely from
+  manifest topology, current evaluated work-unit state, and assumed-success
+  `produces` outputs.
 
 ### Fixed
 
-- Make `run --dry-run` treat projected `produces` artifacts as assumed-valid in
-  its shadow store so downstream readiness no longer disappears when the
-  synthetic value generator cannot satisfy constraints such as `pattern` or
-  `minProperties` with `additionalProperties`.
-- Make `run --dry-run` preserve top-level sibling constraints when selecting
-  the first `oneOf`/`anyOf` branch during projected artifact synthesis, and
-  mark reopened initially-ready executions as projected reruns instead of
-  reusing stale concrete context.
 - Preserve exhausted live `runa step` candidates across unrelated workspace
   transitions by reopening previously executed work only when the changed
   artifact types overlap that protocol's required or trigger-referenced inputs.
@@ -65,9 +61,8 @@ Semantic Versioning.
   `runa-mcp` binary and falls back to `PATH` for split-install layouts.
 - Make `runa run` reopen exhausted work after postcondition-failing
   reconciliations or agent-failing reconciliations that still emitted usable
-  artifacts when those reconciliations changed relevant inputs, stop treating
-  `may_produce` outputs as guaranteed in `run --dry-run`, and merge `allOf`
-  output schemas before synthesizing projected artifacts.
+  artifacts when those reconciliations changed relevant inputs, and stop
+  treating `may_produce` outputs as guaranteed in `run --dry-run`.
 - Make `runa run` treat unresolved hard dependency cycles as blocked quiescence
   instead of false success, and keep `run --dry-run --json` current-entry
   contexts tied to real on-disk inputs instead of projected accepted artifacts.
