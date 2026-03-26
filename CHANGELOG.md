@@ -39,6 +39,7 @@ Semantic Versioning.
 
 ### Fixed
 
+- Restore `runa run`'s double-`Ctrl-C` escape hatch: the first interrupt remains a graceful boundary-scoped stop, and the second forces immediate exit with status `130`.
 - Preserve exhausted live `runa step` candidates across unrelated workspace
   transitions by reopening previously executed work only when the changed
   artifact types overlap that protocol's required or trigger-referenced inputs.

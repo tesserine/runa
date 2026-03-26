@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
+use std::process;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -88,7 +89,9 @@ impl InterruptState {
         let requested = Arc::new(AtomicBool::new(false));
         let handler_requested = Arc::clone(&requested);
         ctrlc::set_handler(move || {
-            handler_requested.store(true, Ordering::SeqCst);
+            if handler_requested.swap(true, Ordering::SeqCst) {
+                process::exit(130);
+            }
         })
         .map_err(RunError::InterruptHandler)?;
 
