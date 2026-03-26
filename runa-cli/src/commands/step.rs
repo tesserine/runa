@@ -23,6 +23,10 @@ pub enum StepError {
     Json(serde_json::Error),
     AgentCommandNotConfigured,
     JsonRequiresDryRun,
+    UnsupportedPlatform {
+        command: &'static str,
+        current_os: &'static str,
+    },
     McpBinaryNotFound {
         binary_name: String,
         sibling_path: Option<PathBuf>,
@@ -62,6 +66,13 @@ impl fmt::Display for StepError {
             StepError::JsonRequiresDryRun => {
                 write!(f, "--json is only supported with --dry-run")
             }
+            StepError::UnsupportedPlatform {
+                command,
+                current_os,
+            } => write!(
+                f,
+                "live command '{command}' is unsupported on {current_os}; runa targets Linux"
+            ),
             StepError::McpBinaryNotFound {
                 binary_name,
                 sibling_path,
@@ -138,6 +149,7 @@ impl std::error::Error for StepError {
             StepError::Json(err) => Some(err),
             StepError::AgentCommandNotConfigured => None,
             StepError::JsonRequiresDryRun => None,
+            StepError::UnsupportedPlatform { .. } => None,
             StepError::McpBinaryNotFound { .. } => None,
             StepError::AgentCommandIo { source, .. } => Some(source),
             StepError::AgentCommandFailed { .. } => None,
@@ -211,6 +223,24 @@ pub(crate) struct ExecutionState {
     pub(crate) scan_findings: protocol_eval::ScanFindings,
     pub(crate) evaluated: protocol_eval::EvaluatedProtocols,
     pub(crate) planned_entries: Vec<PlannedEntry>,
+}
+
+pub(crate) fn ensure_live_execution_supported(command: &'static str) -> Result<(), StepError> {
+    ensure_live_execution_supported_for(command, std::env::consts::OS)
+}
+
+fn ensure_live_execution_supported_for(
+    command: &'static str,
+    current_os: &'static str,
+) -> Result<(), StepError> {
+    if current_os == "linux" {
+        Ok(())
+    } else {
+        Err(StepError::UnsupportedPlatform {
+            command,
+            current_os,
+        })
+    }
 }
 
 fn serialize_context<S>(context: &ContextInjection, serializer: S) -> Result<S::Ok, S::Error>
@@ -487,6 +517,9 @@ fn run_internal(
 ) -> Result<(), StepError> {
     if !dry_run && json_output {
         return Err(StepError::JsonRequiresDryRun);
+    }
+    if !dry_run {
+        ensure_live_execution_supported("step")?;
     }
 
     let (mut loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
@@ -1010,5 +1043,26 @@ mod tests {
 
         assert_eq!(lookup.sibling_path, None);
         assert_eq!(lookup.resolved_path, Some(second_candidate));
+    }
+
+    #[test]
+    fn live_execution_platform_policy_accepts_linux() {
+        assert!(ensure_live_execution_supported_for("step", "linux").is_ok());
+        assert!(ensure_live_execution_supported_for("run", "linux").is_ok());
+    }
+
+    #[test]
+    fn live_execution_platform_policy_rejects_non_linux_platforms() {
+        let step_error = ensure_live_execution_supported_for("step", "macos").unwrap_err();
+        assert_eq!(
+            step_error.to_string(),
+            "live command 'step' is unsupported on macos; runa targets Linux"
+        );
+
+        let run_error = ensure_live_execution_supported_for("run", "windows").unwrap_err();
+        assert_eq!(
+            run_error.to_string(),
+            "live command 'run' is unsupported on windows; runa targets Linux"
+        );
     }
 }
