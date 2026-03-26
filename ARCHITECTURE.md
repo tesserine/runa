@@ -28,7 +28,7 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 7. **Tracing bootstrap.** Both binaries bootstrap tracing with env/default settings before any config lookup, then reconfigure the shared subscriber from `config.toml` when logging settings are available. Tracing events always go to stderr; operator-facing command output stays on stdout.
 
-8. **CLI execution commands.** `runa step` and `runa run` share the same readiness evaluation, plan construction, prompt rendering, and MCP config wiring. `step --dry-run` previews only the next concrete execution, while `run --dry-run` projects the full optimistic cascade to quiescence. Live `step` executes exactly one ready candidate, then re-scans and prints the refreshed state. Live `run` repeats the execute → scan → enforce → re-evaluate cycle until quiescence, tolerates per-protocol agent and postcondition failures for the remainder of that invocation, and exits with outcome-specific status codes.
+8. **CLI execution commands.** `runa step` and `runa run` share the same readiness evaluation, plan construction, prompt rendering, and MCP config wiring. `step --dry-run` previews only the next concrete execution, while `run --dry-run` projects the full optimistic cascade to quiescence from declared `produces` outputs only; optional `may_produce` outputs do not advance the projection unless they already exist. Live `step` executes exactly one ready candidate, then re-scans and prints the refreshed state. Live `run` repeats the execute → scan → enforce → re-evaluate cycle until quiescence, tolerates per-protocol agent and postcondition failures for the remainder of that invocation, reopens exhausted work when a later reconciliation changes relevant inputs, and exits with outcome-specific status codes.
 
 9. **MCP runtime loop.** `runa-mcp` parses `--protocol` and optional `--work-unit`, loads the project, resolves the named protocol from the manifest, validates that its outputs can be served as MCP tools, and serves an MCP session via stdio.
 
@@ -169,7 +169,7 @@ Without `--dry-run`, `step` requires `[agent].command` in config. It rejects `--
 
 Runs the same implicit scan and shared candidate classification as `step`, but keeps selecting work until quiescence instead of stopping after one execution. `run --dry-run` projects the optimistic cascade by simulating successful required outputs from each planned execution; current concrete entries retain MCP config and full context, while downstream projected entries are marked projected and omit filesystem-backed context details.
 
-Without `--dry-run`, `run` exits `0` when the topology is fully satisfied, `2` when any protocol failed or violated postconditions during the invocation, and `3` when work remains blocked or waiting on external input after all runnable work is exhausted. It skips failed candidates for the rest of that invocation while still allowing successful candidates to reopen if later relevant inputs change.
+Without `--dry-run`, `run` exits `0` when the topology is fully satisfied, `2` when any protocol failed or violated postconditions during the invocation, and `3` when work remains blocked or waiting on external input after all runnable work is exhausted. It skips failed candidates for the rest of that invocation while still allowing successful executions and postcondition-failing reconciliations to reopen exhausted candidates when later relevant inputs change.
 
 ## Key Design Patterns
 

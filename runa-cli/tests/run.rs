@@ -81,6 +81,20 @@ fn write_scoped_prepare_then_revise_agent(dir: &Path) -> PathBuf {
 }
 
 #[cfg(unix)]
+fn write_scoped_prepare_then_failed_revise_agent(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("scoped-prepare-then-failed-revise-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nlog_file=\"$1\"\npayload=$(cat)\ncase \"$payload\" in\n  *\"# Protocol: prepare (work_unit=wu-a)\"*)\n    printf 'prepare:wu-a\\n' >> \"$log_file\"\n    ;;\n  *\"# Protocol: prepare (work_unit=wu-b)\"*)\n    printf 'prepare:wu-b\\n' >> \"$log_file\"\n    ;;\n  *\"# Protocol: revise (work_unit=wu-b)\"*)\n    printf 'revise:wu-b\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/constraints\n    printf '%s\\n' '{\"title\":\"updated-b\",\"work_unit\":\"wu-b\"}' > .runa/workspace/constraints/b.json\n    ;;\n  *)\n    printf '%s\\n' \"$payload\" > \"$log_file.unexpected\"\n    exit 19\n    ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+#[cfg(unix)]
 fn write_fail_first_then_continue_agent(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -313,7 +327,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 }
 
 #[test]
-fn run_dry_run_projects_may_produce_outputs() {
+fn run_dry_run_does_not_project_may_produce_outputs() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
@@ -386,15 +400,13 @@ trigger = { type = "on_artifact", name = "notes" }
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let execution_plan = value["execution_plan"].as_array().unwrap();
-    assert_eq!(execution_plan.len(), 2, "{value:#}");
+    assert_eq!(execution_plan.len(), 1, "{value:#}");
     assert_eq!(execution_plan[0]["protocol"], "review");
     assert_eq!(execution_plan[0]["projection"], "current");
-    assert_eq!(execution_plan[1]["protocol"], "publish");
-    assert_eq!(execution_plan[1]["projection"], "projected");
 }
 
 #[test]
-fn run_dry_run_projects_schema_valid_artifacts_for_constrained_outputs() {
+fn run_dry_run_projects_schema_valid_artifacts_for_all_of_outputs() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
@@ -431,14 +443,26 @@ trigger = { type = "on_artifact", name = "constrained" }
                 "constrained",
                 r#"{
   "type":"object",
-  "required":["title"],
-  "minProperties":3,
-  "properties":{
-    "title":{"type":"string","minLength":1},
-    "priority":{"type":"integer","minimum":1},
-    "tags":{"type":"array","minItems":2,"items":{"type":"string","minLength":1}}
-  },
-  "additionalProperties":false
+  "allOf":[
+    {
+      "required":["title"],
+      "properties":{
+        "title":{"type":"string","minLength":1}
+      }
+    },
+    {
+      "required":["priority"],
+      "properties":{
+        "priority":{"type":"integer","minimum":1}
+      }
+    },
+    {
+      "required":["tags"],
+      "properties":{
+        "tags":{"type":"array","minItems":2,"items":{"type":"string","minLength":1}}
+      }
+    }
+  ]
 }"#,
             ),
             (
@@ -720,6 +744,98 @@ trigger = { type = "on_artifact", name = "constraints" }
         executed,
         "prepare:wu-a\nprepare:wu-b\nrevise:wu-b\nprepare:wu-b\n"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_without_dry_run_reopens_exhausted_work_after_postcondition_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let wu_schema = r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#;
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "seed"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "revise"
+requires = ["seed"]
+produces = ["constraints", "implementation"]
+trigger = { type = "on_artifact", name = "seed" }
+
+[[protocols]]
+name = "prepare"
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            ("constraints", wu_schema),
+            ("seed", wu_schema),
+            ("implementation", bool_schema),
+        ],
+        &["revise", "prepare"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("seed")).unwrap();
+    fs::write(
+        workspace.join("constraints/a.json"),
+        r#"{"title":"draft-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("constraints/b.json"),
+        r#"{"title":"draft-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+    let first_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        first_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first_scan.stderr)
+    );
+    fs::write(
+        workspace.join("seed/b.json"),
+        r#"{"title":"seed-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_scoped_prepare_then_failed_revise_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = runa_bin()
+        .arg("run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+
+    let executed = fs::read_to_string(&log_path).unwrap();
+    assert_eq!(
+        executed,
+        "prepare:wu-a\nprepare:wu-b\nrevise:wu-b\nprepare:wu-b\n"
+    );
+    assert!(!workspace.join("implementation/out.json").exists());
 }
 
 #[cfg(unix)]

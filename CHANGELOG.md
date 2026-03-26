@@ -55,3 +55,7 @@ Semantic Versioning.
 - Restore `runa step` MCP discovery so `--dry-run` remains a planning-only
   preview when `runa-mcp` is absent, while live execution prefers a sibling
   `runa-mcp` binary and falls back to `PATH` for split-install layouts.
+- Make `runa run` reopen exhausted work after postcondition-failing
+  reconciliations when those reconciliations changed relevant inputs, stop
+  treating `may_produce` outputs as guaranteed in `run --dry-run`, and merge
+  `allOf` output schemas before synthesizing projected artifacts.

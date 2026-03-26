@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::path::Path;
 
@@ -269,7 +269,7 @@ fn build_run_json_plan(
             .get(next_entry.protocol.as_str())
             .expect("planned protocol must exist in manifest");
         let mut modified = Vec::new();
-        for produced_type in protocol.produces.iter().chain(protocol.may_produce.iter()) {
+        for produced_type in &protocol.produces {
             let artifact_type = shadow
                 .manifest
                 .artifact_types
@@ -336,7 +336,11 @@ fn minimal_value_for_schema(
     {
         return first.clone();
     }
-    for key in ["oneOf", "anyOf", "allOf"] {
+    if schema.get("allOf").is_some() {
+        let merged = merge_all_of_schema(schema);
+        return minimal_value_for_schema(&merged, work_unit);
+    }
+    for key in ["oneOf", "anyOf"] {
         if let Some(branches) = schema.get(key).and_then(serde_json::Value::as_array)
             && let Some(first) = branches.first()
         {
@@ -353,6 +357,216 @@ fn minimal_value_for_schema(
         Some("boolean") => serde_json::Value::Bool(false),
         Some("null") => serde_json::Value::Null,
         _ => serde_json::Value::Null,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LowerBound {
+    Inclusive(f64),
+    Exclusive(f64),
+}
+
+fn merge_all_of_schema(schema: &serde_json::Value) -> serde_json::Value {
+    let mut merged = schema.as_object().cloned().unwrap_or_default();
+    let branches = schema
+        .get("allOf")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    merged.remove("allOf");
+
+    let mut required: BTreeSet<String> = merged
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    let mut properties = merged
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut explicit_types: Vec<String> = merged
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .map(|value| vec![value.to_string()])
+        .unwrap_or_default();
+    let mut min_length = schema_keyword_u64(schema, "minLength");
+    let mut min_items = schema_keyword_u64(schema, "minItems");
+    let mut min_properties = schema_keyword_u64(schema, "minProperties");
+    let mut lower_bound = schema_lower_bound(schema);
+
+    for branch in branches {
+        let normalized = if branch.get("allOf").is_some() {
+            merge_all_of_schema(&branch)
+        } else {
+            branch
+        };
+
+        if let Some(values) = normalized
+            .get("required")
+            .and_then(serde_json::Value::as_array)
+        {
+            required.extend(
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            );
+        }
+        if let Some(branch_properties) = normalized
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        {
+            for (name, property_schema) in branch_properties {
+                properties.insert(name.clone(), property_schema.clone());
+            }
+        }
+        if let Some(branch_type) = normalized.get("type").and_then(serde_json::Value::as_str) {
+            explicit_types.push(branch_type.to_string());
+        }
+
+        min_length = max_u64(min_length, schema_keyword_u64(&normalized, "minLength"));
+        min_items = max_u64(min_items, schema_keyword_u64(&normalized, "minItems"));
+        min_properties = max_u64(
+            min_properties,
+            schema_keyword_u64(&normalized, "minProperties"),
+        );
+        lower_bound = stricter_lower_bound(lower_bound, schema_lower_bound(&normalized));
+    }
+
+    if required.is_empty() {
+        merged.remove("required");
+    } else {
+        merged.insert(
+            "required".into(),
+            serde_json::Value::Array(
+                required
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+    }
+
+    if properties.is_empty() {
+        merged.remove("properties");
+    } else {
+        merged.insert("properties".into(), serde_json::Value::Object(properties));
+    }
+
+    match explicit_types.split_first().and_then(|(first, rest)| {
+        rest.iter()
+            .all(|candidate| candidate == first)
+            .then_some(first)
+    }) {
+        Some(value) => {
+            merged.insert("type".into(), serde_json::Value::String(value.clone()));
+        }
+        None => {
+            merged.remove("type");
+        }
+    }
+
+    set_optional_u64(&mut merged, "minLength", min_length);
+    set_optional_u64(&mut merged, "minItems", min_items);
+    set_optional_u64(&mut merged, "minProperties", min_properties);
+    set_lower_bound(&mut merged, lower_bound);
+
+    serde_json::Value::Object(merged)
+}
+
+fn schema_keyword_u64(schema: &serde_json::Value, key: &str) -> Option<u64> {
+    schema.get(key).and_then(serde_json::Value::as_u64)
+}
+
+fn max_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn schema_lower_bound(schema: &serde_json::Value) -> Option<LowerBound> {
+    stricter_lower_bound(
+        schema
+            .get("minimum")
+            .and_then(serde_json::Value::as_f64)
+            .map(LowerBound::Inclusive),
+        schema
+            .get("exclusiveMinimum")
+            .and_then(serde_json::Value::as_f64)
+            .map(LowerBound::Exclusive),
+    )
+}
+
+fn stricter_lower_bound(left: Option<LowerBound>, right: Option<LowerBound>) -> Option<LowerBound> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(match left.value().total_cmp(&right.value()) {
+            std::cmp::Ordering::Less => right,
+            std::cmp::Ordering::Greater => left,
+            std::cmp::Ordering::Equal => {
+                if left.is_exclusive() || !right.is_exclusive() {
+                    left
+                } else {
+                    right
+                }
+            }
+        }),
+        (Some(bound), None) | (None, Some(bound)) => Some(bound),
+        (None, None) => None,
+    }
+}
+
+impl LowerBound {
+    fn value(self) -> f64 {
+        match self {
+            LowerBound::Inclusive(value) | LowerBound::Exclusive(value) => value,
+        }
+    }
+
+    fn is_exclusive(self) -> bool {
+        matches!(self, LowerBound::Exclusive(_))
+    }
+}
+
+fn set_optional_u64(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<u64>,
+) {
+    match value {
+        Some(value) => {
+            map.insert(key.to_string(), serde_json::Value::Number(value.into()));
+        }
+        None => {
+            map.remove(key);
+        }
+    }
+}
+
+fn set_lower_bound(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    bound: Option<LowerBound>,
+) {
+    map.remove("minimum");
+    map.remove("exclusiveMinimum");
+
+    match bound {
+        Some(LowerBound::Inclusive(value)) => {
+            if let Some(number) = serde_json::Number::from_f64(value) {
+                map.insert("minimum".into(), serde_json::Value::Number(number));
+            }
+        }
+        Some(LowerBound::Exclusive(value)) => {
+            if let Some(number) = serde_json::Number::from_f64(value) {
+                map.insert("exclusiveMinimum".into(), serde_json::Value::Number(number));
+            }
+        }
+        None => {}
     }
 }
 
@@ -723,6 +937,19 @@ pub fn run(
             Ok(ReconcileOutcome::PostconditionFailure { scan_result }) => {
                 failed.insert(key);
                 state = evaluate_execution_state(&loaded, working_dir, &scan_result);
+                exhausted.retain(|candidate| {
+                    let protocol = loaded
+                        .manifest
+                        .protocols
+                        .iter()
+                        .find(|protocol| protocol.name == candidate.protocol)
+                        .expect("planned protocol must exist in manifest");
+                    !libagent::protocol_relevant_inputs_changed(
+                        protocol,
+                        candidate.work_unit.as_deref(),
+                        &scan_result,
+                    )
+                });
             }
             Err(StepError::AgentCommandFailed { .. }) => {
                 failed.insert(key);
@@ -735,6 +962,7 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::minimal_value_for_schema;
+    use libagent::{ArtifactType, validation::validate_artifact};
     use serde_json::json;
 
     #[test]
@@ -793,5 +1021,42 @@ mod tests {
                 "title": "x"
             })
         );
+    }
+
+    #[test]
+    fn minimal_value_for_schema_merges_all_of_branches_before_synthesis() {
+        let schema = json!({
+            "type":"object",
+            "allOf":[
+                {
+                    "required":["title"],
+                    "properties":{
+                        "title":{"type":"string","minLength":1}
+                    }
+                },
+                {
+                    "required":["priority"],
+                    "properties":{
+                        "priority":{"type":"integer","minimum":1}
+                    }
+                },
+                {
+                    "required":["tags"],
+                    "properties":{
+                        "tags":{"type":"array","minItems":2,"items":{"type":"string","minLength":1}}
+                    }
+                }
+            ]
+        });
+        let value = minimal_value_for_schema(&schema, None);
+
+        validate_artifact(
+            &value,
+            &ArtifactType {
+                name: "constrained".into(),
+                schema,
+            },
+        )
+        .unwrap();
     }
 }
