@@ -2,6 +2,8 @@
 
 Runa is an event-driven cognitive runtime for AI agents. It enforces contracts between methodologies and the runtime through three primitives: **artifact types** (JSON Schema-validated work products), **protocol declarations** (relationships to artifacts via requires/accepts/produces/may_produce edges), and **trigger conditions** (composable activation rules).
 
+Runa targets Linux. Read-only commands and dry-run planning remain available as documented, but live `runa step` and live `runa run` fail explicitly on non-Linux platforms instead of degrading execution contracts silently.
+
 ## Architecture
 
 Runa is a runtime layer between an orchestrating daemon and methodology plugins. Methodologies register via TOML manifests declaring their artifact types, protocols, and triggers. Schema content and protocol instruction files live at conventional locations relative to the manifest (`schemas/{name}.schema.json` and `protocols/{name}/PROTOCOL.md`). Runa derives these paths from the manifest, computes the dependency graph, validates artifacts against their schemas, tracks state, and evaluates trigger conditions.
@@ -85,6 +87,8 @@ If the graph contains a hard dependency cycle, `step` reports the cycle as a war
 
 Without `--dry-run`, `step` requires `[agent].command`. If no READY work exists, it prints `No READY protocols.` and exits without requiring `runa-mcp`. Otherwise it resolves `runa-mcp`, executes exactly one READY candidate, re-scans the workspace, enforces postconditions for that `(protocol, work_unit)`, then prints the refreshed READY/BLOCKED/WAITING view so the operator can see what became ready next. A non-zero exit still stops execution immediately and skips the post-execution reconciliation cycle.
 
+Live `runa step` targets Linux. On non-Linux platforms it fails explicitly before resolving agent or MCP execution.
+
 ```bash
 runa run [--dry-run] [--json]
 ```
@@ -92,6 +96,8 @@ runa run [--dry-run] [--json]
 `run` is the cascade command. Live execution walks the same non-cyclic READY frontier as `step`, but continues until quiescence instead of stopping after one protocol. Previously exhausted work reopens only when a later successful execution, postcondition-failing reconciliation, or agent-failing reconciliation changes inputs that are relevant to that candidate. Agent failures and postcondition failures are tolerated for the remainder of the invocation: the failed candidate is skipped, any artifacts emitted before failure are reconciled into the workspace state for downstream readiness, other READY work continues, and the command exits `2` after quiescence if any protocol failed. If no READY work exists and some work remains blocked, waiting on external input, or trapped in a hard dependency cycle, `run` exits `3`. A fully satisfied topology exits `0`. The first `Ctrl-C` is boundary-scoped: the current protocol run is allowed to finish its reconciliation cycle. After that reconciliation, `run` exits `130` with outcome `interrupted` only if an interrupt prevented the next READY candidate from starting. If the same reconciliation leaves no further READY work, the quiescent topology outcome takes precedence (`0`, `2`, or `3`) because the interrupt did not prevent any work from executing. A second `Ctrl-C` forces immediate exit with status `130`.
 
 `run --dry-run` projects the full optimistic cascade from manifest topology only: declared `produces` outputs, `requires`/`accepts` edges, trigger declarations, and the current evaluated work-unit state. `may_produce` outputs remain optional and do not advance the projection unless they already exist on disk. Initially ready entries include the same MCP config and context shape used by `step --dry-run` only on their first concrete emission; downstream projected entries carry only protocol name, optional work unit, trigger, and projection kind. Projected work-unit scoping comes from manifest relationships plus the current artifact state, not from synthesizing artifact payloads. The dry-run projection never synthesizes values, never forks the artifact store, and never bypasses schema validation. Its exit status still reflects the current evaluated topology after the initial scan rather than forcing success because a projection was printed.
+
+Live `runa run` targets Linux. On non-Linux platforms it fails explicitly before resolving agent or MCP execution.
 
 ## MCP Server
 

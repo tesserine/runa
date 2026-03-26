@@ -39,6 +39,7 @@ Semantic Versioning.
 
 ### Fixed
 
+- Fail live `runa step` and `runa run` explicitly on non-Linux platforms instead of silently dropping Linux-only execution guarantees.
 - Restore `runa run`'s double-`Ctrl-C` escape hatch: the first interrupt remains a graceful boundary-scoped stop, and the second forces immediate exit with status `130`.
 - Preserve exhausted live `runa step` candidates across unrelated workspace
   transitions by reopening previously executed work only when the changed

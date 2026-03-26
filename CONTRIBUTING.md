@@ -8,6 +8,7 @@ Every PR that ships must update affected documentation:
 
 ## Conventions
 
+- Runa targets Linux. Live `runa step` and live `runa run` are Linux-only.
 - Agent skills are a user-level prerequisite, not a repo-local asset. Install
   and maintain them under `~/.claude/skills` and `~/.codex/skills`.
 - Conventional commits (e.g., `feat(trigger):`, `fix(store):`, `docs:`)
