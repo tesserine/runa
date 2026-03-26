@@ -20,3 +20,4 @@ rmcp = { version = "0.2", features = ["transport-io", "server"] }
 tokio = { version = "1", features = ["rt", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+ctrlc = "3.4"

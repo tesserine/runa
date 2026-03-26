@@ -9,7 +9,7 @@ Semantic Versioning.
 
 ### Changed
 
-- Split CLI execution into `runa step` and `runa run`. `step` now executes or previews only the next concrete protocol invocation, while `run` owns cascade-to-quiescence behavior, tolerant continuation after per-protocol failures, and outcome-specific exit codes (`0`, `2`, `3`).
+- Split CLI execution into `runa step` and `runa run`. `step` now executes or previews only the next concrete protocol invocation, while `run` owns cascade-to-quiescence behavior, tolerant continuation after per-protocol failures, and outcome-specific exit codes (`0`, `2`, `3`, `130` for interrupted).
 
 - Rename the readiness command from `runa status` to `runa state` for naming
   consistency with the container-runtime model runa follows. This is a
@@ -39,6 +39,7 @@ Semantic Versioning.
 
 ### Fixed
 
+- Restore `runa run`'s double-`Ctrl-C` escape hatch: the first interrupt remains a graceful boundary-scoped stop, and the second forces immediate exit with status `130`.
 - Preserve exhausted live `runa step` candidates across unrelated workspace
   transitions by reopening previously executed work only when the changed
   artifact types overlap that protocol's required or trigger-referenced inputs.

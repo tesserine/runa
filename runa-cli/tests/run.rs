@@ -2,7 +2,14 @@ mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 fn runa_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_runa"))
@@ -40,8 +47,6 @@ fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
 
 #[cfg(unix)]
 fn write_reconciling_agent(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
     let script_path = dir.join("reconciling-agent.sh");
     fs::write(
         &script_path,
@@ -54,8 +59,6 @@ fn write_reconciling_agent(dir: &Path) -> PathBuf {
 
 #[cfg(unix)]
 fn write_prepare_then_implement_agent(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
     let script_path = dir.join("prepare-then-implement-agent.sh");
     fs::write(
         &script_path,
@@ -68,8 +71,6 @@ fn write_prepare_then_implement_agent(dir: &Path) -> PathBuf {
 
 #[cfg(unix)]
 fn write_scoped_prepare_then_revise_agent(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
     let script_path = dir.join("scoped-prepare-then-revise-agent.sh");
     fs::write(
         &script_path,
@@ -82,8 +83,6 @@ fn write_scoped_prepare_then_revise_agent(dir: &Path) -> PathBuf {
 
 #[cfg(unix)]
 fn write_scoped_prepare_then_failed_revise_agent(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
     let script_path = dir.join("scoped-prepare-then-failed-revise-agent.sh");
     fs::write(
         &script_path,
@@ -96,8 +95,6 @@ fn write_scoped_prepare_then_failed_revise_agent(dir: &Path) -> PathBuf {
 
 #[cfg(unix)]
 fn write_scoped_prepare_then_agent_failed_revise_agent(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
     let script_path = dir.join("scoped-prepare-then-agent-failed-revise-agent.sh");
     fs::write(
         &script_path,
@@ -110,8 +107,6 @@ fn write_scoped_prepare_then_agent_failed_revise_agent(dir: &Path) -> PathBuf {
 
 #[cfg(unix)]
 fn write_fail_first_then_continue_agent(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
     let script_path = dir.join("fail-first-then-continue-agent.sh");
     fs::write(
         &script_path,
@@ -124,8 +119,6 @@ fn write_fail_first_then_continue_agent(dir: &Path) -> PathBuf {
 
 #[cfg(unix)]
 fn write_prepare_notes_only_agent(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
     let script_path = dir.join("prepare-notes-only-agent.sh");
     fs::write(
         &script_path,
@@ -134,6 +127,58 @@ fn write_prepare_notes_only_agent(dir: &Path) -> PathBuf {
     .unwrap();
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
+}
+
+#[cfg(unix)]
+fn write_interruptible_prepare_agent(dir: &Path) -> PathBuf {
+    let script_path = dir.join("interruptible-prepare-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nlog_file=\"$1\"\nsentinel=\"$2\"\npayload=$(cat)\ncase \"$payload\" in\n  *\"# Protocol: prepare\"*)\n    printf 'prepare-start\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/implementation\n    printf '%s\\n' '{\"done\":true}' > .runa/workspace/implementation/impl-1.json\n    : > \"$sentinel\"\n    sleep 2\n    printf 'prepare-end\\n' >> \"$log_file\"\n    ;;\n  *\"# Protocol: verify\"*)\n    printf 'verify\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/verified\n    printf '%s\\n' '{\"done\":true}' > .runa/workspace/verified/check-1.json\n    ;;\n  *)\n    printf '%s\\n' \"$payload\" > \"$log_file.unexpected\"\n    exit 19\n    ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+#[cfg(unix)]
+fn write_parent_interrupting_agent(dir: &Path) -> PathBuf {
+    let script_path = dir.join("parent-interrupting-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nlog_file=\"$1\"\npayload=$(cat)\ncase \"$payload\" in\n  *\"# Protocol: prepare\"*)\n    printf 'prepare\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/implementation\n    printf '%s\\n' '{\"done\":true}' > .runa/workspace/implementation/impl-1.json\n    kill -INT \"$PPID\"\n    ;;\n  *)\n    printf '%s\\n' \"$payload\" > \"$log_file.unexpected\"\n    exit 19\n    ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+#[cfg(unix)]
+fn wait_for_path(path: &Path, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if path.exists() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    panic!("timed out waiting for {}", path.display());
+}
+
+#[cfg(unix)]
+fn send_sigint_to_process_group(pid: u32) {
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+
+    const SIGINT: i32 = 2;
+    let process_group = -(pid as i32);
+    let rc = unsafe { kill(process_group, SIGINT) };
+    assert_eq!(
+        rc, 0,
+        "failed to send SIGINT to process group {process_group}"
+    );
 }
 
 #[cfg(unix)]
@@ -211,6 +256,174 @@ trigger = { type = "on_artifact", name = "implementation" }
     assert_eq!(executed, "implement\nverify\n");
     assert!(workspace.join("implementation/impl-1.json").is_file());
     assert!(workspace.join("verified/check-1.json").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn run_without_dry_run_stops_after_current_cycle_when_sigint_arrives_mid_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[artifact_types]]
+name = "verified"
+
+[[protocols]]
+name = "prepare"
+requires = ["constraints"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+
+[[protocols]]
+name = "verify"
+requires = ["implementation"]
+produces = ["verified"]
+trigger = { type = "on_artifact", name = "implementation" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            ("implementation", bool_schema),
+            ("verified", bool_schema),
+        ],
+        &["prepare", "verify"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship run"}"#,
+    )
+    .unwrap();
+
+    let log_path = dir.path().join("executed.log");
+    let sentinel_path = dir.path().join("prepare.ready");
+    let agent_path = write_interruptible_prepare_agent(dir.path());
+    append_agent_command_config(
+        &project_dir,
+        &[
+            agent_path.as_path(),
+            log_path.as_path(),
+            sentinel_path.as_path(),
+        ],
+    );
+
+    let mut child = runa_bin();
+    let child = child
+        .arg("run")
+        .current_dir(&project_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+
+    wait_for_path(&sentinel_path, Duration::from_secs(5));
+    send_sigint_to_process_group(child.id());
+
+    let output = child.wait_with_output().unwrap();
+
+    assert_eq!(output.status.code(), Some(130), "{output:?}");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Run outcome: interrupted"),
+        "stdout: {stdout}"
+    );
+
+    let executed = fs::read_to_string(&log_path).unwrap();
+    assert_eq!(executed, "prepare-start\nprepare-end\n");
+    assert!(workspace.join("implementation/impl-1.json").is_file());
+    assert!(!workspace.join("verified/check-1.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn run_without_dry_run_prefers_quiescent_completion_when_sigint_arrives_in_final_cycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "prepare"
+requires = ["constraints"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            ("implementation", bool_schema),
+        ],
+        &["prepare"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship run"}"#,
+    )
+    .unwrap();
+
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_parent_interrupting_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = runa_bin()
+        .arg("run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Run outcome: all_complete"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Run outcome: interrupted"),
+        "stdout: {stdout}"
+    );
+
+    let executed = fs::read_to_string(&log_path).unwrap();
+    assert_eq!(executed, "prepare\n");
+    assert!(workspace.join("implementation/impl-1.json").is_file());
 }
 
 #[test]
