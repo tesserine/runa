@@ -1,15 +1,21 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use libagent::context::ContextInjectionView;
 use serde::{Serialize, Serializer};
+use tracing::info;
 
 use super::CommandError;
 use crate::commands::protocol_eval;
 use crate::commands::step::{
-    ExecutionState, McpServerConfig, PlanEntry, PlannedEntry, StepError, build_plan_entries,
-    evaluate_execution_state, execute_entry, locate_runa_mcp, preview_runa_mcp_command,
+    ExecutionOptions, ExecutionState, McpServerConfig, PlanEntry, PlannedEntry, StepError,
+    build_plan_entries, evaluate_execution_state, execute_entry, locate_runa_mcp,
+    preview_runa_mcp_command,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +23,7 @@ pub enum RunOutcome {
     AllComplete,
     QuiescentFailures,
     QuiescentBlocked,
+    Interrupted,
 }
 
 impl RunOutcome {
@@ -25,6 +32,7 @@ impl RunOutcome {
             RunOutcome::AllComplete => 0,
             RunOutcome::QuiescentFailures => 2,
             RunOutcome::QuiescentBlocked => 3,
+            RunOutcome::Interrupted => 130,
         }
     }
 
@@ -33,6 +41,7 @@ impl RunOutcome {
             RunOutcome::AllComplete => "all_complete",
             RunOutcome::QuiescentFailures => "quiescent_with_failures",
             RunOutcome::QuiescentBlocked => "quiescent_with_blocked_work",
+            RunOutcome::Interrupted => "interrupted",
         }
     }
 }
@@ -41,6 +50,7 @@ impl RunOutcome {
 pub enum RunError {
     Step(StepError),
     Json(serde_json::Error),
+    InterruptHandler(ctrlc::Error),
 }
 
 impl fmt::Display for RunError {
@@ -48,6 +58,7 @@ impl fmt::Display for RunError {
         match self {
             RunError::Step(err) => write!(f, "{err}"),
             RunError::Json(err) => write!(f, "{err}"),
+            RunError::InterruptHandler(err) => write!(f, "failed to install Ctrl-C handler: {err}"),
         }
     }
 }
@@ -57,6 +68,7 @@ impl std::error::Error for RunError {
         match self {
             RunError::Step(err) => Some(err),
             RunError::Json(err) => Some(err),
+            RunError::InterruptHandler(err) => Some(err),
         }
     }
 }
@@ -64,6 +76,27 @@ impl std::error::Error for RunError {
 impl From<StepError> for RunError {
     fn from(err: StepError) -> Self {
         RunError::Step(err)
+    }
+}
+
+struct InterruptState {
+    requested: Arc<AtomicBool>,
+}
+
+impl InterruptState {
+    fn install() -> Result<Self, RunError> {
+        let requested = Arc::new(AtomicBool::new(false));
+        let handler_requested = Arc::clone(&requested);
+        ctrlc::set_handler(move || {
+            handler_requested.store(true, Ordering::SeqCst);
+        })
+        .map_err(RunError::InterruptHandler)?;
+
+        Ok(Self { requested })
+    }
+
+    fn requested(&self) -> bool {
+        self.requested.load(Ordering::SeqCst)
     }
 }
 
@@ -284,7 +317,14 @@ fn execute_and_reconcile(
             .next()
             .expect("single planned entry must produce one execution entry");
 
-    execute_entry(working_dir, agent_command, &execution_entry)?;
+    execute_entry(
+        working_dir,
+        agent_command,
+        &execution_entry,
+        ExecutionOptions {
+            isolate_process_group: true,
+        },
+    )?;
 
     let scan_result =
         libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(|source| {
@@ -433,18 +473,29 @@ pub fn run(
         .map_err(RunError::from)?
         .to_string_lossy()
         .into_owned();
+    let interrupts = InterruptState::install()?;
     let mut exhausted = HashSet::new();
     let mut failed = HashSet::new();
 
     loop {
-        let Some(next_entry) = state.planned_entries.clone().into_iter().find(|entry| {
+        let next_entry = state.planned_entries.clone().into_iter().find(|entry| {
             let key = candidate_key(&entry.protocol, entry.work_unit.as_deref());
             !exhausted.contains(&key) && !failed.contains(&key)
-        }) else {
+        });
+        let Some(next_entry) = next_entry else {
             let outcome = classify_outcome(&state.evaluated, !failed.is_empty());
             println!("Run outcome: {}", outcome.label());
             return Ok(outcome);
         };
+        if interrupts.requested() {
+            info!(
+                operation = "run",
+                outcome = "interrupted",
+                "stopping after current cycle"
+            );
+            println!("Run outcome: {}", RunOutcome::Interrupted.label());
+            return Ok(RunOutcome::Interrupted);
+        }
 
         let key = candidate_key(&next_entry.protocol, next_entry.work_unit.as_deref());
         match execute_and_reconcile(

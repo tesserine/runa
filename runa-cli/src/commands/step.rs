@@ -3,6 +3,8 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::io;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
 
@@ -188,6 +190,11 @@ pub(crate) struct PlannedEntry {
     pub(crate) context: ContextInjection,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ExecutionOptions {
+    pub(crate) isolate_process_group: bool,
+}
+
 struct BinaryLookup {
     sibling_path: Option<PathBuf>,
     resolved_path: Option<PathBuf>,
@@ -307,6 +314,7 @@ pub(crate) fn execute_entry(
     working_dir: &Path,
     agent_command: &[String],
     entry: &PlanEntry,
+    options: ExecutionOptions,
 ) -> Result<(), StepError> {
     let command_display = format_command(agent_command);
     info!(
@@ -319,6 +327,10 @@ pub(crate) fn execute_entry(
     );
 
     let mut child = ProcessCommand::new(&agent_command[0]);
+    #[cfg(unix)]
+    if options.isolate_process_group {
+        child.process_group(0);
+    }
     child
         .args(&agent_command[1..])
         .env(
@@ -329,6 +341,8 @@ pub(crate) fn execute_entry(
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    #[cfg(not(unix))]
+    let _ = options;
 
     let mut child = child.spawn().map_err(|source| StepError::AgentCommandIo {
         command: command_display.clone(),
@@ -412,7 +426,12 @@ fn execute_live_single(
             .next()
             .expect("single planned entry must produce one execution entry");
 
-    execute_entry(working_dir, agent_command, &execution_entry)?;
+    execute_entry(
+        working_dir,
+        agent_command,
+        &execution_entry,
+        ExecutionOptions::default(),
+    )?;
 
     let scan_result =
         libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(|source| {
