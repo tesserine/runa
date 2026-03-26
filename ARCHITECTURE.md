@@ -167,7 +167,7 @@ Without `--dry-run`, `step` requires `[agent].command` in config. It rejects `--
 
 ### `runa run [--dry-run] [--json]`
 
-Runs the same implicit scan and shared candidate classification as `step`, but keeps selecting work until quiescence instead of stopping after one execution. `run --dry-run` projects the optimistic cascade by simulating successful required outputs from each planned execution; current concrete entries retain MCP config and full context, while downstream projected entries are marked projected and omit filesystem-backed context details.
+Runs the same implicit scan and shared candidate classification as `step`, but keeps selecting work until quiescence instead of stopping after one execution. `run --dry-run` projects the optimistic cascade by simulating successful required outputs from each planned execution; projected outputs are inserted into the shadow store as assumed-valid artifacts without schema instance validation so downstream readiness follows declared topology rather than the synthetic value generator's coverage of JSON Schema. Current concrete entries retain MCP config and full context, while downstream projected entries are marked projected and omit filesystem-backed context details.
 
 Without `--dry-run`, `run` exits `0` when the topology is fully satisfied, `2` when any protocol failed or violated postconditions during the invocation, and `3` when work remains blocked or waiting on external input after all runnable work is exhausted. It skips failed candidates for the rest of that invocation while still allowing successful executions and postcondition-failing reconciliations to reopen exhausted candidates when later relevant inputs change.
 

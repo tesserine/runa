@@ -601,6 +601,25 @@ impl ArtifactStore {
         )
     }
 
+    /// Record a projected artifact as assumed-valid without schema validation.
+    ///
+    /// This is for optimistic dry-run projection only. Real artifact ingestion
+    /// must continue to use the validating record paths.
+    pub fn record_projected_with_timestamp(
+        &mut self,
+        artifact_type: &str,
+        instance_id: &str,
+        path: &Path,
+        data: &Value,
+        timestamp_ms: u64,
+    ) -> Result<(), StoreError> {
+        self.record_inner(
+            artifact_type,
+            instance_id,
+            self.build_projected_state_from_json(artifact_type, path, data, timestamp_ms)?,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_malformed_with_timestamp(
         &mut self,
@@ -676,6 +695,30 @@ impl ArtifactStore {
         })
     }
 
+    fn build_projected_state_from_json(
+        &self,
+        artifact_type: &str,
+        path: &Path,
+        data: &Value,
+        timestamp_ms: u64,
+    ) -> Result<ArtifactState, StoreError> {
+        let schema_hash = self.schema_hash_for(artifact_type)?;
+        let hash = content_hash(data);
+        let work_unit = data
+            .get("work_unit")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(ArtifactState {
+            path: path.to_path_buf(),
+            status: ValidationStatus::Valid,
+            last_modified_ms: timestamp_ms,
+            content_hash: hash,
+            schema_hash,
+            work_unit,
+        })
+    }
+
     fn record_inner(
         &mut self,
         artifact_type: &str,
@@ -742,6 +785,53 @@ mod tests {
 
         let state = store.get("report", "bad").unwrap();
         match &state.status {
+            ValidationStatus::Invalid(violations) => {
+                assert!(!violations.is_empty());
+            }
+            other => panic!("expected Invalid, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_projected_artifact_skips_instance_validation() {
+        let tmp = TempDir::new().unwrap();
+        let store_dir = tmp.path().join("artifacts");
+        let artifact_types = vec![make_artifact_type(
+            "report",
+            json!({
+                "type": "object",
+                "required": ["status", "work_unit"],
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "pattern": "^done$"
+                    },
+                    "work_unit": { "type": "string" }
+                }
+            }),
+        )];
+        let mut store = ArtifactStore::new(artifact_types, store_dir).unwrap();
+
+        let data = json!({"status": "projected", "work_unit": "wu-1"});
+        let path = Path::new("reports/projected.json");
+
+        store
+            .record_projected_with_timestamp("report", "projected", path, &data, 1234)
+            .unwrap();
+
+        let state = store.get("report", "projected").unwrap();
+        assert_eq!(state.status, ValidationStatus::Valid);
+        assert_eq!(state.path, path);
+        assert_eq!(state.last_modified_ms, 1234);
+        assert_eq!(state.work_unit.as_deref(), Some("wu-1"));
+        assert_eq!(state.content_hash, content_hash(&data));
+
+        store.invalidate("report", "projected").unwrap();
+        store
+            .record_with_timestamp("report", "projected", path, &data, 1234)
+            .unwrap();
+
+        match &store.get("report", "projected").unwrap().status {
             ValidationStatus::Invalid(violations) => {
                 assert!(!violations.is_empty());
             }

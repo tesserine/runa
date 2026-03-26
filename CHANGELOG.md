@@ -35,6 +35,10 @@ Semantic Versioning.
 
 ### Fixed
 
+- Make `run --dry-run` treat projected `produces` artifacts as assumed-valid in
+  its shadow store so downstream readiness no longer disappears when the
+  synthetic value generator cannot satisfy constraints such as `pattern` or
+  `minProperties` with `additionalProperties`.
 - Preserve exhausted live `runa step` candidates across unrelated workspace
   transitions by reopening previously executed work only when the changed
   artifact types overlap that protocol's required or trigger-referenced inputs.

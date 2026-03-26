@@ -295,7 +295,13 @@ fn build_run_json_plan(
                 .join(format!("{instance_id}.json"));
             shadow
                 .store
-                .record_with_timestamp(produced_type, &instance_id, &path, &value, timestamp_ms)
+                .record_projected_with_timestamp(
+                    produced_type,
+                    &instance_id,
+                    &path,
+                    &value,
+                    timestamp_ms,
+                )
                 .map_err(RunError::Store)?;
             modified.push(libagent::ArtifactRef {
                 artifact_type: produced_type.clone(),
