@@ -739,7 +739,6 @@ fn next_greater_f64(value: f64) -> f64 {
 
 enum ReconcileOutcome {
     Succeeded {
-        state: Box<ExecutionState>,
         scan_result: libagent::ScanResult,
         execution_entry: Box<PlanEntry>,
     },
@@ -789,12 +788,33 @@ fn execute_and_reconcile(
         return Ok(ReconcileOutcome::PostconditionFailure { scan_result });
     }
 
-    let refreshed = evaluate_execution_state(loaded, working_dir, &scan_result);
     Ok(ReconcileOutcome::Succeeded {
-        state: Box::new(refreshed),
         scan_result,
         execution_entry: Box::new(execution_entry),
     })
+}
+
+fn refresh_state_after_scan(
+    loaded: &crate::project::LoadedProject,
+    working_dir: &Path,
+    exhausted: &mut HashSet<CandidateKey>,
+    scan_result: &libagent::ScanResult,
+) -> ExecutionState {
+    exhausted.retain(|candidate| {
+        let protocol = loaded
+            .manifest
+            .protocols
+            .iter()
+            .find(|protocol| protocol.name == candidate.protocol)
+            .expect("planned protocol must exist in manifest");
+        !libagent::protocol_relevant_inputs_changed(
+            protocol,
+            candidate.work_unit.as_deref(),
+            scan_result,
+        )
+    });
+
+    evaluate_execution_state(loaded, working_dir, scan_result)
 }
 
 pub fn run(
@@ -918,25 +938,12 @@ pub fn run(
             next_entry,
         ) {
             Ok(ReconcileOutcome::Succeeded {
-                state: refreshed,
                 scan_result,
                 execution_entry,
             }) => {
                 exhausted.insert(key);
-                exhausted.retain(|candidate| {
-                    let protocol = loaded
-                        .manifest
-                        .protocols
-                        .iter()
-                        .find(|protocol| protocol.name == candidate.protocol)
-                        .expect("planned protocol must exist in manifest");
-                    !libagent::protocol_relevant_inputs_changed(
-                        protocol,
-                        candidate.work_unit.as_deref(),
-                        &scan_result,
-                    )
-                });
-                state = *refreshed;
+                state =
+                    refresh_state_after_scan(&loaded, working_dir, &mut exhausted, &scan_result);
                 println!(
                     "Executed: {}",
                     match &execution_entry.work_unit {
@@ -948,23 +955,25 @@ pub fn run(
             }
             Ok(ReconcileOutcome::PostconditionFailure { scan_result }) => {
                 failed.insert(key);
-                state = evaluate_execution_state(&loaded, working_dir, &scan_result);
-                exhausted.retain(|candidate| {
-                    let protocol = loaded
-                        .manifest
-                        .protocols
-                        .iter()
-                        .find(|protocol| protocol.name == candidate.protocol)
-                        .expect("planned protocol must exist in manifest");
-                    !libagent::protocol_relevant_inputs_changed(
-                        protocol,
-                        candidate.work_unit.as_deref(),
-                        &scan_result,
-                    )
-                });
+                state =
+                    refresh_state_after_scan(&loaded, working_dir, &mut exhausted, &scan_result);
             }
-            Err(StepError::AgentCommandFailed { .. }) => {
+            Err(StepError::AgentCommandFailed {
+                protocol,
+                work_unit,
+                ..
+            }) => {
                 failed.insert(key);
+                let scan_result = libagent::scan(&loaded.workspace_dir, &mut loaded.store)
+                    .map_err(|source| {
+                        RunError::from(StepError::PostExecutionScan {
+                            protocol,
+                            work_unit,
+                            source,
+                        })
+                    })?;
+                state =
+                    refresh_state_after_scan(&loaded, working_dir, &mut exhausted, &scan_result);
             }
             Err(err) => return Err(RunError::from(err)),
         }

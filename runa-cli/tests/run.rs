@@ -95,6 +95,20 @@ fn write_scoped_prepare_then_failed_revise_agent(dir: &Path) -> PathBuf {
 }
 
 #[cfg(unix)]
+fn write_scoped_prepare_then_agent_failed_revise_agent(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("scoped-prepare-then-agent-failed-revise-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nlog_file=\"$1\"\npayload=$(cat)\ncase \"$payload\" in\n  *\"# Protocol: prepare (work_unit=wu-a)\"*)\n    printf 'prepare:wu-a\\n' >> \"$log_file\"\n    ;;\n  *\"# Protocol: prepare (work_unit=wu-b)\"*)\n    printf 'prepare:wu-b\\n' >> \"$log_file\"\n    ;;\n  *\"# Protocol: revise (work_unit=wu-b)\"*)\n    printf 'revise:wu-b\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/constraints\n    printf '%s\\n' '{\"title\":\"updated-b\",\"work_unit\":\"wu-b\"}' > .runa/workspace/constraints/b.json\n    exit 17\n    ;;\n  *)\n    printf '%s\\n' \"$payload\" > \"$log_file.unexpected\"\n    exit 19\n    ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+#[cfg(unix)]
 fn write_fail_first_then_continue_agent(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1522,6 +1536,104 @@ trigger = { type = "on_artifact", name = "constraints" }
         .unwrap();
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
+
+    let executed = fs::read_to_string(&log_path).unwrap();
+    assert_eq!(
+        executed,
+        "prepare:wu-a\nprepare:wu-b\nrevise:wu-b\nprepare:wu-b\n"
+    );
+    assert!(!workspace.join("implementation/out.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn run_without_dry_run_reopens_exhausted_work_after_agent_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let wu_schema = r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#;
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "seed"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "revise"
+requires = ["seed"]
+produces = ["constraints", "implementation"]
+trigger = { type = "on_artifact", name = "seed" }
+
+[[protocols]]
+name = "prepare"
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            ("constraints", wu_schema),
+            ("seed", wu_schema),
+            ("implementation", bool_schema),
+        ],
+        &["revise", "prepare"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("seed")).unwrap();
+    fs::write(
+        workspace.join("constraints/a.json"),
+        r#"{"title":"draft-a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("constraints/b.json"),
+        r#"{"title":"draft-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+    let first_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        first_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first_scan.stderr)
+    );
+    fs::write(
+        workspace.join("seed/b.json"),
+        r#"{"title":"seed-b","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_scoped_prepare_then_agent_failed_revise_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = runa_bin()
+        .arg("run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Run outcome: quiescent_with_failures"),
+        "stdout: {stdout}"
+    );
 
     let executed = fs::read_to_string(&log_path).unwrap();
     assert_eq!(
