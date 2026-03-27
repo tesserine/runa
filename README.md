@@ -275,6 +275,7 @@ cargo test --workspace
 
 ## Documentation
 
+- [Methodology Authoring Guide](docs/methodology-authoring-guide.md) — Building a first methodology from scratch
 - [Interface Contract](docs/interface-contract.md) — The three primitives defining the methodology-runtime boundary
 - [Architecture](ARCHITECTURE.md) — Workspace structure, data flow, module descriptions, disk layout
 - [Contributing](CONTRIBUTING.md) — Conventions for landing PRs
