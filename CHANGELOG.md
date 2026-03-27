@@ -9,6 +9,8 @@ Semantic Versioning.
 
 ### Changed
 
+- Rewrite `README.md` so it now opens with a plain-language runtime model and a checked-in `runa init` + `runa step --dry-run` quick start for adopters and methodology authors before the full command reference.
+
 - Split CLI execution into `runa step` and `runa run`. `step` now executes or previews only the next concrete protocol invocation, while `run` owns cascade-to-quiescence behavior, tolerant continuation after per-protocol failures, and outcome-specific exit codes (`0`, `2`, `3`, `130` for interrupted).
 
 - Rename the readiness command from `runa status` to `runa state` for naming

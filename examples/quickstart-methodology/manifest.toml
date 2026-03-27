@@ -1,0 +1,13 @@
+name = "quickstart"
+
+[[artifact_types]]
+name = "request"
+
+[[artifact_types]]
+name = "summary"
+
+[[protocols]]
+name = "summarize"
+requires = ["request"]
+produces = ["summary"]
+trigger = { type = "on_artifact", name = "request" }

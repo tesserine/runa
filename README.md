@@ -1,8 +1,75 @@
 # runa
 
-Runa is an event-driven cognitive runtime for AI agents. It enforces contracts between methodologies and the runtime through three primitives: **artifact types** (JSON Schema-validated work products), **protocol declarations** (relationships to artifacts via requires/accepts/produces/may_produce edges), and **trigger conditions** (composable activation rules).
+A methodology is the declaration of how a workflow should run: which **artifacts** exist, which **protocols** act on them, and which **triggers** make those protocols ready. In runa, an artifact is a JSON work product in the workspace, a protocol is a named workflow stage that consumes and produces artifacts, and a trigger is the rule that activates a protocol when artifact state changes.
 
-Runa targets Linux. Read-only commands and dry-run planning remain available as documented, but live `runa step` and live `runa run` fail explicitly on non-Linux platforms instead of degrading execution contracts silently.
+Runa is the runtime for that declaration. It watches the artifact workspace, validates artifacts against their schemas, computes which protocol stages are ready, and prepares the exact context an agent needs for the next stage. That gives adopters a transparent execution model and gives methodology authors a strict boundary between runtime enforcement and methodology design.
+
+Runa targets Linux for live `runa step` and live `runa run`. Read-only commands and dry-run planning remain available as documented on other platforms.
+
+## What Runa Does
+
+Runa sits between a methodology definition and the agent that executes it.
+
+- Methodology authors declare artifact types, protocol stages, and trigger conditions.
+- Operators run `runa` to initialize a project, inspect readiness, and preview or execute work.
+- Agents receive a concrete protocol context only when runa has verified that the stage is actually ready.
+
+If you are evaluating runa, the point is simple: it turns a methodology declaration into a runtime that can say what is ready now, what is blocked, and what inputs the next protocol execution should receive.
+
+## Quick Start
+
+The repository includes a minimal working methodology at `examples/quickstart-methodology/`. It uses two artifact types and one protocol:
+
+- `request` is the input artifact type
+- `summary` is the output artifact type
+- `summarize` requires `request`, produces `summary`, and activates on `request`
+
+Its layout is the same layout every methodology must follow:
+
+```text
+examples/quickstart-methodology/
+├── manifest.toml
+├── protocols/
+│   └── summarize/
+│       └── PROTOCOL.md
+└── schemas/
+    ├── request.schema.json
+    └── summary.schema.json
+```
+
+The manifest is intentionally small:
+
+```toml
+name = "quickstart"
+
+[[artifact_types]]
+name = "request"
+
+[[artifact_types]]
+name = "summary"
+
+[[protocols]]
+name = "summarize"
+requires = ["request"]
+produces = ["summary"]
+trigger = { type = "on_artifact", name = "request" }
+```
+
+From the repository root, you can run the example end to end:
+
+```bash
+mkdir quickstart-project
+cd quickstart-project
+runa init --methodology ../examples/quickstart-methodology/manifest.toml
+mkdir -p .runa/workspace/request
+printf '%s\n' '{"text":"Runa turns methodology declarations into ready work."}' \
+  > .runa/workspace/request/input.json
+runa step --dry-run
+```
+
+`runa step --dry-run` is the right first check because it requires no agent wrapper or `[agent].command` config. You should see `summarize` reported as `READY`, with `request/input` listed as the required input and `summary` listed as the expected output type.
+
+If you want the exact contract that defines these terms, read [Interface Contract](docs/interface-contract.md). If you want the runtime internals, read [ARCHITECTURE.md](ARCHITECTURE.md). The rest of this README is the full command and configuration reference.
 
 ## Architecture
 
