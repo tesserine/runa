@@ -1,7 +1,7 @@
 //! Shared tracing bootstrap and runtime reconfiguration.
 //!
 //! Installs a global `tracing` subscriber with a reloadable filter and
-//! runtime-selectable text/JSON stderr formatter. Both CLI binaries call
+//! runtime-selectable text/JSON stderr formatter. Callers invoke
 //! [`configure_tracing`] at startup and again after config is loaded.
 
 use std::fmt;

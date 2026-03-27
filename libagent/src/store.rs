@@ -2,7 +2,7 @@
 //!
 //! Each artifact instance records its validation status, content hash, schema
 //! hash, modification timestamp, and optional work unit. State is persisted as
-//! JSON files under `.runa/store/` using atomic write (tmp + rename).
+//! JSON files under `.runa/store/` using atomic writes.
 //! Non-persisted scan-gap metadata is also tracked in memory for the current
 //! process so completion and freshness checks can distinguish whole-type scan
 //! failures from unreadable specific instances.
