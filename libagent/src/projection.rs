@@ -1,15 +1,27 @@
+//! Dry-run cascade projection from graph state.
+//!
+//! Projects the full optimistic execution sequence to quiescence without
+//! executing any agents. Used by `runa run --dry-run` to preview the cascade
+//! that would result from declared `produces` outputs.
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::model::{ProtocolDeclaration, TriggerCondition};
 use crate::selection::{Candidate, protocol_relevant_input_types, protocol_scan_incomplete_types};
 use crate::store::{ArtifactStore, ValidationStatus};
 
+/// Whether a projected candidate is evaluated from current artifact state or
+/// from assumed-success outputs of an earlier projected step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectionClass {
+    /// Ready based on artifacts that already exist in the store.
     Current,
+    /// Ready only because an earlier projected step is assumed to produce its inputs.
     Projected,
 }
 
+/// A `(protocol, work_unit)` pair in the projected cascade, annotated with
+/// whether it is currently ready or only projected-ready.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionCandidate {
     pub protocol_name: String,
@@ -29,6 +41,14 @@ struct ProjectedChange {
     work_unit: Option<String>,
 }
 
+/// Project the full optimistic execution cascade to quiescence.
+///
+/// Starting from `initial_ready` candidates, simulates each execution by
+/// recording assumed-success `produces` outputs, then re-evaluates readiness
+/// until no new candidates emerge. Candidates whose inputs are already satisfied
+/// from real store state are tagged [`ProjectionClass::Current`]; those that
+/// depend on projected outputs are tagged [`ProjectionClass::Projected`].
+/// Optional `may_produce` outputs do not advance the projection.
 pub fn project_cascade(
     protocols: &[ProtocolDeclaration],
     store: &ArtifactStore,

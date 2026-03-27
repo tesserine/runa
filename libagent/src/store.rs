@@ -1,3 +1,12 @@
+//! Artifact state tracking keyed by `(type_name, instance_id)`.
+//!
+//! Each artifact instance records its validation status, content hash, schema
+//! hash, modification timestamp, and optional work unit. State is persisted as
+//! JSON files under `.runa/store/` using atomic write (tmp + rename).
+//! Non-persisted scan-gap metadata is also tracked in memory for the current
+//! process so completion and freshness checks can distinguish whole-type scan
+//! failures from unreadable specific instances.
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -535,20 +544,26 @@ impl ArtifactStore {
             .max()
     }
 
+    /// Reset all scan-gap metadata. Called at the start of each scan pass
+    /// before new gaps are recorded.
     pub(crate) fn clear_scan_gaps(&mut self) {
         self.type_level_scan_gaps.clear();
         self.instance_level_scan_gaps.clear();
     }
 
+    /// Record that an entire artifact type directory could not be read during scan.
     pub(crate) fn mark_type_scan_gap(&mut self, artifact_type: &str) {
         self.type_level_scan_gaps.insert(artifact_type.to_string());
     }
 
+    /// Record that a specific artifact file could not be read during scan.
     pub(crate) fn mark_instance_scan_gap(&mut self, artifact_type: &str, instance_id: &str) {
         self.instance_level_scan_gaps
             .insert((artifact_type.to_string(), instance_id.to_string()));
     }
 
+    /// True if this artifact type has any scan gap -- either a type-level gap
+    /// (the whole directory was unreadable) or any instance-level gaps.
     pub(crate) fn has_any_scan_gap_for_type(&self, artifact_type: &str) -> bool {
         self.type_level_scan_gaps.contains(artifact_type)
             || self
@@ -557,6 +572,10 @@ impl ArtifactStore {
                 .any(|(gap_type, _)| gap_type == artifact_type)
     }
 
+    /// True if a scan gap for this artifact type could affect the given work unit.
+    ///
+    /// Currently conservative: any gap on the type returns true regardless of
+    /// work unit, because instance-level gaps don't record work unit affinity.
     pub(crate) fn scan_gap_affects_work_unit(
         &self,
         artifact_type: &str,
@@ -574,6 +593,10 @@ impl ArtifactStore {
         self.artifact_types.get(name)
     }
 
+    /// Record an artifact with an explicit timestamp instead of wall-clock time.
+    ///
+    /// Same as [`record`](Self::record) but uses the provided `timestamp_ms`
+    /// for `last_modified_ms`. Used by scan (which controls timestamps) and tests.
     pub fn record_with_timestamp(
         &mut self,
         artifact_type: &str,
@@ -589,6 +612,10 @@ impl ArtifactStore {
         )
     }
 
+    /// Record a malformed artifact with an explicit timestamp and raw-byte hash.
+    ///
+    /// Same as [`record_malformed`](Self::record_malformed) but uses the provided
+    /// `timestamp_ms`. Used by scan when the artifact file cannot be parsed as JSON.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_malformed_with_timestamp(
         &mut self,
@@ -612,6 +639,9 @@ impl ArtifactStore {
         self.record_inner(artifact_type, instance_id, state)
     }
 
+    /// Compute the `sha256:<hex>` hash of the JSON Schema for the named artifact type.
+    ///
+    /// Returns `StoreError::UnknownArtifactType` if the type is not registered.
     pub(crate) fn schema_hash_for(&self, artifact_type: &str) -> Result<String, StoreError> {
         let at = self
             .artifact_types

@@ -1,3 +1,10 @@
+//! Agent-facing context injection construction and prompt rendering.
+//!
+//! Converts a ready [`ProtocolDeclaration`] plus the
+//! current [`ArtifactStore`] into the stable context
+//! delivered to agents during `runa step`. [`build_context`] gathers the
+//! artifacts; [`render_context_prompt`] turns the context into prose.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -5,6 +12,8 @@ use serde_json::Value;
 
 use crate::{ArtifactStore, ProtocolDeclaration, ValidationStatus};
 
+/// Whether an artifact is a hard dependency (`Requires`) or optional input (`Accepts`)
+/// for the protocol being invoked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactRelationship {
@@ -12,6 +21,11 @@ pub enum ArtifactRelationship {
     Accepts,
 }
 
+/// A resolved reference to a valid artifact instance available to the agent.
+///
+/// Contains the internal filesystem `path` for reopening the artifact's content.
+/// For serialization contexts that must not expose internal paths, convert to
+/// [`ArtifactRefView`] instead.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArtifactRef {
     pub artifact_type: String,
@@ -22,6 +36,8 @@ pub struct ArtifactRef {
     pub relationship: ArtifactRelationship,
 }
 
+/// Serialization-safe view of [`ArtifactRef`] that exposes `display_path`
+/// but omits the internal filesystem `path`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ArtifactRefView {
     pub artifact_type: String,
@@ -31,12 +47,21 @@ pub struct ArtifactRefView {
     pub relationship: ArtifactRelationship,
 }
 
+/// Artifact type names the agent is expected to produce for this protocol invocation.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExpectedOutputs {
+    /// Artifact types that must be delivered -- postconditions fail if missing.
     pub produces: Vec<String>,
+    /// Artifact types that may optionally be delivered -- validated if present.
     pub may_produce: Vec<String>,
 }
 
+/// The complete agent-facing context for one protocol invocation.
+///
+/// Contains the protocol name, optional work unit scope, protocol instructions,
+/// all valid required and accepted artifact references, and the expected output
+/// types. Built by [`build_context`] and rendered to prose by
+/// [`render_context_prompt`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextInjection {
     pub protocol: String,
@@ -46,6 +71,8 @@ pub struct ContextInjection {
     pub expected_outputs: ExpectedOutputs,
 }
 
+/// Serialization-safe view of [`ContextInjection`] that uses
+/// [`ArtifactRefView`] instead of [`ArtifactRef`], omitting internal paths.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ContextInjectionView {
     pub protocol: String,
@@ -55,6 +82,11 @@ pub struct ContextInjectionView {
     pub expected_outputs: ExpectedOutputs,
 }
 
+/// Build the agent-facing context for a single protocol invocation.
+///
+/// Gathers all valid `requires` and `accepts` artifact instances from the store
+/// (scoped by `work_unit`) into ordered [`ArtifactRef`] entries, paired with the
+/// protocol's instructions and expected output types.
 pub fn build_context(
     protocol: &ProtocolDeclaration,
     store: &ArtifactStore,

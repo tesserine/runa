@@ -1,3 +1,9 @@
+//! Shared project loading logic used by both `runa-cli` and `runa-mcp`.
+//!
+//! Resolves the config file via the resolution chain, parses the methodology
+//! manifest, builds the dependency graph, and initializes the artifact store.
+//! See [`load`] for the main entry point.
+
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +17,7 @@ pub const STATE_FILENAME: &str = "state.toml";
 pub const DEFAULT_WORKSPACE_DIR: &str = "workspace";
 pub const STORE_DIRNAME: &str = "store";
 
+/// Output format for tracing events written to stderr.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LogFormat {
@@ -19,6 +26,7 @@ pub enum LogFormat {
     Json,
 }
 
+/// The `[logging]` section of `.runa/config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LoggingConfig {
     #[serde(default)]
@@ -33,6 +41,7 @@ impl LoggingConfig {
     }
 }
 
+/// The `[agent]` section of `.runa/config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -181,6 +190,10 @@ pub fn resolve_config(
     Err(ProjectError::ConfigNotFound)
 }
 
+/// Resolve and parse the config file into a [`Config`].
+///
+/// Uses [`resolve_config`] to find the config path, then reads and
+/// deserializes the TOML content.
 pub fn read_config(
     working_dir: &Path,
     config_override: Option<&Path>,

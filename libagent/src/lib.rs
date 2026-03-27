@@ -9,7 +9,7 @@
 //! - [`validation`] — JSON Schema validation for artifact instances
 //! - [`graph`] — Dependency graph: topological ordering, cycle detection, blocked-protocol identification
 //! - [`store`] — Artifact state tracking: validation status, content hashing, JSON persistence
-//! - [`scan`] — Filesystem reconciliation from artifact workspace into store state
+//! - [`mod@scan`] — Filesystem reconciliation from artifact workspace into store state
 //! - [`trigger`] — Trigger condition evaluation against runtime state
 //! - [`enforcement`] — Pre/post-execution enforcement of protocol contracts
 //!

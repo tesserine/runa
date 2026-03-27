@@ -1,3 +1,9 @@
+//! Recursive trigger condition evaluation against runtime state.
+//!
+//! [`evaluate`] walks a [`TriggerCondition`] tree and
+//! returns whether the condition is satisfied given the current artifact store
+//! and scan metadata. Pure function, no side effects.
+
 use std::collections::HashSet;
 
 use crate::enforcement::enforce_postconditions;

@@ -1,3 +1,10 @@
+//! Work-unit discovery, protocol readiness evaluation, and candidate classification.
+//!
+//! Evaluates protocols in topological order to discover which `(protocol, work_unit)`
+//! pairs are ready for execution, blocked on preconditions, or waiting on triggers.
+//! The main entry points are [`discover_ready_candidates`] (returns only ready pairs)
+//! and [`classify_candidates`] (returns all pairs with their classification).
+
 use std::collections::{BTreeSet, HashSet};
 
 use crate::enforcement::ArtifactFailure;
@@ -69,6 +76,9 @@ pub fn discover_ready_candidates(
         .collect()
 }
 
+/// Returns the `requires` and trigger-referenced artifact types for this protocol
+/// that have incomplete scan results, in a stable order (requires first, then
+/// trigger types lexicographically).
 pub fn protocol_scan_incomplete_types(
     protocol: &ProtocolDeclaration,
     partially_scanned_types: &HashSet<String>,
@@ -98,6 +108,11 @@ pub fn protocol_scan_incomplete_types(
     incomplete
 }
 
+/// Discover candidate work units for a protocol by collecting work unit values
+/// from all artifact instances referenced by the protocol's edges and trigger tree.
+///
+/// Returns `{None}` (unscoped execution) when no work-unit-bearing instances exist.
+/// Skips artifact types with incomplete scans.
 pub fn protocol_work_units(
     protocol: &ProtocolDeclaration,
     store: &ArtifactStore,
@@ -120,6 +135,8 @@ pub fn protocol_work_units(
     collect_work_units(store, &referenced_types, partially_scanned_types)
 }
 
+/// Collect the artifact type names that affect freshness for this protocol:
+/// `requires` types plus any types referenced in the trigger condition tree.
 pub fn protocol_relevant_input_types(protocol: &ProtocolDeclaration) -> HashSet<String> {
     let mut trigger_types = HashSet::new();
     trigger_artifact_types(&protocol.trigger, &mut trigger_types);
@@ -130,6 +147,8 @@ pub fn protocol_relevant_input_types(protocol: &ProtocolDeclaration) -> HashSet<
         .collect()
 }
 
+/// Check whether a scan result contains changes to artifact types that affect
+/// this protocol's freshness evaluation for the given work unit.
 pub fn protocol_relevant_inputs_changed(
     protocol: &ProtocolDeclaration,
     work_unit: Option<&str>,
