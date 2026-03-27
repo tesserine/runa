@@ -6,6 +6,8 @@ Study the following before working in this project:
 
 Orientation: `README.md`
 Architecture: `ARCHITECTURE.md`
+Methodology authoring: `docs/methodology-authoring-guide.md`
+Interface contract: `docs/interface-contract.md`
 Contribution conventions: `CONTRIBUTING.md`
 Bedrock principles: [commons](https://github.com/pentaxis93/commons) — read both `PRINCIPLES.md` and every ADR in `adr/`
 

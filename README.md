@@ -80,6 +80,15 @@ runa step --dry-run
 
 `runa state` now shows `analyze` as READY. `runa step --dry-run` previews the execution: the protocol to run, the input artifacts it will receive, and the MCP server configuration for the agent runtime.
 
+## Documentation
+
+- [Methodology Authoring Guide](docs/methodology-authoring-guide.md) — Building a first methodology from scratch
+- [Interface Contract](docs/interface-contract.md) — The three primitives defining the methodology-runtime boundary
+- [Architecture](ARCHITECTURE.md) — Workspace structure, data flow, module descriptions, disk layout
+- [Contributing](CONTRIBUTING.md) — Conventions for landing PRs
+- [Quickstart Example](examples/quickstart-methodology/) — A two-protocol review pipeline you can browse and run
+- [Commons](https://github.com/pentaxis93/commons) — Bedrock principles and architectural decision records
+
 ## Configuration
 
 ### Config Resolution
@@ -272,11 +281,3 @@ Rust 2024 edition. Runa targets Linux.
 cargo build
 cargo test --workspace
 ```
-
-## Documentation
-
-- [Methodology Authoring Guide](docs/methodology-authoring-guide.md) — Building a first methodology from scratch
-- [Interface Contract](docs/interface-contract.md) — The three primitives defining the methodology-runtime boundary
-- [Architecture](ARCHITECTURE.md) — Workspace structure, data flow, module descriptions, disk layout
-- [Contributing](CONTRIBUTING.md) — Conventions for landing PRs
-- [Commons](https://github.com/pentaxis93/commons) — Bedrock principles and architectural decision records

@@ -1,0 +1,22 @@
+name = "code-review"
+
+[[artifact_types]]
+name = "requirements"
+
+[[artifact_types]]
+name = "design"
+
+[[artifact_types]]
+name = "review-report"
+
+[[protocols]]
+name = "draft"
+requires = ["requirements"]
+produces = ["design"]
+trigger = { type = "on_artifact", name = "requirements" }
+
+[[protocols]]
+name = "review"
+requires = ["design"]
+produces = ["review-report"]
+trigger = { type = "on_artifact", name = "design" }
