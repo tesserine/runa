@@ -1,3 +1,9 @@
+//! Core data types for methodology manifests.
+//!
+//! Defines the four types that represent a parsed methodology: [`Manifest`],
+//! [`ArtifactType`], [`ProtocolDeclaration`], and [`TriggerCondition`]. These
+//! types are the shared vocabulary consumed by every other module in libagent.
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

@@ -1,3 +1,9 @@
+//! JSON Schema validation for artifact instances.
+//!
+//! Validates artifact data against the schema declared in its
+//! [`ArtifactType`], collecting all violations rather
+//! than short-circuiting on the first.
+
 use std::fmt;
 
 use serde_json::Value;

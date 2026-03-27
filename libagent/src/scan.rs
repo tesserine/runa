@@ -1,3 +1,11 @@
+//! Filesystem reconciliation from the artifact workspace into the store.
+//!
+//! Walks `<workspace>/<type_name>/<instance_id>.json`, validates each artifact
+//! against its type schema, and reconciles the results into the
+//! [`ArtifactStore`]. Valid, invalid, malformed, and
+//! unreadable artifacts are all tracked -- each state is meaningful for
+//! trigger evaluation and enforcement.
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};

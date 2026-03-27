@@ -1,3 +1,9 @@
+//! Dependency graph built from protocol declarations.
+//!
+//! Computes edges from artifact relationships (`requires`/`accepts` to
+//! `produces`/`may_produce`), provides topological ordering via Kahn's algorithm,
+//! cycle detection, and blocked-protocol identification.
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 

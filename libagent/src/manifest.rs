@@ -1,3 +1,9 @@
+//! TOML manifest parsing, structural validation, and methodology layout resolution.
+//!
+//! Converts a methodology manifest file into [`Manifest`] model types,
+//! enforcing name uniqueness and path-safety constraints, then resolving schema files
+//! and protocol instruction files from the methodology's directory layout.
+
 use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};

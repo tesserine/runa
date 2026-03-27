@@ -1,3 +1,9 @@
+//! Shared tracing bootstrap and runtime reconfiguration.
+//!
+//! Installs a global `tracing` subscriber with a reloadable filter and
+//! runtime-selectable text/JSON stderr formatter. Callers invoke
+//! [`configure_tracing`] at startup and again after config is loaded.
+
 use std::fmt;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -15,9 +21,12 @@ const DEFAULT_FILTER: &str = "warn";
 
 type FilterHandle = reload::Handle<EnvFilter, Registry>;
 
+/// Errors from tracing subscriber installation or reconfiguration.
 #[derive(Debug)]
 pub enum LoggingError {
+    /// Failed to set the global default subscriber.
     SetGlobalDefault(String),
+    /// Failed to reload the filter on an existing subscriber.
     Reload(String),
 }
 
@@ -32,12 +41,17 @@ impl fmt::Display for LoggingError {
 
 impl std::error::Error for LoggingError {}
 
+/// The resolved logging configuration after applying the precedence chain:
+/// `RUST_LOG` env var > `config.logging.filter` > default (`warn`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedLoggingConfig {
     pub format: LogFormat,
     pub filter: String,
 }
 
+/// Resolve the logging filter and format using the fixed precedence chain:
+/// `RUST_LOG` env var > `config.logging.filter` > default (`warn`).
+/// Format comes from config, defaulting to text.
 pub fn resolve_logging_config(config: Option<&LoggingConfig>) -> ResolvedLoggingConfig {
     let env_filter = std::env::var("RUST_LOG").ok();
     resolve_logging_config_with_env(env_filter.as_deref(), config)
@@ -61,6 +75,12 @@ pub(crate) fn resolve_logging_config_with_env(
     }
 }
 
+/// Install or reconfigure the global tracing subscriber.
+///
+/// On first call, installs a subscriber with text and JSON layers writing to
+/// stderr. On subsequent calls, reloads the filter and switches the active
+/// format. If the filter string is invalid, falls back to `warn` with a
+/// logged warning.
 pub fn configure_tracing(config: Option<&LoggingConfig>) -> Result<(), LoggingError> {
     let resolved = resolve_logging_config(config);
     if let Some(handle) = TRACING_HANDLE.get() {
