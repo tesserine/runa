@@ -9,6 +9,9 @@
 # OS files
 .DS_Store
 
+# Runa project state
+.runa/
+
 # Claude Code
 .claude
 .agents
