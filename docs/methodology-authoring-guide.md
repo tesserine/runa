@@ -122,7 +122,13 @@ runa state
 
 When no artifacts exist, both protocols are WAITING. Their triggers monitor artifact state, and there is nothing to monitor yet.
 
-An external source — a user, another tool, or a prior workflow — places a `requirements` artifact in the workspace (a JSON file under `<workspace>/requirements/`). After `runa scan` reconciles the workspace, the `draft` protocol's trigger (`on_artifact("requirements")`) is satisfied: a valid requirements instance exists. Its precondition (`requires = ["requirements"]`) is also met. `draft` becomes READY.
+An external source — a user, another tool, or a prior workflow — places a `requirements` artifact in the workspace (a JSON file under `<workspace>/requirements/`). Scan the workspace to reconcile the new file into runa's store:
+
+```bash
+runa scan
+```
+
+After reconciliation, the `draft` protocol's trigger (`on_artifact("requirements")`) is satisfied: a valid requirements instance exists. Its precondition (`requires = ["requirements"]`) is also met. `draft` becomes READY.
 
 The `review` protocol remains WAITING. Its trigger needs a `design` artifact, which does not exist.
 
@@ -167,4 +173,4 @@ These compose through `all_of` (all conditions must hold) and `any_of` (at least
 
 - [Interface contract](interface-contract.md) — the authoritative specification for all manifest fields, trigger conditions, layout conventions, and runtime behavior.
 - [groundwork](https://github.com/pentaxis93/groundwork) — a real methodology built on runa. The canonical example of artifact types, protocol chaining, and trigger composition in practice.
-- [README](../README.md) — command reference for `runa init`, `runa state`, `runa step`, `runa run`, and other CLI operations.
+- [README](../README.md) — core concepts, configuration, command reference, and MCP server documentation.
