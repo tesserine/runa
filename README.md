@@ -69,7 +69,7 @@ runa step --dry-run
 
 `runa step --dry-run` is the right first check because it requires no agent wrapper or `[agent].command` config. You should see `summarize` reported as `READY`, with `request/input` listed as the required input and `summary` listed as the expected output type.
 
-If you want the exact contract that defines these terms, read [Interface Contract](docs/interface-contract.md). If you want the runtime internals, read [ARCHITECTURE.md](ARCHITECTURE.md). The rest of this README is the full command and configuration reference.
+If you want to author your first methodology, read [Methodology Authoring Guide](docs/methodology-authoring-guide.md). If you want the exact contract that defines these terms, read [Interface Contract](docs/interface-contract.md). If you want the runtime internals, read [ARCHITECTURE.md](ARCHITECTURE.md). The rest of this README is the full command and configuration reference.
 
 ## Architecture
 
@@ -196,5 +196,6 @@ cargo test --workspace
 
 ## Documentation
 
+- [Methodology Authoring Guide](docs/methodology-authoring-guide.md) — Build a first working methodology with a concrete two-protocol chain
 - [Commons](https://github.com/pentaxis93/commons) — Bedrock principles and architectural decision records (ADRs)
 - [Interface Contract](docs/interface-contract.md) — Three primitives defining the methodology-runtime boundary

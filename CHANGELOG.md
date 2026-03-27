@@ -10,6 +10,7 @@ Semantic Versioning.
 ### Changed
 
 - Rewrite `README.md` so it now opens with a plain-language runtime model and a checked-in `runa init` + `runa step --dry-run` quick start for adopters and methodology authors before the full command reference.
+- Add `docs/methodology-authoring-guide.md` as the first-step companion to the interface contract, with a concrete two-protocol `request -> outline -> summary` example and README links that route new methodology authors to it.
 
 - Split CLI execution into `runa step` and `runa run`. `step` now executes or previews only the next concrete protocol invocation, while `run` owns cascade-to-quiescence behavior, tolerant continuation after per-protocol failures, and outcome-specific exit codes (`0`, `2`, `3`, `130` for interrupted).
 
