@@ -449,6 +449,93 @@ fn step_dry_run_json_uses_display_path_for_context_inputs() {
 }
 
 #[test]
+fn step_dry_run_json_quickstart_review_receives_requirements_and_design() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../examples/quickstart-methodology/manifest.toml");
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("requirements")).unwrap();
+    fs::create_dir_all(workspace.join("design")).unwrap();
+
+    let requirements_path = workspace.join("requirements/request-1.json");
+    fs::write(&requirements_path, r#"{"title":"Ship a review flow"}"#).unwrap();
+    let requirements_modified = fs::metadata(&requirements_path)
+        .unwrap()
+        .modified()
+        .unwrap();
+
+    let design_path = workspace.join("design/design-1.json");
+    let mut design_modified = requirements_modified;
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(
+            &design_path,
+            r#"{"summary":"Review the design against the requirements"}"#,
+        )
+        .unwrap();
+        design_modified = fs::metadata(&design_path).unwrap().modified().unwrap();
+        if design_modified > requirements_modified {
+            break;
+        }
+    }
+    assert!(
+        design_modified > requirements_modified,
+        "design mtime must be newer than requirements so draft is freshness-suppressed"
+    );
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 1, "{value:#}");
+    assert_eq!(execution_plan[0]["protocol"], "review");
+
+    let inputs = execution_plan[0]["context"]["inputs"].as_array().unwrap();
+    assert_eq!(inputs.len(), 2, "{value:#}");
+
+    assert_eq!(inputs[0]["artifact_type"], "requirements");
+    assert_eq!(inputs[0]["instance_id"], "request-1");
+    assert_eq!(
+        inputs[0]["display_path"],
+        serde_json::Value::String(requirements_path.display().to_string())
+    );
+    assert_eq!(inputs[0]["relationship"], "requires");
+
+    assert_eq!(inputs[1]["artifact_type"], "design");
+    assert_eq!(inputs[1]["instance_id"], "design-1");
+    assert_eq!(
+        inputs[1]["display_path"],
+        serde_json::Value::String(design_path.display().to_string())
+    );
+    assert_eq!(inputs[1]["relationship"], "requires");
+
+    let review = value["protocols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|protocol| protocol["name"] == "review")
+        .unwrap();
+    assert_eq!(review["status"], "ready");
+}
+
+#[test]
 fn step_dry_run_text_reports_why_when_no_skills_are_ready() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(

@@ -2,7 +2,7 @@
 
 A two-protocol review pipeline that demonstrates dependency-driven protocol chaining.
 
-A `draft` protocol reads requirements and produces a design. A `review` protocol reads the design and produces a review report. The manifest declares what each protocol requires and produces — runa computes the execution order from the dependency graph.
+A `draft` protocol reads requirements and produces a design. A `review` protocol reads the requirements and the design and produces a review report. Because runa only injects declared `requires` and available `accepts` inputs, the manifest declares both review inputs explicitly. Runa computes the execution order from the dependency graph.
 
 ## Contents
 

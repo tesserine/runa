@@ -1,1 +1,1 @@
-Read the design. Evaluate whether the approach satisfies the requirements. Report approval status.
+Read the requirements and the design. Evaluate whether the design satisfies the requirements. Report approval status.

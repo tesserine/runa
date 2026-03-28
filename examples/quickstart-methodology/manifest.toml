@@ -17,6 +17,6 @@ trigger = { type = "on_artifact", name = "requirements" }
 
 [[protocols]]
 name = "review"
-requires = ["design"]
+requires = ["requirements", "design"]
 produces = ["review-report"]
 trigger = { type = "on_artifact", name = "design" }
