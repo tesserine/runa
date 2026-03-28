@@ -464,29 +464,13 @@ fn step_dry_run_json_quickstart_review_receives_requirements_and_design() {
 
     let requirements_path = workspace.join("requirements/request-1.json");
     fs::write(&requirements_path, r#"{"title":"Ship a review flow"}"#).unwrap();
-    let requirements_modified = fs::metadata(&requirements_path)
-        .unwrap()
-        .modified()
-        .unwrap();
 
     let design_path = workspace.join("design/design-1.json");
-    let mut design_modified = requirements_modified;
-    for _ in 0..10 {
-        std::thread::sleep(Duration::from_millis(20));
-        fs::write(
-            &design_path,
-            r#"{"summary":"Review the design against the requirements"}"#,
-        )
-        .unwrap();
-        design_modified = fs::metadata(&design_path).unwrap().modified().unwrap();
-        if design_modified > requirements_modified {
-            break;
-        }
-    }
-    assert!(
-        design_modified > requirements_modified,
-        "design mtime must be newer than requirements so draft is freshness-suppressed"
-    );
+    fs::write(
+        &design_path,
+        r#"{"summary":"Review the design against the requirements"}"#,
+    )
+    .unwrap();
 
     let output = runa_bin()
         .arg("step")
@@ -526,9 +510,19 @@ fn step_dry_run_json_quickstart_review_receives_requirements_and_design() {
     );
     assert_eq!(inputs[1]["relationship"], "requires");
 
-    let review = value["protocols"]
-        .as_array()
-        .unwrap()
+    let protocols = value["protocols"].as_array().unwrap();
+    let draft = protocols
+        .iter()
+        .find(|protocol| protocol["name"] == "draft")
+        .unwrap();
+    assert_eq!(draft["status"], "waiting");
+    assert_eq!(draft["trigger"], "satisfied");
+    assert_eq!(
+        draft["unsatisfied_conditions"],
+        serde_json::json!(["outputs are current"])
+    );
+
+    let review = protocols
         .iter()
         .find(|protocol| protocol["name"] == "review")
         .unwrap();
