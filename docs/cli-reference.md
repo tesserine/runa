@@ -1,0 +1,185 @@
+# CLI Reference
+
+## Configuration
+
+### Config Resolution
+
+Commands that load a methodology share a common config resolution chain. The first match wins; there is no per-field merging across sources:
+
+1. `--config <PATH>` CLI flag
+2. `RUNA_CONFIG` environment variable
+3. `.runa/config.toml`
+4. `$XDG_CONFIG_HOME/runa/config.toml`
+
+For `runa init`, `--config` controls where the config file is written. For all other commands, it controls where the config file is read from.
+
+### Logging
+
+Runtime diagnostics use `tracing` on stderr. Command output stays on stdout.
+
+Default behavior is quiet on successful runs: `warn` and above in human-readable text. `RUST_LOG` overrides the active filter for both `runa` and `runa-mcp`. When `RUST_LOG` is unset, the filter falls back to `config.logging.filter`, then to `warn`.
+
+```toml
+[logging]
+format = "json"   # "text" (default) or "json"
+filter = "info"   # any tracing env-filter directive
+```
+
+`format = "json"` switches stderr events to machine-readable JSON without changing stdout command output. `RUST_LOG` controls the filter only; output format is always determined by `config.logging.format`.
+
+### Agent Execution
+
+Live `runa step` and `runa run` (without `--dry-run`) require an `[agent].command` entry in the config:
+
+```toml
+[agent]
+command = ["./examples/agent-claude-code.sh"]
+```
+
+Runa executes that command in the project root with stdout and stderr attached to the terminal, renders a natural-language execution prompt from the planned protocol context, and writes the prompt on stdin. Before each invocation, runa exports `RUNA_MCP_CONFIG` — a JSON payload containing the resolved `runa-mcp` command, arguments, and environment — so the agent wrapper can launch the MCP server as its own child process. The payload is runtime-agnostic (`{command, args, env}`); agent wrappers adapt it to their runtime's schema. See `examples/agent-claude-code.sh` for a Claude Code wrapper that converts the payload to Claude's `mcpServers` format.
+
+## Commands
+
+All commands accept a global `--config <PATH>` flag to override the config file location.
+
+### `runa init`
+
+```bash
+runa init --methodology <PATH> [--artifacts-dir <DIR>] [--config <PATH>]
+```
+
+Initializes a runa project. Parses the methodology manifest at `<PATH>`, validates its structure and layout convention (schemas and instruction files at their conventional paths), canonicalizes the methodology path, and creates the `.runa/` project directory containing:
+
+- `config.toml` — methodology path, optional artifact workspace directory, optional logging and agent settings
+- `state.toml` — initialization timestamp, runa version
+- `store/` — internal artifact state store
+- the artifact workspace directory (default `.runa/workspace/`)
+
+Reports the artifact type and protocol counts on success.
+
+**Flags:**
+
+- `--methodology <PATH>` — Path to the methodology manifest file. Required.
+- `--artifacts-dir <DIR>` — Artifact workspace directory. Defaults to `.runa/workspace/`.
+
+**Exit codes:** 0 on success. 1 on parse, validation, or I/O failure.
+
+### `runa scan`
+
+```bash
+runa scan [--config <PATH>]
+```
+
+Reconciles the artifact workspace into `.runa/store/`. Reads `*.json` files under `<workspace>/<type_name>/`, validates each against its artifact type schema, and classifies results as new, modified (content hash changed), revalidated (content unchanged but schema hash changed), or removed. Invalid and malformed artifacts are recorded in store state rather than discarded. Unreadable files become scan-gap metadata. Unrecognized top-level workspace directories are reported separately.
+
+A missing workspace directory is an error unless the store is still empty.
+
+**Exit codes:** 0 on successful reconciliation, even when invalid, malformed, or unreadable findings are present. Non-zero on project-load, store, or I/O failure.
+
+### `runa list`
+
+```bash
+runa list [--config <PATH>]
+```
+
+Displays protocols in topological (execution) order after an implicit scan. For each protocol, shows non-empty relationship fields (requires, accepts, produces, may_produce), the trigger condition, and a `BLOCKED` indicator when required artifacts are missing, invalid, or stale. On cycle detection, falls back to manifest order with a warning.
+
+**Exit codes:** 0 on success. 1 on failure.
+
+### `runa state`
+
+```bash
+runa state [--json] [--config <PATH>]
+```
+
+Evaluates every protocol after an implicit scan and classifies each as `READY`, `BLOCKED`, or `WAITING`. Classification is ordered and mutually exclusive: WAITING when the trigger is not satisfied, BLOCKED when the trigger is satisfied but preconditions fail, READY otherwise. Evaluation is work-unit scoped: protocols with work-unit-bearing inputs are checked once per discovered work unit; unscoped protocols are evaluated once overall.
+
+Text output groups protocols in READY, BLOCKED, then WAITING order, preserving topological protocol order within each group. READY entries list valid required and accepted artifact instances. BLOCKED entries list required-artifact failures (missing, invalid, stale, scan_incomplete). WAITING entries list the trigger condition and the specific reason it is not satisfied.
+
+When scan reconciliation is partial, `state` surfaces scan warnings and blocks protocols whose required artifact types could not be fully reconciled. Partially scanned accepted types are omitted from reported inputs.
+
+**Flags:**
+
+- `--json` — Emits a versioned JSON envelope: `{ "version": 2, "methodology": "...", "scan_warnings": [...], "protocols": [...] }`. The `protocols` array is flat and ordered, with each entry containing `name`, optional `work_unit`, `status`, `trigger`, and the status-specific field `inputs`, `precondition_failures`, or `unsatisfied_conditions`.
+
+**Exit codes:** 0 when evaluation succeeds, regardless of whether protocols are ready, blocked, or waiting. Non-zero on project-load, scan, or serialization failure.
+
+### `runa doctor`
+
+```bash
+runa doctor [--config <PATH>]
+```
+
+Checks project health after an implicit scan. Three checks:
+
+1. **Artifact health** — enumerates instances per artifact type and reports invalid, malformed, or stale instances with details.
+2. **Protocol readiness** — checks each protocol's required artifact types and reports missing, invalid, or stale failures.
+3. **Cycle detection** — reports hard dependency cycles in the protocol graph.
+
+**Exit codes:** 0 if no problems found. 1 if any check reports a problem.
+
+### `runa step`
+
+```bash
+runa step [--dry-run] [--json] [--config <PATH>]
+```
+
+Selects at most one `(protocol, work_unit)` candidate after an implicit scan: the next non-cyclic READY execution in topological order. Activated work is suppressed when valid outputs are newer than relevant inputs for that work unit. Unreadable output instances conservatively disable freshness suppression for every work unit of the affected output type.
+
+With `--dry-run`, text output prints the next execution plus the grouped READY/BLOCKED/WAITING status view. The execution entry includes the protocol name, optional work unit, the trigger that activated it, an MCP server config, and the serialized agent-facing context payload (protocol name, optional work unit, instruction content, valid required and available accepted inputs with display paths and content hashes, and expected outputs split into `produces` and `may_produce`). Dry-run does not require a discoverable `runa-mcp` binary. If the graph contains a hard dependency cycle, `step` reports it as a warning and excludes cyclic protocols from the execution plan.
+
+Without `--dry-run`, `step` requires `[agent].command` in the config and a Linux host. On non-Linux platforms, it fails explicitly before resolving `runa-mcp` or launching an agent. If no READY work exists, it prints `No READY protocols.` and exits without requiring `runa-mcp`. Otherwise, it resolves `runa-mcp` (preferring a sibling binary next to the running `runa` executable, falling back to `PATH`), executes the candidate, re-scans the workspace, enforces postconditions, and prints the refreshed status view.
+
+**Flags:**
+
+- `--dry-run` — Preview only. Does not execute the agent.
+- `--json` — Dry-run only. Emits a versioned JSON envelope: `{ "version": 4, "methodology": "...", "scan_warnings": [...], "cycle": [...] | null, "execution_plan": [...], "protocols": [...] }`. The `execution_plan` array contains at most one entry. The `protocols` array reuses the same status entries as `runa state --json`.
+
+**Exit codes:** 0 on success. 1 on failure (non-Linux for live execution, agent error, postcondition violation, project-load error).
+
+### `runa run`
+
+```bash
+runa run [--dry-run] [--json] [--config <PATH>]
+```
+
+The cascade command. Walks the READY frontier repeatedly until quiescence instead of stopping after one execution.
+
+With `--dry-run`, projects the full optimistic cascade from manifest topology: declared `produces` outputs, dependency edges, trigger declarations, and the current evaluated work-unit state. `may_produce` outputs do not advance the projection unless they already exist on disk. Initially ready entries include MCP config and full context on first emission; downstream projected entries carry only protocol name, optional work unit, trigger, and projection kind. The projection never synthesizes artifact values, forks the store, or bypasses schema validation.
+
+Without `--dry-run`, requires a Linux host. On non-Linux platforms, fails explicitly before installing the interrupt handler, resolving `runa-mcp`, or launching an agent. Failed candidates are skipped for the rest of the invocation; any artifacts emitted before failure are still reconciled into workspace state for downstream readiness. Previously exhausted work reopens when a later reconciliation changes relevant inputs.
+
+**Interrupt behavior.** The first `Ctrl-C` is boundary-scoped: the current protocol run completes its scan and postcondition reconciliation. After that reconciliation, `run` exits `130` only if the interrupt prevented the next READY candidate from starting. If no further READY work remains, the quiescent topology outcome takes precedence. A second `Ctrl-C` forces immediate exit with status `130`; the isolated child process may continue running after `runa` terminates.
+
+**Flags:**
+
+- `--dry-run` — Preview the projected cascade. Does not execute agents.
+- `--json` — Dry-run only. Same envelope structure as `runa step --json`, but `execution_plan` may contain multiple entries including projected downstream work.
+
+**Exit codes** (apply to both live and dry-run — dry-run reflects current topology state, not the projection):
+
+| Code | Meaning |
+|------|---------|
+| 0 | Topology fully satisfied. |
+| 1 | Fatal error (project-load, config, non-Linux). |
+| 2 | Quiescent with protocol failures or postcondition violations during the invocation. |
+| 3 | Quiescent but work remains blocked, waiting, or trapped in a cycle. |
+| 130 | Interrupted — `Ctrl-C` prevented the next candidate from starting. |
+
+## MCP Server
+
+`runa-mcp` is a single-session stdio MCP server that serves one named protocol invocation per process.
+
+```bash
+runa-mcp --protocol <name> [--work-unit <name>]
+```
+
+On startup, the server loads the project, resolves the named protocol from the manifest, validates that its output types can be served as MCP tools, and serves an MCP session over stdio. Each output artifact type (`produces` and `may_produce`) becomes one MCP tool. The tool input schema is the artifact type's JSON Schema with the `work_unit` field removed — the server injects `work_unit` automatically from the `--work-unit` argument.
+
+`runa step` does not spawn `runa-mcp` directly. It passes the agent wrapper a `RUNA_MCP_CONFIG` JSON payload containing the resolved `runa-mcp` command, arguments, and environment so the agent runtime can launch the server as its own child process. The exported command and environment paths are absolute whenever runa resolves them from the local filesystem, so wrappers do not depend on child process cwd to launch `runa-mcp`.
+
+**Environment variables:**
+
+- `RUNA_WORKING_DIR` — Project directory. Defaults to the current directory.
+- `RUNA_CONFIG` — Config file override (same as `--config` in the CLI).
+- `RUST_LOG` — Tracing filter override for stderr diagnostics.
