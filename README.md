@@ -1,10 +1,10 @@
 # runa
 
-Runa is a runtime for AI agents that enforces contracts on agent-produced work.
+Runa makes multi-step AI agent workflows reliable. When each step in a workflow declares what it needs and what it produces, runa validates every work product against its declared schema, computes which steps are ready to run, and delivers the right inputs to each agent invocation. The result: an orchestrator can compose agent steps into pipelines and trust that if a step completes, its output actually satisfies the contract — and that downstream steps receive only validated inputs.
 
-An AI agent receives instructions and produces files. Without enforcement, nothing guarantees that the agent produced what was asked, that its output conforms to a declared schema, or that downstream work can safely depend on it. Runa provides that enforcement. It validates work products against schemas, computes what should run next from declared dependencies, activates work when conditions are met, and delivers the right input context to each agent invocation.
+This means agent workflows become composable. Teams can define reusable schemas and step definitions, swap implementations behind stable contracts, and build multi-stage pipelines where each handoff is enforced. Runa handles the enforcement so the agents and the orchestrator don't have to.
 
-Runa is not an agent framework and does not include an AI model. It is the runtime layer between an orchestrator and the agents it directs — the layer that makes declarative workflows reliable by enforcing their contracts.
+Runa is not an agent framework and does not include an AI model. It is the runtime layer between an orchestrator and the agents it directs.
 
 ## Core Concepts
 
@@ -53,32 +53,83 @@ produces = ["report"]
 trigger = { type = "on_artifact", name = "spec" }
 ```
 
-Each schema file is a standard JSON Schema. A minimal valid schema:
+Each schema file is a standard JSON Schema. Here, a spec must have a `title` and a report must have a `summary`:
 
-`schemas/spec.schema.json` and `schemas/report.schema.json`:
+`schemas/spec.schema.json`:
 
 ```json
-{ "type": "object" }
+{
+  "type": "object",
+  "required": ["title"],
+  "properties": {
+    "title": { "type": "string" }
+  }
+}
+```
+
+`schemas/report.schema.json`:
+
+```json
+{
+  "type": "object",
+  "required": ["summary"],
+  "properties": {
+    "summary": { "type": "string" }
+  }
+}
 ```
 
 `protocols/analyze/PROTOCOL.md` contains the instruction text delivered to the agent at execution time. Any content is valid.
 
-Initialize and inspect:
+Initialize the project:
 
 ```bash
 runa init --methodology my-methodology/manifest.toml
 runa state
 ```
 
-`runa state` shows that `analyze` is WAITING — no `spec` artifact exists yet. Create a spec artifact in the workspace and inspect again:
+`runa state` shows `analyze` as WAITING — no `spec` artifact exists yet. Create one that violates the schema (missing the required `title` field) and scan:
 
 ```bash
-echo '{}' > .runa/workspace/spec/first.json
-runa state
-runa step --dry-run
+mkdir -p .runa/workspace/spec
+echo '{"score": 1}' > .runa/workspace/spec/first.json
+runa scan
 ```
 
-`runa state` now shows `analyze` as READY. `runa step --dry-run` previews the execution: the protocol to run, the input artifacts it will receive, and the MCP server configuration for the agent runtime.
+Runa finds the artifact but reports it as invalid:
+
+```
+Invalid:
+  spec/first (.runa/workspace/spec/first.json)
+    - /required: "title" is a required property
+```
+
+The `analyze` protocol remains WAITING — runa will not activate it with invalid inputs. Fix the artifact and scan again:
+
+```bash
+echo '{"title": "Widget API"}' > .runa/workspace/spec/first.json
+runa scan
+runa state
+```
+
+Now `runa state` shows `analyze` as READY with the validated spec listed as input:
+
+```
+READY:
+  analyze
+    - spec/first (requires)
+```
+
+`runa step --dry-run` previews the execution: the protocol to run, the input artifacts it will receive, and the MCP server configuration for the agent runtime.
+
+## Ecosystem
+
+Runa is the enforcement layer in a larger agent toolchain:
+
+- [**agentd**](https://github.com/pentaxis93/agentd) — a process runtime that orchestrates autonomous agents through runa-managed workflows.
+- [**groundwork**](https://github.com/pentaxis93/groundwork) — a methodology plugin that provides protocols and artifact types for runa.
+
+Both projects are in early development.
 
 ## Documentation
 
