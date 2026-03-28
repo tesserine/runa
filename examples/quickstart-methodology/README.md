@@ -12,8 +12,10 @@ A `draft` protocol reads requirements and produces a design. A `review` protocol
 
 ## Usage
 
+From `examples/quickstart-methodology/`:
+
 ```bash
-runa init --methodology examples/quickstart-methodology/manifest.toml
+runa init --methodology manifest.toml
 runa state
 ```
 
