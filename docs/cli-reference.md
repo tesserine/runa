@@ -36,7 +36,7 @@ Live `runa step` and `runa run` (without `--dry-run`) require an `[agent].comman
 command = ["./examples/agent-claude-code.sh"]
 ```
 
-Runa executes that command in the project root with stdout and stderr attached to the terminal, renders a natural-language execution prompt from the planned protocol context, and writes the prompt on stdin. Before each invocation, runa exports `RUNA_MCP_CONFIG` — a JSON payload containing the resolved `runa-mcp` command, arguments, and environment — so the agent wrapper can launch the MCP server as its own child process. The payload is runtime-agnostic (`{command, args, env}`); agent wrappers adapt it to their runtime's schema. See `examples/agent-claude-code.sh` for a Claude Code wrapper that converts the payload to Claude's `mcpServers` format.
+Runa executes that command in the project root with stdout and stderr attached to the terminal, renders a natural-language execution prompt from the planned protocol context, and writes the prompt on stdin. Before each invocation, runa exports `RUNA_MCP_CONFIG` — a JSON payload containing the resolved `runa-mcp` command, arguments, and environment — so the agent wrapper can launch the MCP server as its own child process. The payload is runtime-agnostic (`{command, args, env}`); agent wrappers adapt it to their runtime's schema. The config path above is resolved from the project root at execution time. To inspect the sample wrapper in this repository, see [`examples/agent-claude-code.sh`](../examples/agent-claude-code.sh), which converts the payload to Claude's `mcpServers` format.
 
 ## Commands
 
