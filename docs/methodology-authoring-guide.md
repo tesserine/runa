@@ -4,7 +4,7 @@ This guide walks through building a methodology from scratch. It assumes you hav
 
 ## A Complete Example
 
-The example is a two-protocol review pipeline. A `draft` protocol reads requirements and produces a design. A `review` protocol reads the design and produces a review report. The chain emerges from their declarations: `draft` produces what `review` requires.
+The example is a two-protocol review pipeline. A `draft` protocol reads requirements and produces a design. A `review` protocol reads the requirements and the design and produces a review report. The chain emerges from their declarations: `draft` produces one of `review`'s required inputs (`design`).
 
 ### Directory Layout
 
@@ -48,7 +48,7 @@ trigger = { type = "on_artifact", name = "requirements" }
 
 [[protocols]]
 name = "review"
-requires = ["design"]
+requires = ["requirements", "design"]
 produces = ["review-report"]
 trigger = { type = "on_artifact", name = "design" }
 ```
@@ -106,8 +106,10 @@ Read the requirements. Produce a design document summarizing the approach.
 `protocols/review/PROTOCOL.md`:
 
 ```markdown
-Read the design. Evaluate whether the approach satisfies the requirements. Report approval status.
+Read the requirements and the design. Evaluate whether the design satisfies the requirements. Report approval status.
 ```
+
+Because runa injects only declared `requires` and available `accepts` inputs, `review` declares both `requirements` and `design` explicitly.
 
 ### Initialize and Inspect
 
@@ -132,9 +134,9 @@ After reconciliation, the `draft` protocol's trigger (`on_artifact("requirements
 
 The `review` protocol remains WAITING. Its trigger needs a `design` artifact, which does not exist.
 
-When `draft` executes and produces a valid `design` artifact, runa validates it against `design.schema.json`. Now `review`'s trigger (`on_artifact("design")`) is satisfied. `review` becomes READY, executes, and produces a `review-report`. Both protocols have completed.
+When `draft` executes and produces a valid `design` artifact, runa validates it against `design.schema.json`. Now `review`'s trigger (`on_artifact("design")`) is satisfied, and its `requirements` and `design` preconditions are both met. `review` becomes READY, executes, and produces a `review-report`. Both protocols have completed.
 
-The manifest never declares this ordering. runa computes it from the dependency graph: `draft` produces `design`, `review` requires `design`, so `draft` must complete before `review` can execute.
+The manifest never declares this ordering. runa computes it from the dependency graph: `draft` produces `design`, `review` requires `design`, so `draft` must complete before `review` can execute. `review` also directly requires `requirements`, which remains available from the external input that activated `draft`.
 
 ## Manifest Reference
 

@@ -7,8 +7,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Add a runnable `examples/quickstart-methodology/` example with a README, manifest, schemas, and protocol instructions for the two-protocol review pipeline used in the methodology authoring guide.
+
 ### Changed
 
+- Move the README Documentation section directly after Quick Start, expand its navigation links, and add the methodology authoring guide and interface contract to `AGENTS.md`'s required orientation list.
 - Split CLI execution into `runa step` and `runa run`. `step` now executes or previews only the next concrete protocol invocation, while `run` owns cascade-to-quiescence behavior, tolerant continuation after per-protocol failures, and outcome-specific exit codes (`0`, `2`, `3`, `130` for interrupted).
 
 - Rename the readiness command from `runa status` to `runa state` for naming
@@ -39,6 +44,7 @@ Semantic Versioning.
 
 ### Fixed
 
+- Make the quickstart example's `review` protocol require both `requirements` and `design`, matching runa's declared-input injection contract, and add a regression test covering `runa step --dry-run --json`.
 - Fail live `runa step` and `runa run` explicitly on non-Linux platforms instead of silently dropping Linux-only execution guarantees.
 - Restore `runa run`'s double-`Ctrl-C` escape hatch: the first interrupt remains a graceful boundary-scoped stop, and the second forces immediate exit with status `130`.
 - Preserve exhausted live `runa step` candidates across unrelated workspace
