@@ -8,7 +8,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::model::{ProtocolDeclaration, TriggerCondition};
 use crate::selection::{
-    Candidate, FreshnessInputMode, protocol_freshness_inputs, protocol_relevant_input_types,
+    Candidate, CandidateWorkUnitMode, CandidateWorkUnitSource, FreshnessInputMode,
+    collect_candidate_work_units, protocol_freshness_inputs, protocol_relevant_input_types,
     protocol_scan_incomplete_types,
 };
 use crate::store::{ArtifactStore, ValidationStatus};
@@ -250,35 +251,7 @@ fn protocol_work_units_projection(
     protocol: &ProtocolDeclaration,
     projection: &ProjectionState<'_>,
 ) -> BTreeSet<Option<String>> {
-    let mut referenced_types = HashSet::new();
-    for artifact_type in &protocol.requires {
-        referenced_types.insert(artifact_type.as_str());
-    }
-    for artifact_type in &protocol.accepts {
-        referenced_types.insert(artifact_type.as_str());
-    }
-    trigger_artifact_types(&protocol.trigger, &mut referenced_types);
-
-    let mut work_units = BTreeSet::new();
-    for artifact_type in referenced_types {
-        if projection.partially_scanned_types.contains(artifact_type) {
-            continue;
-        }
-        for (_, state) in projection.store.instances_of(artifact_type, None) {
-            work_units.insert(state.work_unit.clone());
-        }
-        work_units.extend(projection.projected_work_units(artifact_type));
-    }
-
-    if work_units.iter().any(Option::is_some) {
-        work_units.remove(&None);
-    }
-
-    if work_units.is_empty() {
-        work_units.insert(None);
-    }
-
-    work_units
+    collect_candidate_work_units(protocol, projection)
 }
 
 fn trigger_is_satisfied(
@@ -307,21 +280,6 @@ fn trigger_is_satisfied(
                 && conditions
                     .iter()
                     .any(|child| trigger_is_satisfied(child, protocol, projection, work_unit))
-        }
-    }
-}
-
-fn trigger_artifact_types<'a>(condition: &'a TriggerCondition, out: &mut HashSet<&'a str>) {
-    match condition {
-        TriggerCondition::OnArtifact { name }
-        | TriggerCondition::OnChange { name }
-        | TriggerCondition::OnInvalid { name } => {
-            out.insert(name.as_str());
-        }
-        TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
-            for child in conditions {
-                trigger_artifact_types(child, out);
-            }
         }
     }
 }
@@ -480,6 +438,48 @@ impl<'a> ProjectionState<'a> {
     }
 }
 
+impl CandidateWorkUnitSource for ProjectionState<'_> {
+    fn is_partially_scanned(&self, artifact_type: &str) -> bool {
+        self.partially_scanned_types.contains(artifact_type)
+    }
+
+    fn artifact_work_units(
+        &self,
+        artifact_type: &str,
+        mode: CandidateWorkUnitMode,
+    ) -> BTreeSet<Option<String>> {
+        let mut work_units: BTreeSet<_> = self
+            .store
+            .instances_of(artifact_type, None)
+            .into_iter()
+            .filter_map(|(_, state)| match mode {
+                CandidateWorkUnitMode::Valid if matches!(state.status, ValidationStatus::Valid) => {
+                    Some(state.work_unit.clone())
+                }
+                CandidateWorkUnitMode::Invalid
+                    if matches!(
+                        state.status,
+                        ValidationStatus::Invalid(_) | ValidationStatus::Malformed(_)
+                    ) =>
+                {
+                    Some(state.work_unit.clone())
+                }
+                CandidateWorkUnitMode::Recorded => Some(state.work_unit.clone()),
+                _ => None,
+            })
+            .collect();
+
+        if matches!(
+            mode,
+            CandidateWorkUnitMode::Valid | CandidateWorkUnitMode::Recorded
+        ) {
+            work_units.extend(self.projected_work_units(artifact_type));
+        }
+
+        work_units
+    }
+}
+
 fn matches_projected_work_unit(
     projected_work_unit: Option<&str>,
     candidate_work_unit: Option<&str>,
@@ -634,6 +634,48 @@ mod tests {
             vec![Candidate {
                 protocol_name: "publish".into(),
                 work_unit: Some("wu-a".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn unscoped_valid_artifact_does_not_project_invalid_scoped_sibling() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["request", "published"]);
+        store
+            .record(
+                "request",
+                "shared",
+                Path::new("shared.json"),
+                &json!({"title":"shared"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "request",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"work_unit":"wu-a"}),
+            )
+            .unwrap();
+
+        let protocol = protocol(
+            "publish",
+            &["request"],
+            &["published"],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+        let partials = HashSet::new();
+        let projection = ProjectionState::new(&store, &partials);
+
+        let ready = discover_ready_candidates_projection(&[protocol], &projection, &["publish"]);
+        assert_eq!(
+            ready,
+            vec![Candidate {
+                protocol_name: "publish".into(),
+                work_unit: None,
             }]
         );
     }
