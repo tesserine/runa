@@ -139,7 +139,7 @@ Both projects are in early development.
 - [Architecture](ARCHITECTURE.md) — Workspace structure, data flow, module descriptions, disk layout
 - [Contributing](CONTRIBUTING.md) — Conventions for landing PRs
 - [Quickstart Example](examples/quickstart-methodology/) — A two-protocol review pipeline you can browse and run
-- [Commons](https://github.com/pentaxis93/commons) — Shared governance for the ecosystem
+- [Commons](https://github.com/pentaxis93/commons) — Shared governance for the ecosystem: bedrock principles, design principles, and architectural decision records. All development on runa follows commons as active guidelines, not optional reading
 
 ## Commands
 
