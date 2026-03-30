@@ -352,7 +352,7 @@ trigger = { type = "all_of", conditions = [
     assert_eq!(
         protocols[1]["unsatisfied_conditions"],
         serde_json::json!([
-            "on_artifact(implementation): artifact type 'implementation' has invalid, malformed, or stale instances",
+            "on_artifact(implementation): no valid instances of artifact type 'implementation' exist",
             "on_invalid(constraints): no invalid instances of artifact type 'constraints'"
         ])
     );
@@ -1894,7 +1894,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 
 #[cfg(unix)]
 #[test]
-fn state_keeps_on_artifact_waiting_when_visible_invalid_instance_makes_it_definitely_false() {
+fn state_blocks_on_artifact_when_partial_scan_could_hide_a_valid_instance() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1946,13 +1946,82 @@ trigger = { type = "on_artifact", name = "report" }
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let protocols = value["protocols"].as_array().unwrap();
     assert_eq!(protocols[0]["name"], "publish");
-    assert_eq!(protocols[0]["status"], "waiting");
+    assert_eq!(protocols[0]["status"], "blocked");
     assert_eq!(protocols[0]["trigger"], "not_satisfied");
     assert_eq!(
-        protocols[0]["unsatisfied_conditions"],
+        protocols[0]["precondition_failures"],
         serde_json::json!([
-            "on_artifact(report): artifact type 'report' has invalid, malformed, or stale instances"
+            {
+                "artifact_type": "report",
+                "reason": "scan_incomplete"
+            }
+        ])
+    );
+    assert!(protocols[0].get("unsatisfied_conditions").is_none());
+}
+
+#[test]
+fn state_marks_trigger_and_requires_ready_when_a_valid_sibling_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "request"
+
+[[protocols]]
+name = "publish"
+requires = ["request"]
+trigger = { type = "on_artifact", name = "request" }
+"#,
+        &[(
+            "request",
+            r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+        )],
+        &["publish"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("request")).unwrap();
+    fs::write(workspace.join("request/good.json"), r#"{"title":"ok"}"#).unwrap();
+    fs::write(workspace.join("request/bad.json"), r#"{"bad":true}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 1, "{value:#}");
+    assert_eq!(protocols[0]["name"], "publish");
+    assert_eq!(protocols[0]["status"], "ready");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
+    assert_eq!(
+        protocols[0]["inputs"],
+        serde_json::json!([
+            {
+                "artifact_type": "request",
+                "instance_id": "good",
+                "path": ".runa/workspace/request/good.json",
+                "relationship": "requires"
+            }
         ])
     );
     assert!(protocols[0].get("precondition_failures").is_none());
+    assert!(protocols[0].get("unsatisfied_conditions").is_none());
 }

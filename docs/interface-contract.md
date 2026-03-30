@@ -22,7 +22,7 @@ runa ships no artifact types. Every artifact type is methodology-owned.
 
 A protocol declares its relationship to artifacts through four kinds of edges:
 
-- **requires** — the named artifact type must exist and validate before the protocol can execute. Hard dependency.
+- **requires** — the named artifact type must have at least one valid instance before the protocol can execute. Hard dependency. Invalid, malformed, or stale siblings remain health findings but do not block execution when a valid instance exists.
 - **accepts** — the named artifact type may be consumed if available. The protocol operates with or without it. Soft dependency.
 - **produces** — the named artifact type will exist and validate after the protocol executes. runa fails the protocol if a declared output is missing or invalid.
 - **may_produce** — the named artifact type might be produced. runa validates any instance that appears but does not fail the protocol for its absence.
@@ -44,7 +44,7 @@ Topology is not declared. It emerges from the graph of requires/produces/may_pro
 
 A trigger condition defines when runa should activate a protocol. Triggers are composable from three primitive types:
 
-- **on_artifact(name)** — the named artifact exists and satisfies its schema
+- **on_artifact(name)** — at least one valid instance of the named artifact exists
 - **on_change(name)** — the named artifact is newer than this protocol's current output artifacts for the same work unit. runa derives freshness from artifact timestamps in the store rather than persisting separate completion records.
 - **on_invalid(name)** — an instance of the named artifact type exists but fails validation against its declared schema
 
@@ -69,7 +69,7 @@ Given the declarations above, runa provides five runtime capabilities:
 
 **Graph computation.** runa computes the dependency graph from protocol declarations. This enables: freshness analysis (which artifacts are stale), execution ordering (what can run now), cycle detection (where the methodology creates loops), and blocked-protocol identification (what's waiting on what).
 
-**Enforcement.** A protocol cannot execute if its `requires` artifacts are missing or invalid. A protocol's execution is incomplete if its `produces` artifacts are missing or invalid. These are hard constraints the runtime enforces regardless of what the methodology intends.
+**Enforcement.** A protocol cannot execute if any `requires` artifact type lacks a valid instance. A protocol's execution is incomplete if its `produces` artifacts are missing or invalid. These are hard constraints the runtime enforces regardless of what the methodology intends.
 
 **Context injection.** When a protocol is ready to execute, runa resolves which artifact instances the protocol needs — all valid `requires` instances and all available valid `accepts` instances — and delivers them as the protocol's input context alongside the protocol's instruction content and expected output artifact types. The protocol receives its inputs without querying the store directly.
 

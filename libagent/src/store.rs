@@ -421,6 +421,17 @@ impl ArtifactStore {
         count > 0
     }
 
+    /// True if at least one matching instance of this type has `Valid` status.
+    ///
+    /// Scoping follows the same rules as [`is_valid`](Self::is_valid).
+    pub fn has_any_valid(&self, artifact_type: &str, work_unit: Option<&str>) -> bool {
+        self.artifacts.iter().any(|((t, _), state)| {
+            t == artifact_type
+                && matches_work_unit_filter(&state.work_unit, work_unit)
+                && matches!(state.status, ValidationStatus::Valid)
+        })
+    }
+
     /// Sets status to Stale for a specific instance. No-op if not recorded.
     pub fn invalidate(&mut self, artifact_type: &str, instance_id: &str) -> Result<(), StoreError> {
         let key = (artifact_type.to_string(), instance_id.to_string());
@@ -539,6 +550,26 @@ impl ArtifactStore {
             .iter()
             .filter(|((t, _), state)| {
                 t == artifact_type && matches_work_unit_filter(&state.work_unit, work_unit)
+            })
+            .map(|(_, state)| state.last_modified_ms)
+            .max()
+    }
+
+    /// Returns the most recent `last_modified_ms` across matching valid
+    /// instances of this type, or `None` if no valid matching instances exist.
+    ///
+    /// Scoping follows the same rules as [`is_valid`](Self::is_valid).
+    pub fn latest_valid_modification_ms(
+        &self,
+        artifact_type: &str,
+        work_unit: Option<&str>,
+    ) -> Option<u64> {
+        self.artifacts
+            .iter()
+            .filter(|((t, _), state)| {
+                t == artifact_type
+                    && matches_work_unit_filter(&state.work_unit, work_unit)
+                    && matches!(state.status, ValidationStatus::Valid)
             })
             .map(|(_, state)| state.last_modified_ms)
             .max()
@@ -1061,6 +1092,56 @@ mod tests {
     }
 
     #[test]
+    fn has_any_valid_true_with_mixed_validity_instances() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
+
+        store
+            .record(
+                "report",
+                "good",
+                Path::new("g.json"),
+                &json!({"title": "ok"}),
+            )
+            .unwrap();
+        store
+            .record("report", "bad", Path::new("b.json"), &json!({"score": 1}))
+            .unwrap();
+
+        assert!(store.has_any_valid("report", None));
+    }
+
+    #[test]
+    fn has_any_valid_false_with_only_invalid_instances() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
+
+        store
+            .record("report", "bad", Path::new("b.json"), &json!({"score": 1}))
+            .unwrap();
+
+        assert!(!store.has_any_valid("report", None));
+    }
+
+    #[test]
+    fn has_any_valid_false_with_only_stale_instances() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
+
+        store
+            .record(
+                "report",
+                "good",
+                Path::new("g.json"),
+                &json!({"title": "ok"}),
+            )
+            .unwrap();
+        store.invalidate("report", "good").unwrap();
+
+        assert!(!store.has_any_valid("report", None));
+    }
+
+    #[test]
     fn has_any_invalid_true_with_invalid_instance() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
@@ -1139,6 +1220,57 @@ mod tests {
 
         assert_eq!(store.latest_modification_ms("report", None), None);
         assert_eq!(store.latest_modification_ms("nonexistent", None), None);
+    }
+
+    #[test]
+    fn latest_valid_modification_ms_ignores_unhealthy_instances() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
+
+        store
+            .record_with_timestamp(
+                "report",
+                "good",
+                Path::new("good.json"),
+                &json!({"title": "good"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "report",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"score": 1}),
+                3000,
+            )
+            .unwrap();
+        store
+            .record_malformed_with_timestamp(
+                "report",
+                "malformed",
+                Path::new("malformed.json"),
+                b"not json",
+                "oops",
+                4000,
+                None,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "report",
+                "stale",
+                Path::new("stale.json"),
+                &json!({"title": "stale"}),
+                5000,
+            )
+            .unwrap();
+        store.invalidate("report", "stale").unwrap();
+
+        assert_eq!(
+            store.latest_valid_modification_ms("report", None),
+            Some(1000)
+        );
     }
 
     #[test]
@@ -1475,6 +1607,33 @@ mod tests {
     }
 
     #[test]
+    fn has_any_valid_scoped() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        store
+            .record(
+                "report",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "ok", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "report",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"score": 1, "work_unit": "wu-b"}),
+            )
+            .unwrap();
+
+        assert!(store.has_any_valid("report", Some("wu-a")));
+        assert!(!store.has_any_valid("report", Some("wu-b")));
+        assert!(store.has_any_valid("report", None));
+    }
+
+    #[test]
     fn instances_of_scoped_includes_unpartitioned() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
@@ -1591,6 +1750,53 @@ mod tests {
             Some(2000)
         );
         assert_eq!(store.latest_modification_ms("report", None), Some(2000));
+    }
+
+    #[test]
+    fn latest_valid_modification_ms_scoped() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        store
+            .record_with_timestamp(
+                "report",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "report",
+                "a2",
+                Path::new("a2.json"),
+                &json!({"score": 1, "work_unit": "wu-a"}),
+                3000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "report",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"title": "B", "work_unit": "wu-b"}),
+                2000,
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.latest_valid_modification_ms("report", Some("wu-a")),
+            Some(1000)
+        );
+        assert_eq!(
+            store.latest_valid_modification_ms("report", Some("wu-b")),
+            Some(2000)
+        );
+        assert_eq!(
+            store.latest_valid_modification_ms("report", None),
+            Some(2000)
+        );
     }
 
     #[test]

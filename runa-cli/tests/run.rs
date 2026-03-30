@@ -1238,6 +1238,76 @@ trigger = { type = "on_artifact", name = "implementation" }
     assert_eq!(execution_plan[0]["protocol"], "prepare");
 }
 
+#[test]
+fn run_dry_run_projects_downstream_work_from_mixed_validity_inputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "request"
+
+[[artifact_types]]
+name = "published"
+
+[[artifact_types]]
+name = "notified"
+
+[[protocols]]
+name = "publish"
+requires = ["request"]
+produces = ["published"]
+trigger = { type = "on_artifact", name = "request" }
+
+[[protocols]]
+name = "notify"
+requires = ["published"]
+produces = ["notified"]
+trigger = { type = "on_artifact", name = "published" }
+"#,
+        &[
+            (
+                "request",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            ("published", bool_schema),
+            ("notified", bool_schema),
+        ],
+        &["publish", "notify"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("request")).unwrap();
+    fs::write(workspace.join("request/good.json"), r#"{"title":"ok"}"#).unwrap();
+    fs::write(workspace.join("request/bad.json"), r#"{"bad":true}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 2, "{value:#}");
+    assert_eq!(execution_plan[0]["protocol"], "publish");
+    assert_eq!(execution_plan[0]["projection"], "current");
+    assert_eq!(execution_plan[1]["protocol"], "notify");
+    assert_eq!(execution_plan[1]["projection"], "projected");
+}
+
 #[cfg(unix)]
 #[test]
 fn run_without_dry_run_does_not_rerun_outputless_protocols_after_unrelated_transitions() {

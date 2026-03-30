@@ -5,7 +5,7 @@
 //! The main entry points are [`discover_ready_candidates`] (returns only ready pairs)
 //! and [`classify_candidates`] (returns all pairs with their classification).
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::enforcement::ArtifactFailure;
 use crate::model::{ProtocolDeclaration, TriggerCondition};
@@ -50,6 +50,29 @@ pub struct ClassifiedCandidate {
 pub struct ScanTrust {
     pub trusted: bool,
     pub incomplete_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FreshnessInputMode {
+    AnyRecorded,
+    #[allow(dead_code)] // Reserved for future input-set tracking.
+    ValidOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CandidateWorkUnitMode {
+    Valid,
+    Invalid,
+    Recorded,
+}
+
+pub(crate) trait CandidateWorkUnitSource {
+    fn is_partially_scanned(&self, artifact_type: &str) -> bool;
+    fn artifact_work_units(
+        &self,
+        artifact_type: &str,
+        mode: CandidateWorkUnitMode,
+    ) -> BTreeSet<Option<String>>;
 }
 
 /// Discover all (protocol, work_unit) pairs that are ready for execution.
@@ -118,33 +141,17 @@ pub fn protocol_work_units(
     store: &ArtifactStore,
     partially_scanned_types: &HashSet<String>,
 ) -> BTreeSet<Option<String>> {
-    let mut trigger_types = HashSet::new();
-    trigger_artifact_types(&protocol.trigger, &mut trigger_types);
-
-    let mut referenced_types = HashSet::new();
-    for name in &protocol.requires {
-        referenced_types.insert(name.as_str());
-    }
-    for name in &protocol.accepts {
-        referenced_types.insert(name.as_str());
-    }
-    for &artifact_type in &trigger_types {
-        referenced_types.insert(artifact_type);
-    }
-
-    collect_work_units(store, &referenced_types, partially_scanned_types)
+    let source = StoreCandidateWorkUnitSource {
+        store,
+        partially_scanned_types,
+    };
+    collect_candidate_work_units(protocol, &source)
 }
 
 /// Collect the artifact type names that affect freshness for this protocol:
 /// `requires` types plus any types referenced in the trigger condition tree.
 pub fn protocol_relevant_input_types(protocol: &ProtocolDeclaration) -> HashSet<String> {
-    let mut trigger_types = HashSet::new();
-    trigger_artifact_types(&protocol.trigger, &mut trigger_types);
-
-    protocol_freshness_types(protocol, &trigger_types)
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
+    protocol_freshness_inputs(protocol).into_keys().collect()
 }
 
 /// Check whether a scan result contains changes to artifact types that affect
@@ -235,7 +242,7 @@ fn trigger_artifact_types<'a>(condition: &'a TriggerCondition, out: &mut HashSet
 fn protocol_is_current(
     protocol: &ProtocolDeclaration,
     store: &ArtifactStore,
-    referenced_types: &HashSet<&str>,
+    freshness_inputs: &HashMap<String, FreshnessInputMode>,
     work_unit: Option<&str>,
     partially_scanned_types: &HashSet<String>,
 ) -> bool {
@@ -266,48 +273,187 @@ fn protocol_is_current(
         return false;
     };
 
-    referenced_types
+    freshness_inputs
         .iter()
-        .filter_map(|artifact_type| store.latest_modification_ms(artifact_type, work_unit))
+        .filter_map(|(artifact_type, mode)| match mode {
+            FreshnessInputMode::AnyRecorded => {
+                store.latest_modification_ms(artifact_type, work_unit)
+            }
+            FreshnessInputMode::ValidOnly => {
+                store.latest_valid_modification_ms(artifact_type, work_unit)
+            }
+        })
         .max()
         .is_none_or(|latest_input| latest_input <= output_timestamp)
 }
 
-fn protocol_freshness_types<'a>(
-    protocol: &'a ProtocolDeclaration,
-    trigger_types: &HashSet<&'a str>,
-) -> HashSet<&'a str> {
-    let mut freshness_types = HashSet::new();
-    for name in &protocol.requires {
-        freshness_types.insert(name.as_str());
-    }
-    for &artifact_type in trigger_types {
-        freshness_types.insert(artifact_type);
-    }
-    freshness_types
+fn record_freshness_input(
+    freshness_inputs: &mut HashMap<String, FreshnessInputMode>,
+    artifact_type: &str,
+    mode: FreshnessInputMode,
+) {
+    freshness_inputs
+        .entry(artifact_type.to_string())
+        .and_modify(|existing| {
+            if mode == FreshnessInputMode::AnyRecorded {
+                *existing = FreshnessInputMode::AnyRecorded;
+            }
+        })
+        .or_insert(mode);
 }
 
-/// Collect distinct work_unit values from artifact instances across multiple types.
-///
-/// Returns `BTreeSet` for deterministic lexicographic ordering. If no instances
-/// reference any work_unit, returns `{None}` so the protocol is evaluated once
-/// unscoped.
-fn collect_work_units(
-    store: &ArtifactStore,
-    artifact_types: &HashSet<&str>,
-    partially_scanned_types: &HashSet<String>,
+fn trigger_freshness_inputs(
+    condition: &TriggerCondition,
+    out: &mut HashMap<String, FreshnessInputMode>,
+) {
+    match condition {
+        TriggerCondition::OnArtifact { name } => {
+            record_freshness_input(out, name.as_str(), FreshnessInputMode::AnyRecorded);
+        }
+        TriggerCondition::OnChange { name } | TriggerCondition::OnInvalid { name } => {
+            record_freshness_input(out, name.as_str(), FreshnessInputMode::AnyRecorded);
+        }
+        TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
+            for child in conditions {
+                trigger_freshness_inputs(child, out);
+            }
+        }
+    }
+}
+
+pub(crate) fn protocol_freshness_inputs(
+    protocol: &ProtocolDeclaration,
+) -> HashMap<String, FreshnessInputMode> {
+    let mut freshness_inputs = HashMap::new();
+    trigger_freshness_inputs(&protocol.trigger, &mut freshness_inputs);
+    for name in &protocol.requires {
+        record_freshness_input(
+            &mut freshness_inputs,
+            name.as_str(),
+            FreshnessInputMode::AnyRecorded,
+        );
+    }
+    freshness_inputs
+}
+
+struct StoreCandidateWorkUnitSource<'a> {
+    store: &'a ArtifactStore,
+    partially_scanned_types: &'a HashSet<String>,
+}
+
+impl CandidateWorkUnitSource for StoreCandidateWorkUnitSource<'_> {
+    fn is_partially_scanned(&self, artifact_type: &str) -> bool {
+        self.partially_scanned_types.contains(artifact_type)
+    }
+
+    fn artifact_work_units(
+        &self,
+        artifact_type: &str,
+        mode: CandidateWorkUnitMode,
+    ) -> BTreeSet<Option<String>> {
+        collect_store_work_units(self.store, artifact_type, mode)
+    }
+}
+
+/// Collect candidate work units from valid protocol inputs plus trigger-relevant
+/// instances, using the same primitive-specific validity filters as trigger
+/// evaluation. Invalid scoped siblings therefore cannot create scoped
+/// candidates for `on_artifact`.
+pub(crate) fn collect_candidate_work_units<S: CandidateWorkUnitSource>(
+    protocol: &ProtocolDeclaration,
+    source: &S,
 ) -> BTreeSet<Option<String>> {
     let mut work_units = BTreeSet::new();
 
-    for &type_name in artifact_types {
-        if partially_scanned_types.contains(type_name) {
-            continue;
-        }
-        for (_, state) in store.instances_of(type_name, None) {
-            work_units.insert(state.work_unit.clone());
-        }
+    for artifact_type in &protocol.requires {
+        extend_candidate_work_units(
+            source,
+            artifact_type,
+            CandidateWorkUnitMode::Valid,
+            &mut work_units,
+        );
     }
 
+    for artifact_type in &protocol.accepts {
+        extend_candidate_work_units(
+            source,
+            artifact_type,
+            CandidateWorkUnitMode::Valid,
+            &mut work_units,
+        );
+    }
+
+    collect_trigger_work_units(&protocol.trigger, source, &mut work_units);
+    normalize_candidate_work_units(work_units)
+}
+
+fn extend_candidate_work_units<S: CandidateWorkUnitSource>(
+    source: &S,
+    artifact_type: &str,
+    mode: CandidateWorkUnitMode,
+    out: &mut BTreeSet<Option<String>>,
+) {
+    if source.is_partially_scanned(artifact_type) {
+        return;
+    }
+    out.extend(source.artifact_work_units(artifact_type, mode));
+}
+
+fn collect_trigger_work_units<S: CandidateWorkUnitSource>(
+    condition: &TriggerCondition,
+    source: &S,
+    out: &mut BTreeSet<Option<String>>,
+) {
+    match condition {
+        TriggerCondition::OnArtifact { name } => {
+            extend_candidate_work_units(source, name, CandidateWorkUnitMode::Valid, out);
+        }
+        TriggerCondition::OnChange { name } => {
+            extend_candidate_work_units(source, name, CandidateWorkUnitMode::Recorded, out);
+        }
+        TriggerCondition::OnInvalid { name } => {
+            extend_candidate_work_units(source, name, CandidateWorkUnitMode::Invalid, out);
+        }
+        TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
+            for child in conditions {
+                collect_trigger_work_units(child, source, out);
+            }
+        }
+    }
+}
+
+fn collect_store_work_units(
+    store: &ArtifactStore,
+    artifact_type: &str,
+    mode: CandidateWorkUnitMode,
+) -> BTreeSet<Option<String>> {
+    store
+        .instances_of(artifact_type, None)
+        .into_iter()
+        .filter_map(|(_, state)| {
+            if candidate_mode_matches_status(mode, &state.status) {
+                Some(state.work_unit.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn candidate_mode_matches_status(mode: CandidateWorkUnitMode, status: &ValidationStatus) -> bool {
+    match mode {
+        CandidateWorkUnitMode::Valid => matches!(status, ValidationStatus::Valid),
+        CandidateWorkUnitMode::Invalid => matches!(
+            status,
+            ValidationStatus::Invalid(_) | ValidationStatus::Malformed(_)
+        ),
+        CandidateWorkUnitMode::Recorded => true,
+    }
+}
+
+fn normalize_candidate_work_units(
+    mut work_units: BTreeSet<Option<String>>,
+) -> BTreeSet<Option<String>> {
     // Drop the unscoped entry when scoped work units are present.
     // Scoped queries already include unscoped instances (via
     // matches_work_unit_filter), so the None entry would create a
@@ -348,7 +494,7 @@ fn evaluate_trigger_trust(
             protocol,
             context,
             affected_types.contains(name.as_str()),
-            !has_visible_defect(context.store, name),
+            true,
             true,
             Some(name.clone()),
         ),
@@ -532,20 +678,6 @@ fn on_change_trigger_eval(
     }
 }
 
-fn has_visible_defect(store: &ArtifactStore, artifact_type: &str) -> bool {
-    store
-        .instances_of(artifact_type, None)
-        .iter()
-        .any(|(_, state)| {
-            matches!(
-                state.status,
-                ValidationStatus::Invalid(_)
-                    | ValidationStatus::Malformed(_)
-                    | ValidationStatus::Stale
-            )
-        })
-}
-
 fn append_unique(target: &mut Vec<String>, values: Vec<String>) {
     for value in values {
         if !target.contains(&value) {
@@ -611,9 +743,7 @@ pub fn classify_candidates(
             precondition_scan_incomplete_types(protocol, partially_scanned_types);
 
         let work_units = protocol_work_units(protocol, store, partially_scanned_types);
-        let mut trigger_types = HashSet::new();
-        trigger_artifact_types(&protocol.trigger, &mut trigger_types);
-        let freshness_types = protocol_freshness_types(protocol, &trigger_types);
+        let freshness_inputs = protocol_freshness_inputs(protocol);
 
         for wu in &work_units {
             let wu_ref = wu.as_deref();
@@ -655,7 +785,7 @@ pub fn classify_candidates(
                     if protocol_is_current(
                         protocol,
                         store,
-                        &freshness_types,
+                        &freshness_inputs,
                         wu_ref,
                         partially_scanned_types,
                     ) {
@@ -842,6 +972,45 @@ mod tests {
     }
 
     #[test]
+    fn protocol_freshness_inputs_keep_change_semantics_when_type_is_also_required() {
+        let protocol = make_protocol(
+            "repair",
+            &["report"],
+            &[],
+            &["findings"],
+            &[],
+            TriggerCondition::OnChange {
+                name: "report".into(),
+            },
+        );
+
+        let inputs = protocol_freshness_inputs(&protocol);
+
+        assert_eq!(inputs.get("report"), Some(&FreshnessInputMode::AnyRecorded));
+    }
+
+    #[test]
+    fn protocol_freshness_inputs_use_any_recorded_for_artifact_and_requires() {
+        let protocol = make_protocol(
+            "publish",
+            &["request"],
+            &[],
+            &["published"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+
+        let inputs = protocol_freshness_inputs(&protocol);
+
+        assert_eq!(
+            inputs.get("request"),
+            Some(&FreshnessInputMode::AnyRecorded)
+        );
+    }
+
+    #[test]
     fn protocol_relevant_inputs_changed_ignores_other_work_units() {
         let protocol = make_protocol(
             "review",
@@ -924,17 +1093,24 @@ mod tests {
     }
 
     #[test]
-    fn collect_work_units_returns_none_when_no_instances() {
+    fn protocol_work_units_returns_none_when_no_instances() {
         let tmp = TempDir::new().unwrap();
         let store = make_store(&tmp.path().join("s"), vec!["doc"]);
 
-        let types = HashSet::from(["doc"]);
-        let wus = collect_work_units(&store, &types, &HashSet::new());
+        let protocol = make_protocol(
+            "ground",
+            &["doc"],
+            &[],
+            &[],
+            &[],
+            TriggerCondition::OnArtifact { name: "doc".into() },
+        );
+        let wus = protocol_work_units(&protocol, &store, &HashSet::new());
         assert_eq!(wus, BTreeSet::from([None]));
     }
 
     #[test]
-    fn collect_work_units_returns_distinct_values() {
+    fn protocol_work_units_returns_distinct_values() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
         store
@@ -962,8 +1138,15 @@ mod tests {
             )
             .unwrap();
 
-        let types = HashSet::from(["doc"]);
-        let wus = collect_work_units(&store, &types, &HashSet::new());
+        let protocol = make_protocol(
+            "ground",
+            &["doc"],
+            &[],
+            &[],
+            &[],
+            TriggerCondition::OnArtifact { name: "doc".into() },
+        );
+        let wus = protocol_work_units(&protocol, &store, &HashSet::new());
         assert_eq!(
             wus,
             BTreeSet::from([Some("wu-a".into()), Some("wu-b".into())])
@@ -971,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_work_units_keeps_none_when_all_unscoped() {
+    fn protocol_work_units_keeps_none_when_all_unscoped() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
         store
@@ -981,13 +1164,20 @@ mod tests {
             .record("doc", "b1", Path::new("b1.json"), &json!({"title": "B"}))
             .unwrap();
 
-        let types = HashSet::from(["doc"]);
-        let wus = collect_work_units(&store, &types, &HashSet::new());
+        let protocol = make_protocol(
+            "ground",
+            &["doc"],
+            &[],
+            &[],
+            &[],
+            TriggerCondition::OnArtifact { name: "doc".into() },
+        );
+        let wus = protocol_work_units(&protocol, &store, &HashSet::new());
         assert_eq!(wus, BTreeSet::from([None]));
     }
 
     #[test]
-    fn collect_work_units_excludes_partially_scanned_types() {
+    fn protocol_work_units_excludes_partially_scanned_types() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["notes", "constraints"]);
         store
@@ -1007,9 +1197,18 @@ mod tests {
             )
             .unwrap();
 
-        let types = HashSet::from(["notes", "constraints"]);
+        let protocol = make_protocol(
+            "ground",
+            &["notes", "constraints"],
+            &[],
+            &[],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
         let partial = HashSet::from(["notes".to_string()]);
-        let wus = collect_work_units(&store, &types, &partial);
+        let wus = protocol_work_units(&protocol, &store, &partial);
         assert_eq!(wus, BTreeSet::from([Some("wu-good".into())]));
     }
 
@@ -1156,6 +1355,194 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+    }
+
+    #[test]
+    fn invalid_sibling_reopens_on_artifact_protocol() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["request", "published"]);
+        store
+            .record_with_timestamp(
+                "request",
+                "good",
+                Path::new("good.json"),
+                &json!({"title": "good", "work_unit": "wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "published",
+                "good",
+                Path::new("published.json"),
+                &json!({"title": "published", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"work_unit": "wu-a"}),
+                3000,
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            "publish",
+            &["request"],
+            &[],
+            &["published"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+
+        let classified = classify_candidates(
+            std::slice::from_ref(&protocol),
+            &store,
+            &["publish"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(classified.len(), 1);
+        assert_eq!(classified[0].protocol_name, "publish");
+        assert_eq!(classified[0].work_unit, Some("wu-a".into()));
+        assert!(matches!(&classified[0].status, CandidateStatus::Ready));
+
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["publish"], &HashSet::new());
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "publish");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+    }
+
+    #[test]
+    fn unscoped_valid_artifact_does_not_promote_invalid_scoped_sibling() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["request", "published"]);
+        store
+            .record(
+                "request",
+                "shared",
+                Path::new("shared.json"),
+                &json!({"title": "shared"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "request",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            "publish",
+            &["request"],
+            &[],
+            &["published"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+
+        let classified = classify_candidates(
+            std::slice::from_ref(&protocol),
+            &store,
+            &["publish"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(classified.len(), 1);
+        assert_eq!(classified[0].protocol_name, "publish");
+        assert_eq!(classified[0].work_unit, None);
+        assert!(matches!(&classified[0].status, CandidateStatus::Ready));
+
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["publish"], &HashSet::new());
+        assert_eq!(
+            candidates,
+            vec![Candidate {
+                protocol_name: "publish".into(),
+                work_unit: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn previously_valid_sibling_becoming_invalid_reopens_on_artifact_protocol() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["request", "published"]);
+        store
+            .record_with_timestamp(
+                "request",
+                "a",
+                Path::new("a.json"),
+                &json!({"title": "a", "work_unit": "wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "b",
+                Path::new("b.json"),
+                &json!({"title": "b", "work_unit": "wu-a"}),
+                1500,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "published",
+                "good",
+                Path::new("published.json"),
+                &json!({"title": "published", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "b",
+                Path::new("b.json"),
+                &json!({"work_unit": "wu-a"}),
+                3000,
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            "publish",
+            &["request"],
+            &[],
+            &["published"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+
+        let classified = classify_candidates(
+            std::slice::from_ref(&protocol),
+            &store,
+            &["publish"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(classified.len(), 1);
+        assert_eq!(classified[0].protocol_name, "publish");
+        assert_eq!(classified[0].work_unit, Some("wu-a".into()));
+        assert!(matches!(&classified[0].status, CandidateStatus::Ready));
+
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["publish"], &HashSet::new());
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "publish");
         assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
     }
 

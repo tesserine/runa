@@ -202,6 +202,61 @@ fn doctor_with_invalid_artifacts_exit_one() {
 }
 
 #[test]
+fn doctor_reports_mixed_validity_artifacts_without_blocking_readiness() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "request"
+
+[[protocols]]
+name = "publish"
+requires = ["request"]
+trigger = { type = "on_artifact", name = "request" }
+"#,
+        &[(
+            "request",
+            r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+        )],
+        &["publish"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    fs::create_dir_all(project_dir.join(".runa/workspace/request")).unwrap();
+    fs::write(
+        project_dir.join(".runa/workspace/request/good.json"),
+        r#"{"title":"ok"}"#,
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join(".runa/workspace/request/bad.json"),
+        r#"{"score":1}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("doctor")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "artifact health should still fail doctor"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("invalid"), "stdout: {stdout}");
+    assert!(stdout.contains("publish: ok"), "stdout: {stdout}");
+}
+
+#[test]
 fn doctor_with_malformed_artifacts_exit_one() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path =
