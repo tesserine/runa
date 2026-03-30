@@ -9,7 +9,7 @@ Architecture: `ARCHITECTURE.md`
 Methodology authoring: `docs/methodology-authoring-guide.md`
 Interface contract: `docs/interface-contract.md`
 Contribution conventions: `CONTRIBUTING.md`
-Bedrock principles: [commons](https://github.com/pentaxis93/commons) — read both `PRINCIPLES.md` and every ADR in `adr/`
+Shared governance: [commons](https://github.com/pentaxis93/commons) — read everything in this repo
 
 This project does not vendor agent skills in-repo. Resolve project skills from
 your global installs under `~/.claude/skills` and `~/.codex/skills`.
