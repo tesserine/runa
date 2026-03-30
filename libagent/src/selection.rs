@@ -55,6 +55,7 @@ pub struct ScanTrust {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FreshnessInputMode {
     AnyRecorded,
+    #[allow(dead_code)] // Reserved for future input-set tracking.
     ValidOnly,
 }
 
@@ -301,7 +302,7 @@ fn trigger_freshness_inputs(
 ) {
     match condition {
         TriggerCondition::OnArtifact { name } => {
-            record_freshness_input(out, name.as_str(), FreshnessInputMode::ValidOnly);
+            record_freshness_input(out, name.as_str(), FreshnessInputMode::AnyRecorded);
         }
         TriggerCondition::OnChange { name } | TriggerCondition::OnInvalid { name } => {
             record_freshness_input(out, name.as_str(), FreshnessInputMode::AnyRecorded);
@@ -323,7 +324,7 @@ pub(crate) fn protocol_freshness_inputs(
         record_freshness_input(
             &mut freshness_inputs,
             name.as_str(),
-            FreshnessInputMode::ValidOnly,
+            FreshnessInputMode::AnyRecorded,
         );
     }
     freshness_inputs
@@ -886,6 +887,27 @@ mod tests {
     }
 
     #[test]
+    fn protocol_freshness_inputs_use_any_recorded_for_artifact_and_requires() {
+        let protocol = make_protocol(
+            "publish",
+            &["request"],
+            &[],
+            &["published"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+
+        let inputs = protocol_freshness_inputs(&protocol);
+
+        assert_eq!(
+            inputs.get("request"),
+            Some(&FreshnessInputMode::AnyRecorded)
+        );
+    }
+
+    #[test]
     fn protocol_relevant_inputs_changed_ignores_other_work_units() {
         let protocol = make_protocol(
             "review",
@@ -1204,7 +1226,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_sibling_does_not_unsuppress_on_artifact_protocol() {
+    fn invalid_sibling_reopens_on_artifact_protocol() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["request", "published"]);
         store
@@ -1256,15 +1278,84 @@ mod tests {
         assert_eq!(classified.len(), 1);
         assert_eq!(classified[0].protocol_name, "publish");
         assert_eq!(classified[0].work_unit, Some("wu-a".into()));
-        assert!(matches!(
-            &classified[0].status,
-            CandidateStatus::Waiting { unsatisfied_conditions }
-                if unsatisfied_conditions == &vec!["outputs are current".to_string()]
-        ));
+        assert!(matches!(&classified[0].status, CandidateStatus::Ready));
 
         let candidates =
             discover_ready_candidates(&[protocol], &store, &["publish"], &HashSet::new());
-        assert!(candidates.is_empty());
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "publish");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+    }
+
+    #[test]
+    fn previously_valid_sibling_becoming_invalid_reopens_on_artifact_protocol() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["request", "published"]);
+        store
+            .record_with_timestamp(
+                "request",
+                "a",
+                Path::new("a.json"),
+                &json!({"title": "a", "work_unit": "wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "b",
+                Path::new("b.json"),
+                &json!({"title": "b", "work_unit": "wu-a"}),
+                1500,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "published",
+                "good",
+                Path::new("published.json"),
+                &json!({"title": "published", "work_unit": "wu-a"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "b",
+                Path::new("b.json"),
+                &json!({"work_unit": "wu-a"}),
+                3000,
+            )
+            .unwrap();
+
+        let protocol = make_protocol(
+            "publish",
+            &["request"],
+            &[],
+            &["published"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+
+        let classified = classify_candidates(
+            std::slice::from_ref(&protocol),
+            &store,
+            &["publish"],
+            &HashSet::new(),
+        );
+
+        assert_eq!(classified.len(), 1);
+        assert_eq!(classified[0].protocol_name, "publish");
+        assert_eq!(classified[0].work_unit, Some("wu-a".into()));
+        assert!(matches!(&classified[0].status, CandidateStatus::Ready));
+
+        let candidates =
+            discover_ready_candidates(&[protocol], &store, &["publish"], &HashSet::new());
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "publish");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
     }
 
     #[test]

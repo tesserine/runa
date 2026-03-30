@@ -586,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_sibling_does_not_unsuppress_on_artifact_projection() {
+    fn invalid_sibling_reopens_on_artifact_projection() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("store"), vec!["request", "published"]);
         store
@@ -629,6 +629,74 @@ mod tests {
         let projection = ProjectionState::new(&store, &partials);
 
         let ready = discover_ready_candidates_projection(&[protocol], &projection, &["publish"]);
-        assert!(ready.is_empty());
+        assert_eq!(
+            ready,
+            vec![Candidate {
+                protocol_name: "publish".into(),
+                work_unit: Some("wu-a".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn previously_valid_sibling_becoming_invalid_reopens_on_artifact_projection() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["request", "published"]);
+        store
+            .record_with_timestamp(
+                "request",
+                "a",
+                Path::new("a.json"),
+                &json!({"title":"a","work_unit":"wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "b",
+                Path::new("b.json"),
+                &json!({"title":"b","work_unit":"wu-a"}),
+                1500,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "published",
+                "good",
+                Path::new("published.json"),
+                &json!({"title":"published","work_unit":"wu-a"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "b",
+                Path::new("b.json"),
+                &json!({"work_unit":"wu-a"}),
+                3000,
+            )
+            .unwrap();
+
+        let protocol = protocol(
+            "publish",
+            &["request"],
+            &["published"],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+        let partials = HashSet::new();
+        let projection = ProjectionState::new(&store, &partials);
+
+        let ready = discover_ready_candidates_projection(&[protocol], &projection, &["publish"]);
+        assert_eq!(
+            ready,
+            vec![Candidate {
+                protocol_name: "publish".into(),
+                work_unit: Some("wu-a".into()),
+            }]
+        );
     }
 }
