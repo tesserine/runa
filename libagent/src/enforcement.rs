@@ -4,7 +4,7 @@
 //! Given a protocol declaration and the current artifact store state,
 //! enforcement checks whether the protocol's contracts are satisfied.
 //!
-//! - Pre-execution: all `requires` artifacts must exist and be valid
+//! - Pre-execution: all `requires` artifacts must have at least one valid instance
 //! - Post-execution: all `produces` artifacts must exist and be valid;
 //!   `may_produce` artifacts are validated if present but their absence
 //!   is not a failure
@@ -168,18 +168,13 @@ impl fmt::Display for EnforcementError {
 
 impl std::error::Error for EnforcementError {}
 
-/// Check a single artifact type against the store and return a failure if
-/// it is not fully valid.
-fn check_artifact(
+/// Classify why an artifact type fails readiness/output checks.
+fn classify_artifact_failure(
     store: &ArtifactStore,
     artifact_type: &str,
     relationship: Relationship,
     work_unit: Option<&str>,
 ) -> Option<ArtifactFailure> {
-    if store.is_valid(artifact_type, work_unit) {
-        return None;
-    }
-
     let instances = store.instances_of(artifact_type, work_unit);
     if instances.is_empty() {
         return Some(ArtifactFailure::Missing {
@@ -221,12 +216,37 @@ fn check_artifact(
     }
 }
 
+fn check_required_artifact(
+    store: &ArtifactStore,
+    artifact_type: &str,
+    work_unit: Option<&str>,
+) -> Option<ArtifactFailure> {
+    if store.has_any_valid(artifact_type, work_unit) {
+        None
+    } else {
+        classify_artifact_failure(store, artifact_type, Relationship::Requires, work_unit)
+    }
+}
+
+fn check_output_artifact(
+    store: &ArtifactStore,
+    artifact_type: &str,
+    relationship: Relationship,
+    work_unit: Option<&str>,
+) -> Option<ArtifactFailure> {
+    if store.is_valid(artifact_type, work_unit) {
+        None
+    } else {
+        classify_artifact_failure(store, artifact_type, relationship, work_unit)
+    }
+}
+
 /// Check that all `requires` artifacts exist and are valid.
 ///
 /// Returns `Ok(())` if every artifact type listed in the protocol's `requires`
-/// has at least one instance in the store and **all** instances of each
-/// required type are valid. One invalid or stale instance of a required
-/// type blocks execution.
+/// has at least one valid instance in the store. Invalid, malformed, or stale
+/// siblings remain health findings but do not block execution when a valid
+/// instance is available.
 ///
 /// `accepts` artifacts are explicitly NOT checked. Their absence is expected
 /// behavior — they represent optional inputs that the protocol can consume if
@@ -239,9 +259,7 @@ pub fn enforce_preconditions(
     let mut failures = Vec::new();
 
     for artifact_type in &protocol.requires {
-        if let Some(failure) =
-            check_artifact(store, artifact_type, Relationship::Requires, work_unit)
-        {
+        if let Some(failure) = check_required_artifact(store, artifact_type, work_unit) {
             failures.push(failure);
         }
     }
@@ -278,7 +296,7 @@ pub fn enforce_postconditions(
 
     for artifact_type in &protocol.produces {
         if let Some(failure) =
-            check_artifact(store, artifact_type, Relationship::Produces, work_unit)
+            check_output_artifact(store, artifact_type, Relationship::Produces, work_unit)
         {
             failures.push(failure);
         }
@@ -291,7 +309,7 @@ pub fn enforce_postconditions(
             continue;
         }
         if let Some(failure) =
-            check_artifact(store, artifact_type, Relationship::MayProduce, work_unit)
+            check_output_artifact(store, artifact_type, Relationship::MayProduce, work_unit)
         {
             failures.push(failure);
         }
@@ -437,28 +455,39 @@ mod tests {
     }
 
     #[test]
-    fn mixed_invalid_and_stale_instances() {
+    fn preconditions_pass_with_mixed_valid_and_invalid_instances() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
-        // One invalid instance (missing required "title").
         store
             .record("doc", "bad", Path::new("b.json"), &json!({"bad": true}))
             .unwrap();
-        // One valid instance, then mark it stale.
         store
             .record("doc", "ok", Path::new("ok.json"), &json!({"title": "ok"}))
             .unwrap();
-        store.invalidate("doc", "ok").unwrap();
 
         let protocol = make_protocol("design", &["doc"], &[], &[], &[]);
-        let err = enforce_preconditions(&protocol, &store, None).unwrap_err();
-        assert_eq!(err.failures.len(), 1);
-        // Invalid takes precedence over Stale.
-        assert!(matches!(
-            &err.failures[0],
-            ArtifactFailure::Invalid { artifact_type, relationship: Relationship::Requires, violations }
-            if artifact_type == "doc" && !violations.is_empty()
-        ));
+        assert!(enforce_preconditions(&protocol, &store, None).is_ok());
+    }
+
+    #[test]
+    fn preconditions_pass_with_mixed_valid_and_stale_instances() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        store
+            .record("doc", "ok", Path::new("ok.json"), &json!({"title": "ok"}))
+            .unwrap();
+        store
+            .record(
+                "doc",
+                "stale",
+                Path::new("stale.json"),
+                &json!({"title": "old"}),
+            )
+            .unwrap();
+        store.invalidate("doc", "stale").unwrap();
+
+        let protocol = make_protocol("design", &["doc"], &[], &[], &[]);
+        assert!(enforce_preconditions(&protocol, &store, None).is_ok());
     }
 
     // --- Post-execution: enforce_postconditions ---
@@ -727,8 +756,8 @@ mod tests {
         assert!(enforce_preconditions(&protocol, &store, Some("wu-a")).is_ok());
         // Scoped to WU-B: fails.
         assert!(enforce_preconditions(&protocol, &store, Some("wu-b")).is_err());
-        // Unscoped: fails (sees invalid in WU-B).
-        assert!(enforce_preconditions(&protocol, &store, None).is_err());
+        // Unscoped: passes because a valid instance exists in WU-A.
+        assert!(enforce_preconditions(&protocol, &store, None).is_ok());
     }
 
     #[test]

@@ -82,7 +82,7 @@ A missing workspace directory is an error unless the store is still empty.
 runa list [--config <PATH>]
 ```
 
-Displays protocols in topological (execution) order after an implicit scan. For each protocol, shows non-empty relationship fields (requires, accepts, produces, may_produce), the trigger condition, and a `BLOCKED` indicator when required artifacts are missing, invalid, or stale. On cycle detection, falls back to manifest order with a warning.
+Displays protocols in topological (execution) order after an implicit scan. For each protocol, shows non-empty relationship fields (requires, accepts, produces, may_produce), the trigger condition, and a `BLOCKED` indicator when required artifacts have no valid instance or when scan trust is incomplete. Invalid, malformed, or stale siblings still appear in health reporting, but they do not block a protocol that already has a valid required instance. On cycle detection, falls back to manifest order with a warning.
 
 **Exit codes:** 0 on success. 1 on failure.
 
@@ -94,7 +94,7 @@ runa state [--json] [--config <PATH>]
 
 Evaluates every protocol after an implicit scan and classifies each as `READY`, `BLOCKED`, or `WAITING`. Classification is ordered and mutually exclusive: WAITING when the trigger is not satisfied, BLOCKED when the trigger is satisfied but preconditions fail, READY otherwise. Evaluation is work-unit scoped: protocols with work-unit-bearing inputs are checked once per discovered work unit; unscoped protocols are evaluated once overall.
 
-Text output groups protocols in READY, BLOCKED, then WAITING order, preserving topological protocol order within each group. READY entries list valid required and accepted artifact instances. BLOCKED entries list required-artifact failures (missing, invalid, stale, scan_incomplete). WAITING entries list the trigger condition and the specific reason it is not satisfied.
+Text output groups protocols in READY, BLOCKED, then WAITING order, preserving topological protocol order within each group. READY entries list valid required and accepted artifact instances. BLOCKED entries list required-artifact failures (missing, invalid, stale, scan_incomplete). WAITING entries list the trigger condition and the specific reason it is not satisfied. For `on_artifact`, those reasons are phrased in terms of the absence of valid instances rather than the presence of unhealthy siblings.
 
 When scan reconciliation is partial, `state` surfaces scan warnings and blocks protocols whose required artifact types could not be fully reconciled. Partially scanned accepted types are omitted from reported inputs.
 
@@ -113,7 +113,7 @@ runa doctor [--config <PATH>]
 Checks project health after an implicit scan. Three checks:
 
 1. **Artifact health** — enumerates instances per artifact type and reports invalid, malformed, or stale instances with details.
-2. **Protocol readiness** — checks each protocol's required artifact types and reports missing, invalid, or stale failures.
+2. **Protocol readiness** — checks each protocol's required artifact types and reports missing, invalid, or stale failures when no valid required instance exists.
 3. **Cycle detection** — reports hard dependency cycles in the protocol graph.
 
 **Exit codes:** 0 if no problems found. 1 if any check reports a problem.

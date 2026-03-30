@@ -169,7 +169,7 @@ fn preconditions_satisfied(
     protocol
         .requires
         .iter()
-        .all(|artifact_type| projection.type_is_fully_valid(artifact_type, work_unit))
+        .all(|artifact_type| projection.type_has_any_valid(artifact_type, work_unit))
 }
 
 fn protocol_is_current(
@@ -281,7 +281,7 @@ fn trigger_is_satisfied(
     work_unit: Option<&str>,
 ) -> bool {
     match condition {
-        TriggerCondition::OnArtifact { name } => projection.type_is_fully_valid(name, work_unit),
+        TriggerCondition::OnArtifact { name } => projection.type_has_any_valid(name, work_unit),
         TriggerCondition::OnChange { name } => match projection
             .latest_modification_ms(name, work_unit)
         {
@@ -415,6 +415,17 @@ impl<'a> ProjectionState<'a> {
                     .map(|(_, timestamp)| *timestamp),
             )
             .max()
+    }
+
+    fn type_has_any_valid(&self, artifact_type: &str, work_unit: Option<&str>) -> bool {
+        self.store.has_any_valid(artifact_type, work_unit)
+            || self
+                .projected_outputs
+                .iter()
+                .any(|((projected_type, projected_work_unit), _)| {
+                    projected_type == artifact_type
+                        && matches_projected_work_unit(projected_work_unit.as_deref(), work_unit)
+                })
     }
 
     fn type_is_fully_valid(&self, artifact_type: &str, work_unit: Option<&str>) -> bool {

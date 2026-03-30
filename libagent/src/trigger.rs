@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use crate::enforcement::enforce_postconditions;
 use crate::model::{ProtocolDeclaration, TriggerCondition};
-use crate::store::{ArtifactStore, ValidationStatus};
+use crate::store::ArtifactStore;
 
 /// Outcome of evaluating a trigger condition against current state.
 ///
@@ -40,28 +40,12 @@ pub fn evaluate(
 ) -> TriggerResult {
     match condition {
         TriggerCondition::OnArtifact { name } => {
-            if context.store.is_valid(name, context.work_unit) {
+            if context.store.has_any_valid(name, context.work_unit) {
                 TriggerResult::Satisfied
             } else {
-                let instances = context.store.instances_of(name, context.work_unit);
-                if instances.is_empty() {
-                    TriggerResult::NotSatisfied(format!(
-                        "no valid instances of artifact type '{name}' exist"
-                    ))
-                } else if instances.iter().any(|(_, state)| {
-                    matches!(
-                        state.status,
-                        ValidationStatus::Invalid(_)
-                            | ValidationStatus::Malformed(_)
-                            | ValidationStatus::Stale
-                    )
-                }) {
-                    TriggerResult::NotSatisfied(format!(
-                        "artifact type '{name}' has invalid, malformed, or stale instances"
-                    ))
-                } else {
-                    TriggerResult::NotSatisfied(format!("artifact type '{name}' is not valid"))
-                }
+                TriggerResult::NotSatisfied(format!(
+                    "no valid instances of artifact type '{name}' exist"
+                ))
             }
         }
 
@@ -234,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn on_artifact_not_satisfied_when_invalid_instance() {
+    fn on_artifact_satisfied_when_mixed_valid_and_invalid_instances() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
         store
@@ -246,14 +230,38 @@ mod tests {
 
         let ctx = empty_context(&store);
         let cond = TriggerCondition::OnArtifact { name: "doc".into() };
-        assert!(matches!(
-            evaluate(&cond, &ctx, "protocol"),
-            TriggerResult::NotSatisfied(_)
-        ));
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
     #[test]
-    fn on_artifact_mentions_malformed_instances_in_failure_reason() {
+    fn on_artifact_satisfied_when_mixed_valid_and_malformed_instances() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        store
+            .record(
+                "doc",
+                "good",
+                Path::new("good.json"),
+                &json!({"title": "A"}),
+            )
+            .unwrap();
+        store
+            .record_malformed(
+                "doc",
+                "bad",
+                Path::new("bad.json"),
+                br#"{"title":"A""#,
+                "eof",
+            )
+            .unwrap();
+
+        let ctx = empty_context(&store);
+        let cond = TriggerCondition::OnArtifact { name: "doc".into() };
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
+    }
+
+    #[test]
+    fn on_artifact_not_satisfied_when_only_malformed_instances_exist() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
         store
@@ -270,9 +278,7 @@ mod tests {
         let cond = TriggerCondition::OnArtifact { name: "doc".into() };
         assert_eq!(
             evaluate(&cond, &ctx, "protocol"),
-            TriggerResult::NotSatisfied(
-                "artifact type 'doc' has invalid, malformed, or stale instances".into()
-            )
+            TriggerResult::NotSatisfied("no valid instances of artifact type 'doc' exist".into())
         );
     }
 
@@ -304,6 +310,33 @@ mod tests {
             evaluate(&cond, &ctx, "protocol"),
             TriggerResult::NotSatisfied(_)
         ));
+    }
+
+    #[test]
+    fn on_artifact_satisfied_when_mixed_valid_and_stale_instances() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
+        store
+            .record(
+                "doc",
+                "good",
+                Path::new("good.json"),
+                &json!({"title": "A"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "doc",
+                "stale",
+                Path::new("stale.json"),
+                &json!({"title": "B"}),
+            )
+            .unwrap();
+        store.invalidate("doc", "stale").unwrap();
+
+        let ctx = empty_context(&store);
+        let cond = TriggerCondition::OnArtifact { name: "doc".into() };
+        assert_eq!(evaluate(&cond, &ctx, "protocol"), TriggerResult::Satisfied);
     }
 
     // --- OnChange ---

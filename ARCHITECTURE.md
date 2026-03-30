@@ -79,7 +79,7 @@ Shared internal utilities (`pub(crate)`). Contains `current_time_ms`, which retu
 ### `enforcement.rs`
 
 Pre/post-execution enforcement of protocol contracts. Two pure functions that check a `ProtocolDeclaration` against an `ArtifactStore`:
-- `enforce_preconditions` — verifies all `requires` artifacts exist with all instances valid. `accepts` is explicitly not checked.
+- `enforce_preconditions` — verifies each `requires` artifact type has at least one valid instance. Invalid, malformed, or stale siblings remain health findings but do not block when a valid required instance exists. `accepts` is explicitly not checked.
 - `enforce_postconditions` — verifies all `produces` artifacts exist with all instances valid; validates `may_produce` artifacts if present (absent is ok). `accepts` is not checked.
 
 Returns `EnforcementError` on failure, containing the protocol name, enforcement phase, and a list of `ArtifactFailure` entries. Three failure variants distinguish corrective actions: `Missing` (no instances), `Invalid` (schema violations), `Stale` (needs revalidation).
@@ -128,13 +128,13 @@ Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes t
 
 ### `runa list`
 
-Runs an implicit workspace scan, then displays protocols in topological (execution) order with their artifact relationships and trigger conditions. For each protocol, shows non-empty relationship fields (requires, accepts, produces, may_produce), the trigger condition, and a `BLOCKED` indicator when `enforce_preconditions` reports required artifact failures. `BLOCKED` reasons are rendered with the shared `missing` / `invalid` / `stale` taxonomy. On cycle detection, falls back to manifest order with a warning.
+Runs an implicit workspace scan, then displays protocols in topological (execution) order with their artifact relationships and trigger conditions. For each protocol, shows non-empty relationship fields (requires, accepts, produces, may_produce), the trigger condition, and a `BLOCKED` indicator when `enforce_preconditions` reports required artifact failures. `BLOCKED` reasons are rendered with the shared `missing` / `invalid` / `stale` taxonomy, but mixed-validity required types are no longer blocked when a valid instance exists. On cycle detection, falls back to manifest order with a warning.
 
 ### `runa doctor`
 
 Runs an implicit workspace scan, then reports on project health. Three checks:
 1. **Artifact health** — enumerates instances per artifact type via `store.instances_of()`, reports invalid, malformed, or stale instances with details.
-2. **Skill readiness** — for each protocol, uses `enforce_preconditions` to check `requires` artifact types and reports `missing`, `invalid`, or `stale` failures.
+2. **Skill readiness** — for each protocol, uses `enforce_preconditions` to check `requires` artifact types and reports `missing`, `invalid`, or `stale` failures when no valid required instance exists.
 3. **Cycle detection** — runs `graph.topological_order()`, reports any cycle.
 
 Exits 0 if no problems found, 1 otherwise.
@@ -147,7 +147,7 @@ Runs the workspace reconciliation pass. Reads artifact files from the resolved w
 
 Runs an implicit workspace scan, then evaluates every protocol against current runtime state. Classification is ordered and mutually exclusive: `WAITING` when the trigger is not satisfied, `BLOCKED` when the trigger is satisfied but `enforce_preconditions` fails, and `READY` otherwise. `on_change` freshness is derived directly from artifact timestamps in the store.
 
-Text output groups protocols as `READY`, `BLOCKED`, then `WAITING`, preserving the graph-derived protocol order within each group. `READY` entries list valid required and accepted artifact instances, `BLOCKED` entries list required artifact failures (`missing`, `invalid`, `stale`, `scan_incomplete`), and `WAITING` entries list detailed unsatisfied trigger conditions including the trigger condition and the specific `TriggerResult::NotSatisfied` reason. When scan reconciliation is partial, state prints scan warnings before the protocol groups and treats any protocol whose `requires` includes an affected artifact type as blocked because readiness cannot be verified; affected `accepts` types remain non-blocking and are omitted from the reported inputs.
+Text output groups protocols as `READY`, `BLOCKED`, then `WAITING`, preserving the graph-derived protocol order within each group. `READY` entries list valid required and accepted artifact instances, `BLOCKED` entries list required artifact failures (`missing`, `invalid`, `stale`, `scan_incomplete`), and `WAITING` entries list detailed unsatisfied trigger conditions including the trigger condition and the specific `TriggerResult::NotSatisfied` reason. `on_artifact` failures are reported as the absence of valid instances rather than the presence of unhealthy siblings. When scan reconciliation is partial, state prints scan warnings before the protocol groups and treats any protocol whose `requires` includes an affected artifact type as blocked because readiness cannot be verified; affected `accepts` types remain non-blocking and are omitted from the reported inputs.
 
 `--json` emits a versioned envelope:
 - `version` — integer envelope version, currently `2`

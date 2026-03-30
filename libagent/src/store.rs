@@ -421,6 +421,17 @@ impl ArtifactStore {
         count > 0
     }
 
+    /// True if at least one matching instance of this type has `Valid` status.
+    ///
+    /// Scoping follows the same rules as [`is_valid`](Self::is_valid).
+    pub fn has_any_valid(&self, artifact_type: &str, work_unit: Option<&str>) -> bool {
+        self.artifacts.iter().any(|((t, _), state)| {
+            t == artifact_type
+                && matches_work_unit_filter(&state.work_unit, work_unit)
+                && matches!(state.status, ValidationStatus::Valid)
+        })
+    }
+
     /// Sets status to Stale for a specific instance. No-op if not recorded.
     pub fn invalidate(&mut self, artifact_type: &str, instance_id: &str) -> Result<(), StoreError> {
         let key = (artifact_type.to_string(), instance_id.to_string());
@@ -1061,6 +1072,56 @@ mod tests {
     }
 
     #[test]
+    fn has_any_valid_true_with_mixed_validity_instances() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
+
+        store
+            .record(
+                "report",
+                "good",
+                Path::new("g.json"),
+                &json!({"title": "ok"}),
+            )
+            .unwrap();
+        store
+            .record("report", "bad", Path::new("b.json"), &json!({"score": 1}))
+            .unwrap();
+
+        assert!(store.has_any_valid("report", None));
+    }
+
+    #[test]
+    fn has_any_valid_false_with_only_invalid_instances() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
+
+        store
+            .record("report", "bad", Path::new("b.json"), &json!({"score": 1}))
+            .unwrap();
+
+        assert!(!store.has_any_valid("report", None));
+    }
+
+    #[test]
+    fn has_any_valid_false_with_only_stale_instances() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
+
+        store
+            .record(
+                "report",
+                "good",
+                Path::new("g.json"),
+                &json!({"title": "ok"}),
+            )
+            .unwrap();
+        store.invalidate("report", "good").unwrap();
+
+        assert!(!store.has_any_valid("report", None));
+    }
+
+    #[test]
     fn has_any_invalid_true_with_invalid_instance() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
@@ -1472,6 +1533,33 @@ mod tests {
         assert!(!store.is_valid("report", Some("wu-b")));
         // Unscoped: sees both, invalid blocks.
         assert!(!store.is_valid("report", None));
+    }
+
+    #[test]
+    fn has_any_valid_scoped() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        store
+            .record(
+                "report",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "ok", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "report",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"score": 1, "work_unit": "wu-b"}),
+            )
+            .unwrap();
+
+        assert!(store.has_any_valid("report", Some("wu-a")));
+        assert!(!store.has_any_valid("report", Some("wu-b")));
+        assert!(store.has_any_valid("report", None));
     }
 
     #[test]

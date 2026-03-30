@@ -44,6 +44,7 @@ Semantic Versioning.
 
 ### Fixed
 
+- Make `on_artifact` and required-input readiness existential over valid instances: mixed invalid, malformed, or stale siblings no longer block `runa state`, `runa step --dry-run`, or `runa run --dry-run` when a valid instance exists, while artifact health reporting stays unchanged and `on_artifact` waiting reasons now report the absence of valid instances.
 - Make the quickstart example's `review` protocol require both `requirements` and `design`, matching runa's declared-input injection contract, and add a regression test covering `runa step --dry-run --json`.
 - Fail live `runa step` and `runa run` explicitly on non-Linux platforms instead of silently dropping Linux-only execution guarantees.
 - Restore `runa run`'s double-`Ctrl-C` escape hatch: the first interrupt remains a graceful boundary-scoped stop, and the second forces immediate exit with status `130`.

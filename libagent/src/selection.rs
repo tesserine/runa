@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use crate::enforcement::ArtifactFailure;
 use crate::model::{ProtocolDeclaration, TriggerCondition};
-use crate::store::{ArtifactStore, ValidationStatus};
+use crate::store::ArtifactStore;
 use crate::trigger::{
     TriggerContext, TriggerResult, derived_completion_timestamp, evaluate as evaluate_trigger,
 };
@@ -348,7 +348,7 @@ fn evaluate_trigger_trust(
             protocol,
             context,
             affected_types.contains(name.as_str()),
-            !has_visible_defect(context.store, name),
+            true,
             true,
             Some(name.clone()),
         ),
@@ -530,20 +530,6 @@ fn on_change_trigger_eval(
         trusted,
         scan_types,
     }
-}
-
-fn has_visible_defect(store: &ArtifactStore, artifact_type: &str) -> bool {
-    store
-        .instances_of(artifact_type, None)
-        .iter()
-        .any(|(_, state)| {
-            matches!(
-                state.status,
-                ValidationStatus::Invalid(_)
-                    | ValidationStatus::Malformed(_)
-                    | ValidationStatus::Stale
-            )
-        })
 }
 
 fn append_unique(target: &mut Vec<String>, values: Vec<String>) {
