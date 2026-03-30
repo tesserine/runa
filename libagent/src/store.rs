@@ -555,6 +555,26 @@ impl ArtifactStore {
             .max()
     }
 
+    /// Returns the most recent `last_modified_ms` across matching valid
+    /// instances of this type, or `None` if no valid matching instances exist.
+    ///
+    /// Scoping follows the same rules as [`is_valid`](Self::is_valid).
+    pub fn latest_valid_modification_ms(
+        &self,
+        artifact_type: &str,
+        work_unit: Option<&str>,
+    ) -> Option<u64> {
+        self.artifacts
+            .iter()
+            .filter(|((t, _), state)| {
+                t == artifact_type
+                    && matches_work_unit_filter(&state.work_unit, work_unit)
+                    && matches!(state.status, ValidationStatus::Valid)
+            })
+            .map(|(_, state)| state.last_modified_ms)
+            .max()
+    }
+
     /// Reset all scan-gap metadata. Called at the start of each scan pass
     /// before new gaps are recorded.
     pub(crate) fn clear_scan_gaps(&mut self) {
@@ -1203,6 +1223,57 @@ mod tests {
     }
 
     #[test]
+    fn latest_valid_modification_ms_ignores_unhealthy_instances() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("artifacts"), vec!["report"]);
+
+        store
+            .record_with_timestamp(
+                "report",
+                "good",
+                Path::new("good.json"),
+                &json!({"title": "good"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "report",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"score": 1}),
+                3000,
+            )
+            .unwrap();
+        store
+            .record_malformed_with_timestamp(
+                "report",
+                "malformed",
+                Path::new("malformed.json"),
+                b"not json",
+                "oops",
+                4000,
+                None,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "report",
+                "stale",
+                Path::new("stale.json"),
+                &json!({"title": "stale"}),
+                5000,
+            )
+            .unwrap();
+        store.invalidate("report", "stale").unwrap();
+
+        assert_eq!(
+            store.latest_valid_modification_ms("report", None),
+            Some(1000)
+        );
+    }
+
+    #[test]
     fn artifact_type_names_returns_sorted() {
         let tmp = TempDir::new().unwrap();
         let store = ArtifactStore::new(
@@ -1679,6 +1750,53 @@ mod tests {
             Some(2000)
         );
         assert_eq!(store.latest_modification_ms("report", None), Some(2000));
+    }
+
+    #[test]
+    fn latest_valid_modification_ms_scoped() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report"]);
+
+        store
+            .record_with_timestamp(
+                "report",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "report",
+                "a2",
+                Path::new("a2.json"),
+                &json!({"score": 1, "work_unit": "wu-a"}),
+                3000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "report",
+                "b1",
+                Path::new("b1.json"),
+                &json!({"title": "B", "work_unit": "wu-b"}),
+                2000,
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.latest_valid_modification_ms("report", Some("wu-a")),
+            Some(1000)
+        );
+        assert_eq!(
+            store.latest_valid_modification_ms("report", Some("wu-b")),
+            Some(2000)
+        );
+        assert_eq!(
+            store.latest_valid_modification_ms("report", None),
+            Some(2000)
+        );
     }
 
     #[test]

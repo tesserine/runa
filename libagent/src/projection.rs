@@ -7,7 +7,10 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::model::{ProtocolDeclaration, TriggerCondition};
-use crate::selection::{Candidate, protocol_relevant_input_types, protocol_scan_incomplete_types};
+use crate::selection::{
+    Candidate, FreshnessInputMode, protocol_freshness_inputs, protocol_relevant_input_types,
+    protocol_scan_incomplete_types,
+};
 use crate::store::{ArtifactStore, ValidationStatus};
 
 /// Whether a projected candidate is evaluated from current artifact state or
@@ -198,14 +201,18 @@ fn protocol_is_current(
         return false;
     };
 
-    let mut trigger_types = HashSet::new();
-    trigger_artifact_types(&protocol.trigger, &mut trigger_types);
-    let mut freshness_types: HashSet<&str> = protocol.requires.iter().map(String::as_str).collect();
-    freshness_types.extend(trigger_types);
+    let freshness_inputs = protocol_freshness_inputs(protocol);
 
-    freshness_types
-        .into_iter()
-        .filter_map(|artifact_type| projection.latest_modification_ms(artifact_type, work_unit))
+    freshness_inputs
+        .iter()
+        .filter_map(|(artifact_type, mode)| match mode {
+            FreshnessInputMode::AnyRecorded => {
+                projection.latest_modification_ms(artifact_type, work_unit)
+            }
+            FreshnessInputMode::ValidOnly => {
+                projection.latest_valid_modification_ms(artifact_type, work_unit)
+            }
+        })
         .max()
         .is_none_or(|latest_input| latest_input <= output_timestamp)
 }
@@ -417,6 +424,29 @@ impl<'a> ProjectionState<'a> {
             .max()
     }
 
+    fn latest_valid_modification_ms(
+        &self,
+        artifact_type: &str,
+        work_unit: Option<&str>,
+    ) -> Option<u64> {
+        self.store
+            .latest_valid_modification_ms(artifact_type, work_unit)
+            .into_iter()
+            .chain(
+                self.projected_outputs
+                    .iter()
+                    .filter(|((projected_type, projected_work_unit), _)| {
+                        projected_type == artifact_type
+                            && matches_projected_work_unit(
+                                projected_work_unit.as_deref(),
+                                work_unit,
+                            )
+                    })
+                    .map(|(_, timestamp)| *timestamp),
+            )
+            .max()
+    }
+
     fn type_has_any_valid(&self, artifact_type: &str, work_unit: Option<&str>) -> bool {
         self.store.has_any_valid(artifact_type, work_unit)
             || self
@@ -553,5 +583,52 @@ mod tests {
         assert_eq!(plan[3].work_unit.as_deref(), Some("wu-b"));
         assert_eq!(plan[2].projection, ProjectionClass::Projected);
         assert_eq!(plan[3].projection, ProjectionClass::Projected);
+    }
+
+    #[test]
+    fn invalid_sibling_does_not_unsuppress_on_artifact_projection() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["request", "published"]);
+        store
+            .record_with_timestamp(
+                "request",
+                "good",
+                Path::new("good.json"),
+                &json!({"title":"good","work_unit":"wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "published",
+                "good",
+                Path::new("published.json"),
+                &json!({"title":"published","work_unit":"wu-a"}),
+                2000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"work_unit":"wu-a"}),
+                3000,
+            )
+            .unwrap();
+
+        let protocol = protocol(
+            "publish",
+            &["request"],
+            &["published"],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+        let partials = HashSet::new();
+        let projection = ProjectionState::new(&store, &partials);
+
+        let ready = discover_ready_candidates_projection(&[protocol], &projection, &["publish"]);
+        assert!(ready.is_empty());
     }
 }
