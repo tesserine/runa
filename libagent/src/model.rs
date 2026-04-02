@@ -60,6 +60,9 @@ pub struct ProtocolDeclaration {
     /// Artifact types that may be produced; validated if present.
     #[serde(default)]
     pub may_produce: Vec<String>,
+    /// Whether this protocol must be evaluated within a delegated work-unit scope.
+    #[serde(default)]
+    pub scoped: bool,
     /// Condition that activates this protocol.
     pub trigger: TriggerCondition,
     /// Protocol instruction content loaded from the methodology layout
@@ -148,6 +151,7 @@ mod tests {
             accepts: vec!["prior-design".into()],
             produces: vec!["design-doc".into()],
             may_produce: vec!["design-notes".into()],
+            scoped: true,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -241,6 +245,7 @@ mod tests {
             accepts: vec![],
             produces: vec![],
             may_produce: vec![],
+            scoped: false,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -249,6 +254,24 @@ mod tests {
         let json = serde_json::to_string(&protocol).unwrap();
         let deserialized: ProtocolDeclaration = serde_json::from_str(&json).unwrap();
         assert_eq!(protocol, deserialized);
+    }
+
+    #[test]
+    fn protocol_declaration_defaults_scoped_to_false() {
+        let json = serde_json::json!({
+            "name": "artifact-only",
+            "requires": [],
+            "accepts": [],
+            "produces": [],
+            "may_produce": [],
+            "trigger": {
+                "type": "on_artifact",
+                "name": "constraints"
+            }
+        });
+
+        let deserialized: ProtocolDeclaration = serde_json::from_value(json).unwrap();
+        assert!(!deserialized.scoped);
     }
 
     #[test]

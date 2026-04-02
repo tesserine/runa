@@ -44,6 +44,8 @@ struct RawProtocolDeclaration {
     produces: Vec<String>,
     #[serde(default)]
     may_produce: Vec<String>,
+    #[serde(default)]
+    scoped: bool,
     trigger: TriggerCondition,
 }
 
@@ -268,6 +270,7 @@ pub fn from_str(content: &str) -> Result<Manifest, ManifestError> {
                 accepts: r.accepts,
                 produces: r.produces,
                 may_produce: r.may_produce,
+                scoped: r.scoped,
                 trigger: r.trigger,
                 instructions: None,
             })
@@ -355,6 +358,7 @@ name = "design-doc"
 [[protocols]]
 name = "ground"
 produces = ["constraints"]
+scoped = false
 
 [protocols.trigger]
 type = "on_change"
@@ -366,6 +370,7 @@ requires = ["constraints"]
 accepts = ["prior-design"]
 produces = ["design-doc"]
 may_produce = ["design-notes"]
+scoped = true
 
 [protocols.trigger]
 type = "on_artifact"
@@ -382,6 +387,7 @@ name = "constraints"
         assert_eq!(manifest.protocols.len(), 2);
         assert_eq!(manifest.protocols[0].name, "ground");
         assert_eq!(manifest.protocols[0].produces, vec!["constraints"]);
+        assert!(!manifest.protocols[0].scoped);
         assert_eq!(
             manifest.protocols[0].trigger,
             TriggerCondition::OnChange {
@@ -394,6 +400,7 @@ name = "constraints"
         assert_eq!(manifest.protocols[1].accepts, vec!["prior-design"]);
         assert_eq!(manifest.protocols[1].produces, vec!["design-doc"]);
         assert_eq!(manifest.protocols[1].may_produce, vec!["design-notes"]);
+        assert!(manifest.protocols[1].scoped);
         assert_eq!(
             manifest.protocols[1].trigger,
             TriggerCondition::OnArtifact {

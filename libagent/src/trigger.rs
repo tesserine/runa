@@ -175,6 +175,7 @@ mod tests {
             accepts: Vec::new(),
             produces: produces.iter().map(|s| s.to_string()).collect(),
             may_produce: may_produce.iter().map(|s| s.to_string()).collect(),
+            scoped: false,
             trigger,
             instructions: None,
         }

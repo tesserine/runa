@@ -139,6 +139,7 @@ pub(crate) fn evaluate_protocols(
     loaded: &project::LoadedProject,
     working_dir: &Path,
     scan_findings: &ScanFindings,
+    scope: libagent::EvaluationScope<'_>,
 ) -> EvaluatedProtocols {
     let (skill_order, cycle) = match loaded.graph.topological_order() {
         Ok(order) => (order, None),
@@ -173,6 +174,7 @@ pub(crate) fn evaluate_protocols(
         &loaded.store,
         &skill_order,
         &scan_findings.affected_types,
+        scope,
     );
 
     let mut ready = Vec::new();

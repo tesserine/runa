@@ -254,9 +254,10 @@ pub(crate) fn evaluate_execution_state(
     loaded: &crate::project::LoadedProject,
     working_dir: &Path,
     scan_result: &libagent::ScanResult,
+    scope: libagent::EvaluationScope<'_>,
 ) -> ExecutionState {
     let scan_findings = protocol_eval::collect_scan_findings(scan_result, &loaded.workspace_dir);
-    let evaluated = protocol_eval::evaluate_protocols(loaded, working_dir, &scan_findings);
+    let evaluated = protocol_eval::evaluate_protocols(loaded, working_dir, &scan_findings, scope);
     let planned_entries = build_execution_plan(loaded, &scan_findings, &evaluated);
 
     ExecutionState {
@@ -442,6 +443,7 @@ fn execute_live_single(
     config_path: &Path,
     loaded: &mut crate::project::LoadedProject,
     planned_entries: Vec<PlannedEntry>,
+    scope: libagent::EvaluationScope<'_>,
 ) -> Result<(), StepError> {
     let Some(next_entry) = planned_entries.into_iter().next() else {
         println!("No READY protocols.");
@@ -489,7 +491,7 @@ fn execute_live_single(
         source,
     })?;
 
-    let refreshed = evaluate_execution_state(loaded, working_dir, &scan_result);
+    let refreshed = evaluate_execution_state(loaded, working_dir, &scan_result, scope);
 
     match &execution_entry.work_unit {
         Some(work_unit) => println!(
@@ -514,6 +516,7 @@ fn run_internal(
     dry_run: bool,
     json_output: bool,
     single_dry_run: bool,
+    work_unit: Option<&str>,
 ) -> Result<(), StepError> {
     if !dry_run && json_output {
         return Err(StepError::JsonRequiresDryRun);
@@ -523,11 +526,15 @@ fn run_internal(
     }
 
     let (mut loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
+    let scope = match work_unit {
+        Some(work_unit) => libagent::EvaluationScope::Scoped(work_unit),
+        None => libagent::EvaluationScope::Unscoped,
+    };
     let ExecutionState {
         scan_findings,
         evaluated,
         planned_entries,
-    } = evaluate_execution_state(&loaded, working_dir, &scan_result);
+    } = evaluate_execution_state(&loaded, working_dir, &scan_result, scope);
     let warnings = scan_findings.warnings.clone();
     let config_path = crate::project::resolve_config(working_dir, config_override)
         .map_err(CommandError::from)
@@ -557,6 +564,7 @@ fn run_internal(
             &config_path,
             &mut loaded,
             planned_entries,
+            scope,
         );
     }
 
@@ -652,8 +660,16 @@ pub fn run(
     config_override: Option<&Path>,
     dry_run: bool,
     json_output: bool,
+    work_unit: Option<&str>,
 ) -> Result<(), StepError> {
-    run_internal(working_dir, config_override, dry_run, json_output, true)
+    run_internal(
+        working_dir,
+        config_override,
+        dry_run,
+        json_output,
+        true,
+        work_unit,
+    )
 }
 
 pub(crate) fn build_plan_entries(

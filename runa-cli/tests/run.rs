@@ -30,6 +30,121 @@ fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) 
     );
 }
 
+#[test]
+fn run_dry_run_filters_projection_by_declared_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[artifact_types]]
+name = "verified"
+
+[[protocols]]
+name = "ground"
+trigger = { type = "on_artifact", name = "constraints" }
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+produces = ["implementation"]
+scoped = true
+trigger = { type = "on_artifact", name = "constraints" }
+
+[[protocols]]
+name = "verify"
+requires = ["implementation"]
+produces = ["verified"]
+scoped = true
+trigger = { type = "on_artifact", name = "implementation" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "implementation",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+            (
+                "verified",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+        ],
+        &["ground", "implement", "verify"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-a.json"),
+        r#"{"title":"ship run","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("constraints/spec-b.json"),
+        r#"{"title":"ship run","work_unit":"wu-b"}"#,
+    )
+    .unwrap();
+
+    let unscoped = runa_bin()
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        unscoped.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&unscoped.stderr)
+    );
+    let unscoped_json: serde_json::Value = serde_json::from_slice(&unscoped.stdout).unwrap();
+    let unscoped_plan = unscoped_json["execution_plan"].as_array().unwrap();
+    assert_eq!(unscoped_plan.len(), 1);
+    assert_eq!(unscoped_plan[0]["protocol"], "ground");
+    assert!(unscoped_plan[0].get("work_unit").is_none());
+
+    let scoped = runa_bin()
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        scoped.status.code() == Some(3),
+        "run --work-unit exited with {:?}: stdout={} stderr={}",
+        scoped.status.code(),
+        String::from_utf8_lossy(&scoped.stdout),
+        String::from_utf8_lossy(&scoped.stderr)
+    );
+    let scoped_json: serde_json::Value = serde_json::from_slice(&scoped.stdout).unwrap();
+    let scoped_plan = scoped_json["execution_plan"].as_array().unwrap();
+    assert_eq!(scoped_plan.len(), 2);
+    assert_eq!(scoped_plan[0]["protocol"], "implement");
+    assert_eq!(scoped_plan[0]["work_unit"], "wu-a");
+    assert_eq!(scoped_plan[1]["protocol"], "verify");
+    assert_eq!(scoped_plan[1]["work_unit"], "wu-a");
+    let plan_text = serde_json::to_string(scoped_plan).unwrap();
+    assert!(!plan_text.contains("wu-b"), "{plan_text}");
+    assert!(!plan_text.contains("ground"), "{plan_text}");
+}
+
 fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
     let config_path = project_dir.join(".runa/config.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
@@ -1087,12 +1202,14 @@ name = "verified"
 name = "build"
 requires = ["input"]
 produces = ["constrained"]
+scoped = true
 trigger = { type = "on_artifact", name = "input" }
 
 [[protocols]]
 name = "verify"
 requires = ["constrained"]
 produces = ["verified"]
+scoped = true
 trigger = { type = "on_artifact", name = "constrained" }
 "#,
         &[
@@ -1124,6 +1241,8 @@ trigger = { type = "on_artifact", name = "constrained" }
         .arg("run")
         .arg("--dry-run")
         .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -1132,19 +1251,15 @@ trigger = { type = "on_artifact", name = "constrained" }
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let execution_plan = value["execution_plan"].as_array().unwrap();
-    assert_eq!(execution_plan.len(), 4, "{value:#}");
+    assert_eq!(execution_plan.len(), 2, "{value:#}");
     assert_eq!(execution_plan[0]["protocol"], "build");
     assert_eq!(execution_plan[0]["work_unit"], "wu-a");
     assert_eq!(execution_plan[0]["projection"], "current");
-    assert_eq!(execution_plan[1]["protocol"], "build");
-    assert_eq!(execution_plan[1]["work_unit"], "wu-b");
-    assert_eq!(execution_plan[1]["projection"], "current");
-    assert_eq!(execution_plan[2]["protocol"], "verify");
-    assert_eq!(execution_plan[2]["work_unit"], "wu-a");
-    assert_eq!(execution_plan[2]["projection"], "projected");
-    assert_eq!(execution_plan[3]["protocol"], "verify");
-    assert_eq!(execution_plan[3]["work_unit"], "wu-b");
-    assert_eq!(execution_plan[3]["projection"], "projected");
+    assert_eq!(execution_plan[1]["protocol"], "verify");
+    assert_eq!(execution_plan[1]["work_unit"], "wu-a");
+    assert_eq!(execution_plan[1]["projection"], "projected");
+    let plan_text = serde_json::to_string(execution_plan).unwrap();
+    assert!(!plan_text.contains("wu-b"), "{plan_text}");
 }
 
 #[cfg(unix)]
@@ -1399,10 +1514,12 @@ name = "seed"
 name = "revise"
 requires = ["seed"]
 produces = ["constraints"]
+scoped = true
 trigger = { type = "on_artifact", name = "seed" }
 
 [[protocols]]
 name = "prepare"
+scoped = true
 trigger = { type = "on_artifact", name = "constraints" }
 "#,
         &[("constraints", wu_schema), ("seed", wu_schema)],
@@ -1448,6 +1565,8 @@ trigger = { type = "on_artifact", name = "constraints" }
 
     let output = runa_bin()
         .arg("run")
+        .arg("--work-unit")
+        .arg("wu-b")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -1459,10 +1578,7 @@ trigger = { type = "on_artifact", name = "constraints" }
     );
 
     let executed = fs::read_to_string(&log_path).unwrap();
-    assert_eq!(
-        executed,
-        "prepare:wu-a\nprepare:wu-b\nrevise:wu-b\nprepare:wu-b\n"
-    );
+    assert_eq!(executed, "prepare:wu-b\nrevise:wu-b\nprepare:wu-b\n");
 }
 
 #[test]
@@ -1576,10 +1692,12 @@ name = "implementation"
 name = "revise"
 requires = ["seed"]
 produces = ["constraints", "implementation"]
+scoped = true
 trigger = { type = "on_artifact", name = "seed" }
 
 [[protocols]]
 name = "prepare"
+scoped = true
 trigger = { type = "on_artifact", name = "constraints" }
 "#,
         &[
@@ -1629,6 +1747,8 @@ trigger = { type = "on_artifact", name = "constraints" }
 
     let output = runa_bin()
         .arg("run")
+        .arg("--work-unit")
+        .arg("wu-b")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -1636,10 +1756,7 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 
     let executed = fs::read_to_string(&log_path).unwrap();
-    assert_eq!(
-        executed,
-        "prepare:wu-a\nprepare:wu-b\nrevise:wu-b\nprepare:wu-b\n"
-    );
+    assert_eq!(executed, "prepare:wu-b\nrevise:wu-b\nprepare:wu-b\n");
     assert!(!workspace.join("implementation/out.json").exists());
 }
 
@@ -1668,10 +1785,12 @@ name = "implementation"
 name = "revise"
 requires = ["seed"]
 produces = ["constraints", "implementation"]
+scoped = true
 trigger = { type = "on_artifact", name = "seed" }
 
 [[protocols]]
 name = "prepare"
+scoped = true
 trigger = { type = "on_artifact", name = "constraints" }
 "#,
         &[
@@ -1721,6 +1840,8 @@ trigger = { type = "on_artifact", name = "constraints" }
 
     let output = runa_bin()
         .arg("run")
+        .arg("--work-unit")
+        .arg("wu-b")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -1734,10 +1855,7 @@ trigger = { type = "on_artifact", name = "constraints" }
     );
 
     let executed = fs::read_to_string(&log_path).unwrap();
-    assert_eq!(
-        executed,
-        "prepare:wu-a\nprepare:wu-b\nrevise:wu-b\nprepare:wu-b\n"
-    );
+    assert_eq!(executed, "prepare:wu-b\nrevise:wu-b\nprepare:wu-b\n");
     assert!(!workspace.join("implementation/out.json").exists());
 }
 

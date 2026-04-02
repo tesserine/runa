@@ -35,10 +35,13 @@ A protocol declaration:
 - **accepts** — zero or more artifact type names
 - **produces** — zero or more artifact type names
 - **may_produce** — zero or more artifact type names. Absent optional outputs do not fail postconditions, but they also do not create completion evidence. If output should always be produced, the artifact type belongs in `produces`.
+- **scoped** — optional boolean, default `false`. When `false`, the protocol participates only in unscoped evaluation. When `true`, the protocol participates only in caller-scoped evaluation for an explicit work unit supplied by the orchestrator.
 - Completion is derived from output artifact timestamps. Protocols with no `produces` types are never suppressed by freshness — runa cannot derive completion from artifacts that don't exist. If a protocol needs completion tracking, it must declare at least one `produces` artifact type.
 - **trigger** — one trigger condition (see below)
 
 Topology is not declared. It emerges from the graph of requires/produces/may_produce relationships across protocols. A pipeline emerges when protocols chain linearly. A graph emerges when protocols fan in or fan out. A cycle emerges when a protocol produces an artifact type that another protocol's trigger monitors for change. The methodology does not tell runa what shape it is. runa computes the shape from declarations.
+
+Scope is not topology. Dependency edges remain type-level. `scoped = true` does not change graph structure, and runa does not infer scope from artifact schemas, `work_unit` fields, or artifact filenames.
 
 ### 3. Trigger Conditions
 
@@ -63,7 +66,7 @@ runa is an event-driven runtime. The CLI commands (init, scan, list, state, step
 
 Given the declarations above, runa provides five runtime capabilities:
 
-**Monitoring.** runa watches artifact state and evaluates trigger conditions on relevant state changes. When a protocol's trigger condition becomes satisfied, runa activates the protocol.
+**Monitoring.** runa watches artifact state and evaluates trigger conditions on relevant state changes within the caller's evaluation scope. When a protocol's trigger condition becomes satisfied, runa activates the protocol.
 
 **Validation.** When an artifact is produced, runa validates it against its declared schema. A protocol's execution is not complete until its `produces` artifacts exist and validate. `may_produce` artifacts are validated if present but not required.
 
@@ -71,7 +74,7 @@ Given the declarations above, runa provides five runtime capabilities:
 
 **Enforcement.** A protocol cannot execute if any `requires` artifact type lacks a valid instance. A protocol's execution is incomplete if its `produces` artifacts are missing or invalid. These are hard constraints the runtime enforces regardless of what the methodology intends.
 
-**Context injection.** When a protocol is ready to execute, runa resolves which artifact instances the protocol needs — all valid `requires` instances and all available valid `accepts` instances — and delivers them as the protocol's input context alongside the protocol's instruction content and expected output artifact types. The protocol receives its inputs without querying the store directly.
+**Context injection.** When a protocol is ready to execute, runa resolves which artifact instances the protocol needs — all valid `requires` instances and all available valid `accepts` instances within the active scope — and delivers them as the protocol's input context alongside the protocol's instruction content and expected output artifact types. The protocol receives its inputs without querying the store directly.
 
 ## What runa Does Not Do
 

@@ -131,6 +131,23 @@ fn schema_requires_work_unit(schema: &Value) -> bool {
 /// Returns `Err` with a diagnostic message if any required output type has a
 /// schema that cannot be converted to an MCP tool (non-object root,
 /// composition keywords, or required work_unit without a scoped candidate).
+pub fn validate_protocol_scope(
+    protocol: &ProtocolDeclaration,
+    work_unit: Option<&str>,
+) -> Result<(), String> {
+    match (protocol.scoped, work_unit) {
+        (true, None) => Err(format!(
+            "protocol '{}' requires --work-unit because it is declared scoped",
+            protocol.name
+        )),
+        (false, Some(_)) => Err(format!(
+            "protocol '{}' does not accept --work-unit because it is declared unscoped",
+            protocol.name
+        )),
+        _ => Ok(()),
+    }
+}
+
 pub fn validate_output_types(
     protocol: &ProtocolDeclaration,
     store: &ArtifactStore,
@@ -465,6 +482,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
+            scoped: false,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -518,6 +536,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -569,6 +588,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: vec!["log_entries".into()],
+            scoped: false,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -618,6 +638,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: vec!["composed".into()],
+            scoped: false,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -666,6 +687,7 @@ mod tests {
             accepts: Vec::new(),
             produces: Vec::new(),
             may_produce: vec!["composed_a".into(), "composed_b".into()],
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -695,6 +717,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["log_entries".into()],
             may_produce: Vec::new(),
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -725,6 +748,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["composed".into()],
             may_produce: Vec::new(),
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -759,6 +783,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["output_a".into(), "output_b".into()],
             may_produce: Vec::new(),
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -789,6 +814,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -821,6 +847,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -860,6 +887,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["output".into()],
             may_produce: vec!["scoped_output".into()],
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -876,5 +904,45 @@ mod tests {
         // Only "output" should be a tool; "scoped_output" filtered out.
         assert_eq!(handler.tools.len(), 1);
         assert_eq!(handler.tools[0].name.as_ref(), "output");
+    }
+
+    #[test]
+    fn validate_protocol_scope_requires_work_unit_for_scoped_protocols() {
+        let protocol = ProtocolDeclaration {
+            name: "implement".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: Vec::new(),
+            may_produce: Vec::new(),
+            scoped: true,
+            trigger: TriggerCondition::OnChange {
+                name: "unused".into(),
+            },
+            instructions: None,
+        };
+
+        let error = validate_protocol_scope(&protocol, None).unwrap_err();
+        assert!(error.contains("requires --work-unit"));
+        assert!(validate_protocol_scope(&protocol, Some("wu-a")).is_ok());
+    }
+
+    #[test]
+    fn validate_protocol_scope_rejects_work_unit_for_unscoped_protocols() {
+        let protocol = ProtocolDeclaration {
+            name: "ground".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: Vec::new(),
+            may_produce: Vec::new(),
+            scoped: false,
+            trigger: TriggerCondition::OnChange {
+                name: "unused".into(),
+            },
+            instructions: None,
+        };
+
+        let error = validate_protocol_scope(&protocol, Some("wu-a")).unwrap_err();
+        assert!(error.contains("does not accept --work-unit"));
+        assert!(validate_protocol_scope(&protocol, None).is_ok());
     }
 }

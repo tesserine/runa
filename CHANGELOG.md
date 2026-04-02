@@ -10,6 +10,7 @@ Semantic Versioning.
 ### Added
 
 - Add a runnable `examples/quickstart-methodology/` example with a README, manifest, schemas, and protocol instructions for the two-protocol review pipeline used in the methodology authoring guide.
+- Add manifest-declared protocol scoping with `scoped = true`, plus `--work-unit <ID>` support on `runa state`, `runa step`, and `runa run` so delegated execution scope comes from the caller instead of artifact-state sibling discovery.
 
 ### Changed
 
@@ -41,6 +42,7 @@ Semantic Versioning.
   graph-based projection that derives downstream execution entirely from
   manifest topology, current evaluated work-unit state, and assumed-success
   `produces` outputs.
+- Make readiness evaluation and dry-run projection scope-driven: unscoped commands now evaluate only unscoped protocols, scoped commands evaluate only scoped protocols for the requested work unit, and no readiness path enumerates sibling work units from artifact state.
 
 ### Fixed
 
@@ -73,6 +75,9 @@ Semantic Versioning.
   reconciliations or agent-failing reconciliations that still emitted usable
   artifacts when those reconciliations changed relevant inputs, and stop
   treating `may_produce` outputs as guaranteed in `run --dry-run`.
+- Reject scope-mismatched MCP invocations so `runa-mcp` now fails fast when a
+  scoped protocol is invoked without `--work-unit` or an unscoped protocol is
+  invoked with one.
 - Make `runa run` treat unresolved hard dependency cycles as blocked quiescence
   instead of false success, and keep `run --dry-run --json` current-entry
   contexts tied to real on-disk inputs instead of projected accepted artifacts.

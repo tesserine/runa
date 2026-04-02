@@ -70,6 +70,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             )
         })?;
 
+    handler::validate_protocol_scope(&protocol, cli.work_unit.as_deref()).map_err(|err| {
+        format!(
+            "protocol '{}' cannot be served via MCP tools: {err}",
+            protocol.name
+        )
+    })?;
+
     handler::validate_output_types(&protocol, &loaded.store, cli.work_unit.as_deref()).map_err(
         |err| {
             format!(

@@ -89,10 +89,12 @@ Displays protocols in topological (execution) order after an implicit scan. For 
 ### `runa state`
 
 ```bash
-runa state [--json] [--config <PATH>]
+runa state [--json] [--work-unit <ID>] [--config <PATH>]
 ```
 
-Evaluates every protocol after an implicit scan and classifies each as `READY`, `BLOCKED`, or `WAITING`. Classification is ordered and mutually exclusive: WAITING when the trigger is not satisfied, BLOCKED when the trigger is satisfied but preconditions fail, READY otherwise. Evaluation is work-unit scoped: protocols with work-unit-bearing inputs are checked once per discovered work unit; unscoped protocols are evaluated once overall.
+Evaluates protocols after an implicit scan and classifies each as `READY`, `BLOCKED`, or `WAITING`. Classification is ordered and mutually exclusive: WAITING when the trigger is not satisfied, BLOCKED when the trigger is satisfied but preconditions fail, READY otherwise.
+
+Without `--work-unit`, `state` evaluates only unscoped protocols (`scoped = false`) and each protocol appears at most once with no `work_unit`. With `--work-unit <ID>`, `state` evaluates only scoped protocols (`scoped = true`) for that exact delegated work unit. It does not enumerate sibling work units from artifact state.
 
 Text output groups protocols in READY, BLOCKED, then WAITING order, preserving topological protocol order within each group. READY entries list valid required and accepted artifact instances. BLOCKED entries list required-artifact failures (missing, invalid, stale, scan_incomplete). WAITING entries list the trigger condition and the specific reason it is not satisfied. For `on_artifact`, those reasons are phrased in terms of the absence of valid instances rather than the presence of unhealthy siblings.
 
@@ -101,6 +103,7 @@ When scan reconciliation is partial, `state` surfaces scan warnings and blocks p
 **Flags:**
 
 - `--json` — Emits a versioned JSON envelope: `{ "version": 2, "methodology": "...", "scan_warnings": [...], "protocols": [...] }`. The `protocols` array is flat and ordered, with each entry containing `name`, optional `work_unit`, `status`, `trigger`, and the status-specific field `inputs`, `precondition_failures`, or `unsatisfied_conditions`.
+- `--work-unit <ID>` — Evaluate only scoped protocols for the delegated work unit `<ID>`. Unscoped protocols are excluded in this mode.
 
 **Exit codes:** 0 when evaluation succeeds, regardless of whether protocols are ready, blocked, or waiting. Non-zero on project-load, scan, or serialization failure.
 
@@ -121,10 +124,12 @@ Checks project health after an implicit scan. Three checks:
 ### `runa step`
 
 ```bash
-runa step [--dry-run] [--json] [--config <PATH>]
+runa step [--dry-run] [--json] [--work-unit <ID>] [--config <PATH>]
 ```
 
 Selects at most one `(protocol, work_unit)` candidate after an implicit scan: the next non-cyclic READY execution in topological order. Activated work is suppressed when valid outputs are newer than relevant inputs for that work unit. Unreadable output instances conservatively disable freshness suppression for every work unit of the affected output type.
+
+Without `--work-unit`, `step` considers only unscoped protocols. With `--work-unit <ID>`, it considers only scoped protocols for that exact delegated work unit.
 
 With `--dry-run`, text output prints the next execution plus the grouped READY/BLOCKED/WAITING status view. The execution entry includes the protocol name, optional work unit, the trigger that activated it, an MCP server config, and the serialized agent-facing context payload (protocol name, optional work unit, instruction content, valid required and available accepted inputs with display paths and content hashes, and expected outputs split into `produces` and `may_produce`). Dry-run does not require a discoverable `runa-mcp` binary. If the graph contains a hard dependency cycle, `step` reports it as a warning and excludes cyclic protocols from the execution plan.
 
@@ -134,18 +139,21 @@ Without `--dry-run`, `step` requires `[agent].command` in the config and a Linux
 
 - `--dry-run` — Preview only. Does not execute the agent.
 - `--json` — Dry-run only. Emits a versioned JSON envelope: `{ "version": 4, "methodology": "...", "scan_warnings": [...], "cycle": [...] | null, "execution_plan": [...], "protocols": [...] }`. The `execution_plan` array contains at most one entry. The `protocols` array reuses the same status entries as `runa state --json`.
+- `--work-unit <ID>` — Plan or execute only scoped protocols for the delegated work unit `<ID>`.
 
 **Exit codes:** 0 on success. 1 on failure (non-Linux for live execution, agent error, postcondition violation, project-load error).
 
 ### `runa run`
 
 ```bash
-runa run [--dry-run] [--json] [--config <PATH>]
+runa run [--dry-run] [--json] [--work-unit <ID>] [--config <PATH>]
 ```
 
 The cascade command. Walks the READY frontier repeatedly until quiescence instead of stopping after one execution.
 
-With `--dry-run`, projects the full optimistic cascade from manifest topology: declared `produces` outputs, dependency edges, trigger declarations, and the current evaluated work-unit state. `may_produce` outputs do not advance the projection unless they already exist on disk. Initially ready entries include MCP config and full context on first emission; downstream projected entries carry only protocol name, optional work unit, trigger, and projection kind. The projection never synthesizes artifact values, forks the store, or bypasses schema validation.
+Without `--work-unit`, `run` considers only unscoped protocols. With `--work-unit <ID>`, it considers only scoped protocols for that exact delegated work unit.
+
+With `--dry-run`, projects the full optimistic cascade from manifest topology, declared `produces` outputs, dependency edges, and the caller-supplied evaluation scope. `may_produce` outputs do not advance the projection unless they already exist on disk. Initially ready entries include MCP config and full context on first emission; downstream projected entries carry only protocol name, optional work unit, trigger, and projection kind. The projection never synthesizes artifact values, forks the store, bypasses schema validation, or discovers sibling work units from artifact state.
 
 Without `--dry-run`, requires a Linux host. On non-Linux platforms, fails explicitly before installing the interrupt handler, resolving `runa-mcp`, or launching an agent. Failed candidates are skipped for the rest of the invocation; any artifacts emitted before failure are still reconciled into workspace state for downstream readiness. Previously exhausted work reopens when a later reconciliation changes relevant inputs.
 
@@ -155,6 +163,7 @@ Without `--dry-run`, requires a Linux host. On non-Linux platforms, fails explic
 
 - `--dry-run` — Preview the projected cascade. Does not execute agents.
 - `--json` — Dry-run only. Same envelope structure as `runa step --json`, but `execution_plan` may contain multiple entries including projected downstream work.
+- `--work-unit <ID>` — Plan or execute only scoped protocols for the delegated work unit `<ID>`.
 
 **Exit codes** (apply to both live and dry-run — dry-run reflects current topology state, not the projection):
 
@@ -174,7 +183,7 @@ Without `--dry-run`, requires a Linux host. On non-Linux platforms, fails explic
 runa-mcp --protocol <name> [--work-unit <name>]
 ```
 
-On startup, the server loads the project, resolves the named protocol from the manifest, validates that its output types can be served as MCP tools, and serves an MCP session over stdio. Each output artifact type (`produces` and `may_produce`) becomes one MCP tool. The tool input schema is the artifact type's JSON Schema with the `work_unit` field removed — the server injects `work_unit` automatically from the `--work-unit` argument.
+On startup, the server loads the project, resolves the named protocol from the manifest, validates that its declared scope matches the presence or absence of `--work-unit`, validates that its output types can be served as MCP tools, and serves an MCP session over stdio. Each output artifact type (`produces` and `may_produce`) becomes one MCP tool. The tool input schema is the artifact type's JSON Schema with the `work_unit` field removed — the server injects `work_unit` automatically from the `--work-unit` argument.
 
 `runa step` does not spawn `runa-mcp` directly. It passes the agent wrapper a `RUNA_MCP_CONFIG` JSON payload containing the resolved `runa-mcp` command, arguments, and environment so the agent runtime can launch the server as its own child process. The exported command and environment paths are absolute whenever runa resolves them from the local filesystem, so wrappers do not depend on child process cwd to launch `runa-mcp`.
 

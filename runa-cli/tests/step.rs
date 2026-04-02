@@ -145,6 +145,97 @@ fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) 
     );
 }
 
+#[test]
+fn step_dry_run_filters_execution_plan_by_declared_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "ground"
+trigger = { type = "on_artifact", name = "constraints" }
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+produces = ["implementation"]
+scoped = true
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "implementation",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+        ],
+        &["ground", "implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-a.json"),
+        r#"{"title":"ship step","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+
+    let unscoped = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        unscoped.status.success(),
+        "step failed: {}",
+        String::from_utf8_lossy(&unscoped.stderr)
+    );
+    let unscoped_json: serde_json::Value = serde_json::from_slice(&unscoped.stdout).unwrap();
+    assert_eq!(unscoped_json["execution_plan"].as_array().unwrap().len(), 1);
+    assert_eq!(unscoped_json["execution_plan"][0]["protocol"], "ground");
+    assert!(
+        unscoped_json["execution_plan"][0]
+            .get("work_unit")
+            .is_none()
+    );
+
+    let scoped = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        scoped.status.success(),
+        "step --work-unit failed: {}",
+        String::from_utf8_lossy(&scoped.stderr)
+    );
+    let scoped_json: serde_json::Value = serde_json::from_slice(&scoped.stdout).unwrap();
+    assert_eq!(scoped_json["execution_plan"].as_array().unwrap().len(), 1);
+    assert_eq!(scoped_json["execution_plan"][0]["protocol"], "implement");
+    assert_eq!(scoped_json["execution_plan"][0]["work_unit"], "wu-a");
+}
+
 fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
     let config_path = project_dir.join(".runa/config.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
@@ -1076,10 +1167,12 @@ name = "seed"
 name = "revise"
 requires = ["seed"]
 produces = ["constraints"]
+scoped = true
 trigger = { type = "on_artifact", name = "seed" }
 
 [[protocols]]
 name = "prepare"
+scoped = true
 trigger = { type = "on_artifact", name = "constraints" }
 "#,
         &[("constraints", wu_schema), ("seed", wu_schema)],
@@ -1125,6 +1218,8 @@ trigger = { type = "on_artifact", name = "constraints" }
 
     let output = runa_bin()
         .arg("step")
+        .arg("--work-unit")
+        .arg("wu-b")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -1136,7 +1231,7 @@ trigger = { type = "on_artifact", name = "constraints" }
     );
 
     let executed = fs::read_to_string(&log_path).unwrap();
-    assert_eq!(executed, "prepare:wu-a\n");
+    assert_eq!(executed, "prepare:wu-b\n");
 }
 
 #[test]
@@ -1564,6 +1659,7 @@ name = "reviewed"
 name = "review"
 requires = ["doc"]
 produces = ["reviewed"]
+scoped = true
 trigger = { type = "on_artifact", name = "doc" }
 "#,
         &[("doc", wu_schema), ("reviewed", wu_schema)],
@@ -1602,6 +1698,8 @@ trigger = { type = "on_artifact", name = "doc" }
 
     let output = runa_bin()
         .arg("step")
+        .arg("--work-unit")
+        .arg("wu-a")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -2340,7 +2438,7 @@ trigger = { type = "on_change", name = "b" }
 }
 
 #[test]
-fn step_dry_run_reports_per_work_unit_on_change_readiness_when_freshness_is_mixed() {
+fn step_dry_run_reports_scoped_on_change_readiness_when_freshness_is_mixed() {
     let dir = tempfile::tempdir().unwrap();
     let wu_schema = r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#;
     let manifest_path = common::write_methodology(
@@ -2357,6 +2455,7 @@ name = "reviewed"
 [[protocols]]
 name = "review"
 produces = ["reviewed"]
+scoped = true
 trigger = { type = "on_change", name = "doc" }
 "#,
         &[("doc", wu_schema), ("reviewed", wu_schema)],
@@ -2422,41 +2521,48 @@ trigger = { type = "on_change", name = "doc" }
     )
     .unwrap();
 
-    let output = runa_bin()
+    let wu_a_output = runa_bin()
         .arg("step")
         .arg("--dry-run")
         .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    let wu_b_output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-b")
         .current_dir(&project_dir)
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    for output in [&wu_a_output, &wu_b_output] {
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let execution_plan = value["execution_plan"].as_array().unwrap();
-    assert_eq!(execution_plan.len(), 1, "{value:#}");
-    assert_eq!(execution_plan[0]["protocol"], "review");
-    assert_eq!(execution_plan[0]["work_unit"], "wu-a");
+    let wu_a_value: serde_json::Value = serde_json::from_slice(&wu_a_output.stdout).unwrap();
+    let wu_a_plan = wu_a_value["execution_plan"].as_array().unwrap();
+    assert_eq!(wu_a_plan.len(), 1, "{wu_a_value:#}");
+    assert_eq!(wu_a_plan[0]["protocol"], "review");
+    assert_eq!(wu_a_plan[0]["work_unit"], "wu-a");
+    let wu_a_protocols = wu_a_value["protocols"].as_array().unwrap();
+    assert_eq!(wu_a_protocols.len(), 1, "{wu_a_value:#}");
+    assert_eq!(wu_a_protocols[0]["status"], "ready");
+    assert_eq!(wu_a_protocols[0]["work_unit"], "wu-a");
 
-    let reviews: Vec<_> = value["protocols"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|protocol| protocol["name"] == "review")
-        .collect();
-    assert_eq!(reviews.len(), 2, "{value:#}");
-    let ready = reviews
-        .iter()
-        .find(|protocol| protocol["status"] == "ready")
-        .unwrap();
-    let waiting = reviews
-        .iter()
-        .find(|protocol| protocol["status"] == "waiting")
-        .unwrap();
-    assert_eq!(ready["work_unit"], "wu-a");
-    assert_eq!(waiting["work_unit"], "wu-b");
+    let wu_b_value: serde_json::Value = serde_json::from_slice(&wu_b_output.stdout).unwrap();
+    let wu_b_plan = wu_b_value["execution_plan"].as_array().unwrap();
+    assert!(wu_b_plan.is_empty(), "{wu_b_value:#}");
+    let wu_b_protocols = wu_b_value["protocols"].as_array().unwrap();
+    assert_eq!(wu_b_protocols.len(), 1, "{wu_b_value:#}");
+    assert_eq!(wu_b_protocols[0]["status"], "waiting");
+    assert_eq!(wu_b_protocols[0]["work_unit"], "wu-b");
 }

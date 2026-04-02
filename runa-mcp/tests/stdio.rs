@@ -53,6 +53,7 @@ trigger = { type = "on_change", name = "summary" }
 [[protocols]]
 name = "implement"
 produces = ["implementation"]
+scoped = true
 trigger = { type = "on_change", name = "implementation" }
 "#
 }
