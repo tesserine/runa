@@ -161,6 +161,8 @@ Four optional fields declare the protocol's relationship to artifacts:
 - **may_produce** — artifact types that might be produced. Validated if present, not required.
 - **scoped** — boolean, default `false`. `false` means the protocol is evaluated once in unscoped mode. `true` means the protocol is evaluated only when the caller supplies `--work-unit <ID>`, and only for that exact delegated work unit.
 
+Unscoped protocols must also have unscoped-compatible outputs. If an artifact schema named in `produces` or `may_produce` lists `work_unit` in its top-level `required` array, the protocol must declare `scoped = true`. Otherwise the manifest is invalid and `runa init` rejects it.
+
 The example above uses `requires` and `produces`. See the [interface contract](interface-contract.md) for the full semantics of `accepts` and `may_produce`.
 
 `scoped` is protocol metadata, not topology. Dependency edges still come only from artifact relationships. Use `scoped = true` when a protocol belongs to delegated work-unit execution and should never be discovered by scanning sibling artifact state.

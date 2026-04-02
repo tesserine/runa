@@ -40,6 +40,20 @@ pub struct ArtifactType {
     pub schema: serde_json::Value,
 }
 
+impl ArtifactType {
+    /// True when the schema's top-level `required` array includes `work_unit`.
+    pub fn schema_requires_work_unit(&self) -> bool {
+        self.schema
+            .get("required")
+            .and_then(|required| required.as_array())
+            .is_some_and(|required| {
+                required
+                    .iter()
+                    .any(|value| value.as_str() == Some("work_unit"))
+            })
+    }
+}
+
 /// A protocol's declared relationship to artifacts and its activation condition.
 ///
 /// Protocols declare what they require, accept, produce, and may produce.

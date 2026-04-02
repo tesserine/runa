@@ -14,7 +14,7 @@ Three crates, Rust 2024 edition, resolver v3:
 
 These are library capabilities exposed by libagent and consumed by both the CLI and the MCP server.
 
-1. **TOML manifest → model types.** `manifest::parse` reads a methodology manifest file, deserializes TOML into `Manifest` (containing `ArtifactType` and `ProtocolDeclaration` vectors), validates artifact type names and protocol names are unique and safe as layout-derived path components, then resolves the methodology layout convention: loads schema content from `schemas/{name}.schema.json` and validates instruction file existence at `protocols/{name}/PROTOCOL.md`, both relative to the manifest directory.
+1. **TOML manifest → model types.** `manifest::parse` reads a methodology manifest file, deserializes TOML into `Manifest` (containing `ArtifactType` and `ProtocolDeclaration` vectors), validates artifact type names and protocol names are unique and safe as layout-derived path components, then resolves the methodology layout convention: loads schema content from `schemas/{name}.schema.json` and validates instruction file existence at `protocols/{name}/PROTOCOL.md`, both relative to the manifest directory. After schema resolution, parse also rejects unscoped protocols whose declared `produces` or `may_produce` schemas require `work_unit`.
 
 2. **Skill declarations → dependency graph.** `DependencyGraph::build` takes `&[ProtocolDeclaration]` and computes edges from requires/accepts → produces/may_produce relationships. Provides topological ordering (Kahn's algorithm), cycle detection (falls back to hard-edges-only on combined-graph cycle), and blocked-protocol identification.
 
@@ -36,11 +36,11 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 ### `model.rs`
 
-Core types: `Manifest`, `ArtifactType`, `ProtocolDeclaration`, `TriggerCondition`. `ProtocolDeclaration` includes `scoped: bool` metadata (default `false`) plus an `instructions: Option<String>` field populated by `manifest::parse` with the protocol's `PROTOCOL.md` content (`None` from `from_str`). `TriggerCondition` is a tagged enum (`#[serde(tag = "type", rename_all = "snake_case")]`) with five variants: `OnArtifact`, `OnChange`, `OnInvalid`, `AllOf`, `AnyOf`. `AllOf`/`AnyOf` hold `Vec<TriggerCondition>` for arbitrary nesting depth.
+Core types: `Manifest`, `ArtifactType`, `ProtocolDeclaration`, `TriggerCondition`. `ArtifactType` exposes the shared top-level `schema_requires_work_unit` predicate used by both manifest parsing and MCP output validation. `ProtocolDeclaration` includes `scoped: bool` metadata (default `false`) plus an `instructions: Option<String>` field populated by `manifest::parse` with the protocol's `PROTOCOL.md` content (`None` from `from_str`). `TriggerCondition` is a tagged enum (`#[serde(tag = "type", rename_all = "snake_case")]`) with five variants: `OnArtifact`, `OnChange`, `OnInvalid`, `AllOf`, `AnyOf`. `AllOf`/`AnyOf` hold `Vec<TriggerCondition>` for arbitrary nesting depth.
 
 ### `manifest.rs`
 
-TOML parsing, structural validation, and methodology layout resolution. `from_str` deserializes a TOML string into raw types and converts to model types with unresolved schemas (`Value::Null`) and no instruction content. `parse` reads from a file path, calls `from_str`, then resolves the methodology layout convention — loading schema JSON from `schemas/{artifact_type_name}.schema.json` and loading instruction text from `protocols/{protocol_name}/PROTOCOL.md`. Both validate that artifact type names and protocol names are unique within the manifest and safe as single path components, rejecting names containing `/`, `\`, or `..` before any filesystem lookup. The TOML format uses `deny_unknown_fields` on artifact type declarations, rejecting old-format manifests that include explicit `schema` fields.
+TOML parsing, structural validation, and methodology layout resolution. `from_str` deserializes a TOML string into raw types and converts to model types with unresolved schemas (`Value::Null`) and no instruction content. `parse` reads from a file path, calls `from_str`, then resolves the methodology layout convention — loading schema JSON from `schemas/{artifact_type_name}.schema.json` and loading instruction text from `protocols/{protocol_name}/PROTOCOL.md` — before validating resolved schema/scope consistency for output artifact types. Both phases validate that artifact type names and protocol names are unique within the manifest and safe as single path components, rejecting names containing `/`, `\`, or `..` before any filesystem lookup. The TOML format uses `deny_unknown_fields` on artifact type declarations, rejecting old-format manifests that include explicit `schema` fields.
 
 ### `validation.rs`
 
@@ -90,7 +90,7 @@ Shared project loading logic used by both `runa-cli` and `runa-mcp`. Config reso
 
 ### `selection.rs`
 
-Scope-aware protocol selection. `discover_ready_candidates` evaluates protocols in topological order under an explicit `EvaluationScope`. Unscoped evaluation considers only `scoped = false` protocols once overall. Scoped evaluation considers only `scoped = true` protocols for the single delegated work unit. For each candidate: checks scan trust (skips if any `requires` type is partially scanned), evaluates the trigger condition, checks preconditions, and suppresses work whose outputs are already fresh relative to its inputs. Output scan gaps do not block candidates directly; they only make freshness/completion untrustworthy for the whole output type.
+Scope-aware protocol selection. `discover_ready_candidates` evaluates protocols in topological order under an explicit `EvaluationScope`. Unscoped evaluation considers only `scoped = false` protocols once overall. Scoped evaluation considers only `scoped = true` protocols for the single delegated work unit. Candidate enumeration is scope-driven only; the old store-scanning work-unit discovery path has been removed. For each candidate: checks scan trust (skips if any `requires` type is partially scanned), evaluates the trigger condition, checks preconditions, and suppresses work whose outputs are already fresh relative to its inputs. Output scan gaps do not block candidates directly; they only make freshness/completion untrustworthy for the whole output type.
 
 ## runa-mcp Modules
 
@@ -100,7 +100,7 @@ Runtime loop: parses `--protocol` and optional `--work-unit`, loads the project,
 
 ### `handler.rs`
 
-`ServerHandler` implementation. `RunaHandler` derives one MCP tool per output artifact type (`produces` + `may_produce`), with tool input schemas derived from artifact type JSON Schemas (with `work_unit` stripped). `validate_protocol_scope` rejects scoped protocols without `--work-unit` and unscoped protocols with one. `call_tool` validates artifacts before writing, then writes to the workspace and records in the store. The server advertises tool capabilities only; prompt delivery is handled by `runa step`, not by MCP.
+`ServerHandler` implementation. `RunaHandler` derives one MCP tool per output artifact type (`produces` + `may_produce`), with tool input schemas derived from artifact type JSON Schemas (with `work_unit` stripped). `validate_protocol_scope` rejects scoped protocols without `--work-unit` and unscoped protocols with one. `validate_output_types` remains a defense-in-depth guard for output schemas unsupported by MCP tool generation, but manifest parsing now rejects the unscoped-required-`work_unit` combination earlier. `call_tool` validates artifacts before writing, then writes to the workspace and records in the store. The server advertises tool capabilities only; prompt delivery is handled by `runa step`, not by MCP.
 
 ## `.runa/` Directory Layout
 

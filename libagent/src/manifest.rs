@@ -84,6 +84,11 @@ pub enum ManifestError {
         protocol: String,
         expected_path: PathBuf,
     },
+    /// Unscoped protocol declares an output schema that requires work_unit.
+    UnscopedProtocolOutputRequiresWorkUnit {
+        protocol: String,
+        artifact_type: String,
+    },
 }
 
 impl fmt::Display for ManifestError {
@@ -138,6 +143,17 @@ impl fmt::Display for ManifestError {
                     expected_path.display()
                 )
             }
+            ManifestError::UnscopedProtocolOutputRequiresWorkUnit {
+                protocol,
+                artifact_type,
+            } => {
+                write!(
+                    f,
+                    "protocol '{protocol}' is declared unscoped but output artifact type \
+                     '{artifact_type}' requires 'work_unit'; declare 'scoped = true' or \
+                     remove 'work_unit' from the output schema's required fields"
+                )
+            }
         }
     }
 }
@@ -181,6 +197,7 @@ pub fn parse(path: &Path) -> Result<Manifest, ManifestError> {
     let mut manifest = from_str(&content)?;
     let manifest_dir = path.parent().unwrap_or(Path::new("."));
     resolve_methodology_layout(&mut manifest, manifest_dir)?;
+    validate_resolved_manifest(&manifest)?;
     Ok(manifest)
 }
 
@@ -231,6 +248,33 @@ fn resolve_methodology_layout(
             }
         })?;
         protocol.instructions = Some(content);
+    }
+
+    Ok(())
+}
+
+fn validate_resolved_manifest(manifest: &Manifest) -> Result<(), ManifestError> {
+    for protocol in &manifest.protocols {
+        if protocol.scoped {
+            continue;
+        }
+
+        for artifact_type_name in protocol.produces.iter().chain(&protocol.may_produce) {
+            let Some(artifact_type) = manifest
+                .artifact_types
+                .iter()
+                .find(|artifact_type| artifact_type.name == *artifact_type_name)
+            else {
+                continue;
+            };
+
+            if artifact_type.schema_requires_work_unit() {
+                return Err(ManifestError::UnscopedProtocolOutputRequiresWorkUnit {
+                    protocol: protocol.name.clone(),
+                    artifact_type: artifact_type.name.clone(),
+                });
+            }
+        }
     }
 
     Ok(())
@@ -444,6 +488,206 @@ trigger = { type = "on_change", name = "report" }
         // Instruction content loaded from convention path.
         let instructions = manifest.protocols[0].instructions.as_ref().unwrap();
         assert_eq!(instructions, "# generate\n");
+    }
+
+    #[test]
+    fn parse_rejects_unscoped_produces_schema_requiring_work_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        write_layout(
+            dir.path(),
+            &[(
+                "implementation",
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "work_unit": { "type": "string" }
+                    },
+                    "required": ["title", "work_unit"]
+                }"#,
+            )],
+            &["implement"],
+        );
+
+        let toml = r#"
+name = "invalid-unscoped-produces"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+produces = ["implementation"]
+trigger = { type = "on_change", name = "implementation" }
+"#;
+        let manifest_path = dir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, toml).unwrap();
+
+        let err = parse(&manifest_path).unwrap_err();
+        assert!(err.to_string().contains("implement"), "err: {err}");
+        assert!(err.to_string().contains("implementation"), "err: {err}");
+        assert!(err.to_string().contains("work_unit"), "err: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_unscoped_may_produce_schema_requiring_work_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        write_layout(
+            dir.path(),
+            &[(
+                "implementation",
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "work_unit": { "type": "string" }
+                    },
+                    "required": ["title", "work_unit"]
+                }"#,
+            )],
+            &["implement"],
+        );
+
+        let toml = r#"
+name = "invalid-unscoped-may-produce"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+may_produce = ["implementation"]
+trigger = { type = "on_change", name = "implementation" }
+"#;
+        let manifest_path = dir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, toml).unwrap();
+
+        let err = parse(&manifest_path).unwrap_err();
+        assert!(err.to_string().contains("implement"), "err: {err}");
+        assert!(err.to_string().contains("implementation"), "err: {err}");
+        assert!(err.to_string().contains("work_unit"), "err: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_unscoped_mixed_outputs_when_optional_output_requires_work_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        write_layout(
+            dir.path(),
+            &[
+                ("report", r#"{"type": "object", "required": ["title"]}"#),
+                (
+                    "implementation",
+                    r#"{
+                        "type": "object",
+                        "properties": {
+                            "title": { "type": "string" },
+                            "work_unit": { "type": "string" }
+                        },
+                        "required": ["title", "work_unit"]
+                    }"#,
+                ),
+            ],
+            &["implement"],
+        );
+
+        let toml = r#"
+name = "invalid-unscoped-mixed-outputs"
+
+[[artifact_types]]
+name = "report"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+produces = ["report"]
+may_produce = ["implementation"]
+trigger = { type = "on_change", name = "report" }
+"#;
+        let manifest_path = dir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, toml).unwrap();
+
+        let err = parse(&manifest_path).unwrap_err();
+        assert!(err.to_string().contains("implement"), "err: {err}");
+        assert!(err.to_string().contains("implementation"), "err: {err}");
+        assert!(err.to_string().contains("work_unit"), "err: {err}");
+    }
+
+    #[test]
+    fn parse_allows_scoped_protocol_output_schema_requiring_work_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        write_layout(
+            dir.path(),
+            &[(
+                "implementation",
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "work_unit": { "type": "string" }
+                    },
+                    "required": ["title", "work_unit"]
+                }"#,
+            )],
+            &["implement"],
+        );
+
+        let toml = r#"
+name = "valid-scoped-output"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+produces = ["implementation"]
+scoped = true
+trigger = { type = "on_change", name = "implementation" }
+"#;
+        let manifest_path = dir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, toml).unwrap();
+
+        let manifest = parse(&manifest_path).unwrap();
+        assert!(manifest.protocols[0].scoped);
+    }
+
+    #[test]
+    fn parse_allows_unscoped_output_schema_with_optional_work_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        write_layout(
+            dir.path(),
+            &[(
+                "implementation",
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "work_unit": { "type": "string" }
+                    },
+                    "required": ["title"]
+                }"#,
+            )],
+            &["implement"],
+        );
+
+        let toml = r#"
+name = "valid-unscoped-optional-work-unit"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+produces = ["implementation"]
+may_produce = ["implementation"]
+trigger = { type = "on_change", name = "implementation" }
+"#;
+        let manifest_path = dir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, toml).unwrap();
+
+        let manifest = parse(&manifest_path).unwrap();
+        assert!(!manifest.protocols[0].scoped);
     }
 
     #[test]

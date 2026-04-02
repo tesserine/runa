@@ -42,7 +42,7 @@ impl RunaHandler {
             .chain(protocol.may_produce.iter().filter(|type_name| {
                 if work_unit.is_none()
                     && let Some(at) = store.artifact_type(type_name)
-                    && schema_requires_work_unit(&at.schema)
+                    && at.schema_requires_work_unit()
                 {
                     warn!(
                         operation = "tool_generation",
@@ -118,14 +118,6 @@ fn has_composition_keywords(schema: &Value) -> bool {
         || schema.get("$ref").is_some()
 }
 
-/// True if a JSON Schema lists `"work_unit"` in its `required` array.
-fn schema_requires_work_unit(schema: &Value) -> bool {
-    schema
-        .get("required")
-        .and_then(|r| r.as_array())
-        .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some("work_unit")))
-}
-
 /// Check that all `produces` types can be served as MCP tools.
 ///
 /// Returns `Err` with a diagnostic message if any required output type has a
@@ -174,7 +166,7 @@ pub fn validate_output_types(
                  for MCP tool generation"
             ));
         }
-        if work_unit.is_none() && schema_requires_work_unit(&at.schema) {
+        if work_unit.is_none() && at.schema_requires_work_unit() {
             return Err(format!(
                 "required output type '{type_name}': schema requires 'work_unit' but \
                  candidate has no work_unit; tool calls would always fail validation"
@@ -196,7 +188,7 @@ pub fn validate_output_types(
             if has_composition_keywords(&at.schema) {
                 return false;
             }
-            if work_unit.is_none() && schema_requires_work_unit(&at.schema) {
+            if work_unit.is_none() && at.schema_requires_work_unit() {
                 return false;
             }
             true
