@@ -214,3 +214,71 @@ async fn scoped_protocol_writes_artifact_with_injected_work_unit() {
 
     service.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn scoped_protocol_injects_required_work_unit_without_declared_property() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+produces = ["implementation"]
+scoped = true
+trigger = { type = "on_change", name = "implementation" }
+"#,
+        &[(
+            "implementation",
+            r#"{"type":"object","required":["title","work_unit"]}"#,
+        )],
+        &["implement"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("implement")
+                        .arg("--work-unit")
+                        .arg("wu-1")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let tools = service.list_all_tools().await.unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name.as_ref(), "implementation");
+
+    service
+        .call_tool(CallToolRequestParam {
+            name: "implementation".into(),
+            arguments: serde_json::json!({
+                "instance_id": "impl-1",
+                "title": "ship it"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+
+    let artifact =
+        fs::read_to_string(project_dir.join(".runa/workspace/implementation/impl-1.json")).unwrap();
+    assert!(artifact.contains("\"title\": \"ship it\""), "{artifact}");
+    assert!(artifact.contains("\"work_unit\": \"wu-1\""), "{artifact}");
+
+    service.cancel().await.unwrap();
+}

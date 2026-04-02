@@ -334,20 +334,19 @@ impl ServerHandler for RunaHandler {
 
         validate_instance_id(&instance_id).map_err(|e| McpError::invalid_params(e, None))?;
 
-        // Inject work_unit into data if the schema declares it.
-        if let Value::Object(schema_map) = full_schema
-            && let Some(Value::Object(props)) = schema_map.get("properties")
-            && props.contains_key("work_unit")
+        let at = ArtifactType {
+            name: tool_name.to_string(),
+            schema: full_schema.clone(),
+        };
+
+        // Inject delegated work_unit whenever the full schema requires it.
+        if at.schema_requires_work_unit()
             && let (Value::Object(data_map), Some(wu)) = (&mut data, &self.work_unit)
         {
             data_map.insert("work_unit".to_string(), Value::String(wu.clone()));
         }
 
         // Validate against the full schema (including work_unit).
-        let at = ArtifactType {
-            name: tool_name.to_string(),
-            schema: full_schema.clone(),
-        };
         if let Err(e) = validate_artifact(&data, &at) {
             let msg = match e {
                 libagent::ValidationError::InvalidArtifact { violations, .. } => violations
