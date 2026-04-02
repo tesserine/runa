@@ -339,8 +339,8 @@ impl ServerHandler for RunaHandler {
             schema: full_schema.clone(),
         };
 
-        // Inject delegated work_unit whenever the full schema requires it.
-        if at.schema_requires_work_unit()
+        // Inject delegated work_unit whenever the full schema mentions it.
+        if at.schema_mentions_work_unit()
             && let (Value::Object(data_map), Some(wu)) = (&mut data, &self.work_unit)
         {
             data_map.insert("work_unit".to_string(), Value::String(wu.clone()));

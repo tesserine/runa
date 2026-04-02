@@ -52,6 +52,17 @@ impl ArtifactType {
                     .any(|value| value.as_str() == Some("work_unit"))
             })
     }
+
+    /// True when the schema mentions `work_unit` at the top level, either as a
+    /// required field or as a declared property.
+    pub fn schema_mentions_work_unit(&self) -> bool {
+        self.schema_requires_work_unit()
+            || self
+                .schema
+                .get("properties")
+                .and_then(|properties| properties.as_object())
+                .is_some_and(|properties| properties.contains_key("work_unit"))
+    }
 }
 
 /// An unscoped protocol declares an output schema that requires `work_unit`.
@@ -423,5 +434,37 @@ mod tests {
         };
 
         assert!(validate_output_scope(&protocol, &artifact_type).is_ok());
+    }
+
+    #[test]
+    fn schema_mentions_work_unit_when_optional_property_is_declared() {
+        let artifact_type = ArtifactType {
+            name: "summary".into(),
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "work_unit": { "type": "string" }
+                },
+                "required": ["title"]
+            }),
+        };
+
+        assert!(artifact_type.schema_mentions_work_unit());
+        assert!(!artifact_type.schema_requires_work_unit());
+    }
+
+    #[test]
+    fn schema_mentions_work_unit_when_required_without_declared_property() {
+        let artifact_type = ArtifactType {
+            name: "implementation".into(),
+            schema: serde_json::json!({
+                "type": "object",
+                "required": ["title", "work_unit"]
+            }),
+        };
+
+        assert!(artifact_type.schema_mentions_work_unit());
+        assert!(artifact_type.schema_requires_work_unit());
     }
 }
