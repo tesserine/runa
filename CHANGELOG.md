@@ -47,6 +47,7 @@ Semantic Versioning.
 ### Fixed
 
 - Reject malformed methodology manifests earlier when an unscoped protocol declares a `produces` or `may_produce` schema whose top-level `required` array includes `work_unit`, so `runa state`, `runa step --dry-run`, and `runa-mcp` no longer disagree about executability.
+- Reject malformed methodology manifests earlier when a scoped protocol declares a `produces` or `may_produce` schema whose top-level `required` array does not include `work_unit`, preserving work-unit isolation by preventing scoped protocols from producing shared unpartitioned outputs.
 - Make `on_artifact` and required-input readiness existential over valid instances: mixed invalid, malformed, or stale siblings no longer block `runa state`, `runa step --dry-run`, or `runa run --dry-run` when a valid instance exists, while artifact health reporting stays unchanged and `on_artifact` waiting reasons now report the absence of valid instances.
 - Revert freshness suppression for `on_artifact` and required inputs to use any recorded sibling change, so invalidated or removed previously valid inputs reopen work instead of leaving stale outputs marked current in readiness evaluation or dry-run projection.
 - Make the quickstart example's `review` protocol require both `requirements` and `design`, matching runa's declared-input injection contract, and add a regression test covering `runa step --dry-run --json`.

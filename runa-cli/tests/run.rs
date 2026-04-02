@@ -72,11 +72,11 @@ trigger = { type = "on_artifact", name = "implementation" }
             ),
             (
                 "implementation",
-                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+                r#"{"type":"object","required":["done","work_unit"],"properties":{"done":{"type":"boolean"},"work_unit":{"type":"string"}}}"#,
             ),
             (
                 "verified",
-                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+                r#"{"type":"object","required":["done","work_unit"],"properties":{"done":{"type":"boolean"},"work_unit":{"type":"string"}}}"#,
             ),
         ],
         &["ground", "implement", "verify"],
@@ -1214,7 +1214,7 @@ trigger = { type = "on_artifact", name = "constrained" }
 "#,
         &[
             ("input", wu_title_schema),
-            ("constrained", r#"{"type":"string","minLength":1}"#),
+            ("constrained", wu_title_schema),
             ("verified", wu_bool_schema),
         ],
         &["build", "verify"],
@@ -1672,8 +1672,7 @@ trigger = { type = "on_artifact", name = "notes" }
 fn run_without_dry_run_reopens_exhausted_work_after_postcondition_failure() {
     let dir = tempfile::tempdir().unwrap();
     let wu_schema = r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#;
-    let bool_schema =
-        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let bool_schema = r#"{"type":"object","required":["done","work_unit"],"properties":{"done":{"type":"boolean"},"work_unit":{"type":"string"}}}"#;
     let manifest_path = common::write_methodology(
         dir.path(),
         r#"
@@ -1765,8 +1764,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 fn run_without_dry_run_reopens_exhausted_work_after_agent_failure() {
     let dir = tempfile::tempdir().unwrap();
     let wu_schema = r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#;
-    let bool_schema =
-        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let bool_schema = r#"{"type":"object","required":["done","work_unit"],"properties":{"done":{"type":"boolean"},"work_unit":{"type":"string"}}}"#;
     let manifest_path = common::write_methodology(
         dir.path(),
         r#"

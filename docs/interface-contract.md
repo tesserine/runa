@@ -36,13 +36,13 @@ A protocol declaration:
 - **produces** — zero or more artifact type names
 - **may_produce** — zero or more artifact type names. Absent optional outputs do not fail postconditions, but they also do not create completion evidence. If output should always be produced, the artifact type belongs in `produces`.
 - **scoped** — optional boolean, default `false`. When `false`, the protocol participates only in unscoped evaluation. When `true`, the protocol participates only in caller-scoped evaluation for an explicit work unit supplied by the orchestrator.
-- Output schema consistency is part of manifest validity. When a protocol is unscoped (`scoped = false` or omitted), any artifact type named in `produces` or `may_produce` must be servable without a delegated work unit. In practice, an unscoped protocol must not declare output schemas whose top-level `required` array includes `work_unit`.
+- Output schema consistency is part of manifest validity. Every artifact type named in `produces` or `may_produce` must agree with the protocol's declared scope. Unscoped protocols (`scoped = false` or omitted) must not declare output schemas whose top-level `required` array includes `work_unit`. Scoped protocols (`scoped = true`) must declare only output schemas whose top-level `required` array includes `work_unit`; defining `work_unit` as an optional property is not sufficient because scoped outputs must remain partitioned by work unit.
 - Completion is derived from output artifact timestamps. Protocols with no `produces` types are never suppressed by freshness — runa cannot derive completion from artifacts that don't exist. If a protocol needs completion tracking, it must declare at least one `produces` artifact type.
 - **trigger** — one trigger condition (see below)
 
 Topology is not declared. It emerges from the graph of requires/produces/may_produce relationships across protocols. A pipeline emerges when protocols chain linearly. A graph emerges when protocols fan in or fan out. A cycle emerges when a protocol produces an artifact type that another protocol's trigger monitors for change. The methodology does not tell runa what shape it is. runa computes the shape from declarations.
 
-Scope is not topology. Dependency edges remain type-level. `scoped = true` does not change graph structure, and runa does not infer scope from artifact schemas, `work_unit` fields, or artifact filenames. But scope and output schemas still have to agree: if a protocol's outputs require `work_unit`, the protocol itself must be declared `scoped = true`.
+Scope is not topology. Dependency edges remain type-level. `scoped = true` does not change graph structure, and runa does not infer scope from artifact schemas, `work_unit` fields, or artifact filenames. But scope and output schemas still have to agree in both directions: if a protocol's outputs require `work_unit`, the protocol itself must be declared `scoped = true`, and if a protocol is declared `scoped = true`, its outputs must require `work_unit`.
 
 ### 3. Trigger Conditions
 
@@ -96,7 +96,7 @@ The interface contract defines conventional locations for methodology content re
 
 These conventions are part of the interface contract — the same layer that defines manifest format, field names, and trigger condition types. A valid methodology conforms to this layout. runa derives paths from names it already has; the manifest does not include explicit path fields.
 
-Both schema files and instruction files must exist at their conventional locations when the manifest is parsed. Missing files are parse errors, caught before any runtime operation. Schema files are read and parsed at parse time. Instruction files are also read at parse time and stored on the resolved protocol declarations. Resolved manifests also enforce schema/scope consistency for declared outputs, rejecting unscoped protocols whose `produces` or `may_produce` schemas require `work_unit`.
+Both schema files and instruction files must exist at their conventional locations when the manifest is parsed. Missing files are parse errors, caught before any runtime operation. Schema files are read and parsed at parse time. Instruction files are also read at parse time and stored on the resolved protocol declarations. Resolved manifests also enforce schema/scope consistency for declared outputs, rejecting unscoped protocols whose `produces` or `may_produce` schemas require `work_unit` and rejecting scoped protocols whose `produces` or `may_produce` schemas do not require it.
 Unsafe artifact type or protocol names are also parse errors, rejected before runa attempts any layout-derived filesystem lookup.
 
 ## Methodology Registration

@@ -177,7 +177,7 @@ trigger = { type = "on_artifact", name = "constraints" }
             ),
             (
                 "implementation",
-                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+                r#"{"type":"object","required":["done","work_unit"],"properties":{"done":{"type":"boolean"},"work_unit":{"type":"string"}}}"#,
             ),
         ],
         &["ground", "implement"],
