@@ -279,24 +279,13 @@ pub(crate) fn build_execution_plan(
         .map(|protocol| (protocol.name.as_str(), protocol))
         .collect();
 
-    let cycle_participants: std::collections::HashSet<&str> = evaluated
-        .cycle
-        .as_ref()
-        .map(|cycle| cycle.path.iter().map(|name| name.as_str()).collect())
-        .unwrap_or_default();
-
-    let ready_entries: Vec<_> = evaluated
-        .ready
-        .iter()
-        .filter(|entry| !cycle_participants.contains(entry.name.as_str()))
-        .collect();
-
-    if ready_entries.is_empty() {
+    if evaluated.ready.is_empty() {
         return Vec::new();
     }
 
-    ready_entries
-        .into_iter()
+    evaluated
+        .ready
+        .iter()
         .map(|entry| {
             let protocol = protocol_map
                 .get(entry.name.as_str())

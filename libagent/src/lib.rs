@@ -49,9 +49,9 @@ pub use scan::{
     UnreadableArtifact, scan,
 };
 pub use selection::{
-    Candidate, CandidateStatus, ClassifiedCandidate, EvaluationScope, ScanTrust,
-    classify_candidates, collect_unsatisfied_conditions, discover_ready_candidates,
-    protocol_relevant_input_types, protocol_relevant_inputs_changed,
+    Candidate, CandidateStatus, ClassifiedCandidate, EvaluationScope, EvaluationTopology,
+    ScanTrust, classify_candidates, collect_unsatisfied_conditions, discover_ready_candidates,
+    protocol_relevant_input_types, protocol_relevant_inputs_changed, resolve_evaluation_topology,
 };
 pub use store::{ArtifactState, ArtifactStore, StoreError, ValidationStatus};
 pub use trigger::{TriggerContext, TriggerResult, evaluate as evaluate_trigger};

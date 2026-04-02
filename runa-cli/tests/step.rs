@@ -2256,6 +2256,85 @@ trigger = { type = "on_change", name = "b" }
 }
 
 #[test]
+fn step_dry_run_scoped_ignores_unscoped_cycle_participants() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "x"
+
+[[artifact_types]]
+name = "y"
+
+[[protocols]]
+name = "publish"
+requires = ["y"]
+produces = ["x"]
+trigger = { type = "on_artifact", name = "y" }
+
+[[protocols]]
+name = "implement"
+requires = ["x"]
+produces = ["y"]
+scoped = true
+trigger = { type = "on_artifact", name = "x" }
+"#,
+        &[
+            (
+                "x",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "y",
+                r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+        ],
+        &["publish", "implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("x")).unwrap();
+    fs::write(workspace.join("x/input.json"), r#"{"title":"ship"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(value.get("cycle").is_none(), "{value:#}");
+
+    let execution_plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(execution_plan.len(), 1, "{value:#}");
+    assert_eq!(execution_plan[0]["protocol"], "implement");
+    assert_eq!(execution_plan[0]["work_unit"], "wu-a");
+
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 1, "{value:#}");
+    assert_eq!(protocols[0]["name"], "implement");
+    assert_eq!(protocols[0]["status"], "ready");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
+}
+
+#[test]
 fn step_dry_run_keeps_ready_skills_downstream_of_cycle_when_inputs_exist() {
     let dir = tempfile::tempdir().unwrap();
     let title_schema =

@@ -176,6 +176,295 @@ trigger = { type = "on_artifact", name = "constraints" }
 }
 
 #[test]
+fn state_scoped_ignores_unscoped_cycle_participants() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "x"
+
+[[artifact_types]]
+name = "y"
+
+[[protocols]]
+name = "publish"
+requires = ["y"]
+produces = ["x"]
+trigger = { type = "on_artifact", name = "y" }
+
+[[protocols]]
+name = "implement"
+requires = ["x"]
+produces = ["y"]
+scoped = true
+trigger = { type = "on_artifact", name = "x" }
+"#,
+        &[
+            (
+                "x",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "y",
+                r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+        ],
+        &["publish", "implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("x")).unwrap();
+    fs::write(workspace.join("x/input.json"), r#"{"title":"ship"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 1, "{value:#}");
+    assert_eq!(protocols[0]["name"], "implement");
+    assert_eq!(protocols[0]["status"], "ready");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
+}
+
+#[test]
+fn state_unscoped_ignores_scoped_cycle_participants() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "seed"
+
+[[artifact_types]]
+name = "result"
+
+[[artifact_types]]
+name = "a"
+
+[[artifact_types]]
+name = "b"
+
+[[protocols]]
+name = "publish"
+requires = ["seed"]
+produces = ["result"]
+trigger = { type = "on_artifact", name = "seed" }
+
+[[protocols]]
+name = "first"
+requires = ["b"]
+produces = ["a"]
+scoped = true
+trigger = { type = "on_artifact", name = "b" }
+
+[[protocols]]
+name = "second"
+requires = ["a"]
+produces = ["b"]
+scoped = true
+trigger = { type = "on_artifact", name = "a" }
+"#,
+        &[
+            (
+                "seed",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "result",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+            (
+                "a",
+                r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+            (
+                "b",
+                r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+        ],
+        &["publish", "first", "second"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("seed")).unwrap();
+    fs::write(workspace.join("seed/input.json"), r#"{"title":"ship"}"#).unwrap();
+    fs::create_dir_all(workspace.join("a")).unwrap();
+    fs::create_dir_all(workspace.join("b")).unwrap();
+    fs::write(
+        workspace.join("a/current.json"),
+        r#"{"title":"a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("b/current.json"),
+        r#"{"title":"b","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 1, "{value:#}");
+    assert_eq!(protocols[0]["name"], "publish");
+    assert_eq!(protocols[0]["status"], "ready");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
+}
+
+#[test]
+fn state_scoped_cycle_participants_are_waiting_not_ready() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "seed-a"
+
+[[artifact_types]]
+name = "seed-b"
+
+[[artifact_types]]
+name = "a"
+
+[[artifact_types]]
+name = "b"
+
+[[protocols]]
+name = "first"
+requires = ["b"]
+produces = ["a"]
+scoped = true
+trigger = { type = "on_artifact", name = "seed-a" }
+
+[[protocols]]
+name = "second"
+requires = ["a"]
+produces = ["b"]
+scoped = true
+trigger = { type = "on_artifact", name = "seed-b" }
+"#,
+        &[
+            (
+                "seed-a",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "seed-b",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "a",
+                r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+            (
+                "b",
+                r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+        ],
+        &["first", "second"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("a")).unwrap();
+    fs::create_dir_all(workspace.join("b")).unwrap();
+    fs::create_dir_all(workspace.join("seed-a")).unwrap();
+    fs::create_dir_all(workspace.join("seed-b")).unwrap();
+    fs::write(
+        workspace.join("a/current.json"),
+        r#"{"title":"a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("b/current.json"),
+        r#"{"title":"b","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    scan_project(&project_dir);
+    fs::write(workspace.join("seed-a/input.json"), r#"{"title":"seed-a"}"#).unwrap();
+    fs::write(workspace.join("seed-b/input.json"), r#"{"title":"seed-b"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "warning: dependency cycle detected: first -> second\n"
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 2, "{value:#}");
+    assert_eq!(protocols[0]["status"], "waiting");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
+    assert_eq!(
+        protocols[0]["unsatisfied_conditions"],
+        serde_json::json!(["dependency cycle detected: first -> second"])
+    );
+    assert_eq!(protocols[1]["status"], "waiting");
+    assert_eq!(protocols[1]["trigger"], "satisfied");
+    assert_eq!(
+        protocols[1]["unsatisfied_conditions"],
+        serde_json::json!(["dependency cycle detected: first -> second"])
+    );
+}
+
+#[test]
 fn state_groups_ready_blocked_and_waiting_after_implicit_scan() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(

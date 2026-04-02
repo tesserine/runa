@@ -232,19 +232,13 @@ fn build_run_json_plan(
         .iter()
         .map(|protocol| (protocol.name.as_str(), protocol))
         .collect();
-    let topological_order = match &execution_state.evaluated.cycle {
-        Some(cycle) => {
-            let cycle_participants: std::collections::HashSet<&str> =
-                cycle.path.iter().map(|name| name.as_str()).collect();
-            loaded
-                .graph
-                .topological_order_excluding(&cycle_participants)
-        }
-        None => loaded
-            .graph
-            .topological_order()
-            .expect("evaluated execution state must already have resolved cycle handling"),
-    };
+    let topological_order: Vec<&str> = execution_state
+        .evaluated
+        .topology
+        .execution_order
+        .iter()
+        .map(String::as_str)
+        .collect();
     let initial_ready: Vec<_> = execution_state
         .planned_entries
         .iter()

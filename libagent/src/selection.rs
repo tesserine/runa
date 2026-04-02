@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::enforcement::ArtifactFailure;
+use crate::graph::{CycleError, DependencyGraph};
 use crate::model::{ProtocolDeclaration, TriggerCondition};
 use crate::store::ArtifactStore;
 use crate::trigger::{
@@ -18,6 +19,13 @@ use crate::trigger::{
 pub enum EvaluationScope<'a> {
     Unscoped,
     Scoped(&'a str),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvaluationTopology {
+    pub status_order: Vec<String>,
+    pub execution_order: Vec<String>,
+    pub cycle: Option<CycleError>,
 }
 
 /// A (protocol, work_unit) pair that is ready for execution.
@@ -94,6 +102,55 @@ pub fn discover_ready_candidates(
         work_unit: c.work_unit,
     })
     .collect()
+}
+
+pub fn resolve_evaluation_topology(
+    protocols: &[ProtocolDeclaration],
+    graph: &DependencyGraph,
+    scope: EvaluationScope<'_>,
+) -> EvaluationTopology {
+    let excluded: HashSet<&str> = protocols
+        .iter()
+        .filter(|protocol| !protocol_in_scope(protocol, scope))
+        .map(|protocol| protocol.name.as_str())
+        .collect();
+
+    match graph.topological_order_filtered(&excluded) {
+        Ok(order) => EvaluationTopology {
+            status_order: order.iter().map(|name| (*name).to_string()).collect(),
+            execution_order: order.iter().map(|name| (*name).to_string()).collect(),
+            cycle: None,
+        },
+        Err(cycle) => {
+            let cycle_participants: HashSet<&str> =
+                cycle.path.iter().map(|name| name.as_str()).collect();
+            let combined_exclusions: HashSet<&str> = excluded
+                .iter()
+                .copied()
+                .chain(cycle_participants.iter().copied())
+                .collect();
+            let execution_order: Vec<String> = graph
+                .topological_order_excluding(&combined_exclusions)
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            let mut status_order = execution_order.clone();
+            status_order.extend(
+                protocols
+                    .iter()
+                    .filter(|protocol| protocol_in_scope(protocol, scope))
+                    .map(|protocol| protocol.name.as_str())
+                    .filter(|name| cycle_participants.contains(name))
+                    .map(str::to_owned),
+            );
+
+            EvaluationTopology {
+                status_order,
+                execution_order,
+                cycle: Some(cycle),
+            }
+        }
+    }
 }
 
 /// Returns the `requires` and trigger-referenced artifact types for this protocol
@@ -692,6 +749,13 @@ pub(crate) fn candidate_work_units_for_scope(
         }
         _ => Vec::new(),
     }
+}
+
+fn protocol_in_scope(protocol: &ProtocolDeclaration, scope: EvaluationScope<'_>) -> bool {
+    matches!(
+        (scope, protocol.scoped),
+        (EvaluationScope::Unscoped, false) | (EvaluationScope::Scoped(_), true)
+    )
 }
 
 /// Collect scan-incomplete types from trigger eval scan_types and requires types.
