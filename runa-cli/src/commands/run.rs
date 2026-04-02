@@ -190,12 +190,10 @@ fn classify_outcome(
 
     let has_blocked = evaluated.cycle.is_some()
         || !evaluated.blocked.is_empty()
-        || evaluated.waiting.iter().any(|entry| {
-            entry
-                .unsatisfied_conditions
-                .iter()
-                .any(|c| c != "outputs are current")
-        });
+        || evaluated
+            .waiting
+            .iter()
+            .any(|entry| entry.waiting_reason != Some(libagent::WaitingReason::OutputsCurrent));
 
     if has_blocked {
         RunOutcome::QuiescentBlocked
@@ -569,5 +567,69 @@ pub fn run(
             }
             Err(err) => return Err(RunError::from(err)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::protocol_eval::{
+        EvaluatedProtocols, FailureEntry, InputEntry, ProtocolEntry, ProtocolStatus, TriggerState,
+    };
+
+    fn waiting_entry(
+        unsatisfied_conditions: &[&str],
+        waiting_reason: libagent::WaitingReason,
+    ) -> ProtocolEntry {
+        ProtocolEntry {
+            name: "publish".into(),
+            work_unit: None,
+            status: ProtocolStatus::Waiting,
+            trigger: TriggerState::Satisfied,
+            inputs: Vec::<InputEntry>::new(),
+            precondition_failures: Vec::<FailureEntry>::new(),
+            unsatisfied_conditions: unsatisfied_conditions
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            waiting_reason: Some(waiting_reason),
+        }
+    }
+
+    fn evaluated_with_waiting(waiting: ProtocolEntry) -> EvaluatedProtocols {
+        EvaluatedProtocols {
+            topology: libagent::EvaluationTopology {
+                status_order: Vec::new(),
+                execution_order: Vec::new(),
+                cycle: None,
+            },
+            cycle: None,
+            ready: Vec::new(),
+            blocked: Vec::new(),
+            waiting: vec![waiting],
+        }
+    }
+
+    #[test]
+    fn classify_outcome_uses_waiting_reason_not_display_text_for_current_outputs() {
+        let evaluated = evaluated_with_waiting(waiting_entry(
+            &["fresh outputs already exist"],
+            libagent::WaitingReason::OutputsCurrent,
+        ));
+
+        assert_eq!(classify_outcome(&evaluated, false), RunOutcome::AllComplete);
+    }
+
+    #[test]
+    fn classify_outcome_still_blocks_when_waiting_for_non_quiescent_reason() {
+        let evaluated = evaluated_with_waiting(waiting_entry(
+            &["constraints missing"],
+            libagent::WaitingReason::TriggerUnsatisfied,
+        ));
+
+        assert_eq!(
+            classify_outcome(&evaluated, false),
+            RunOutcome::QuiescentBlocked
+        );
     }
 }

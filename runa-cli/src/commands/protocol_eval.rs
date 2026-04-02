@@ -29,6 +29,7 @@ pub(crate) struct ProtocolEntry {
     pub(crate) inputs: Vec<InputEntry>,
     pub(crate) precondition_failures: Vec<FailureEntry>,
     pub(crate) unsatisfied_conditions: Vec<String>,
+    pub(crate) waiting_reason: Option<libagent::WaitingReason>,
 }
 
 #[derive(Clone, Serialize)]
@@ -200,6 +201,7 @@ pub(crate) fn evaluate_protocols(
                         .expect("cycle participants must have a cycle condition")
                         .clone(),
                 ],
+                waiting_reason: Some(libagent::WaitingReason::TriggerUnsatisfied),
             },
             libagent::CandidateStatus::Ready => ProtocolEntry {
                 name: candidate.protocol_name,
@@ -215,6 +217,7 @@ pub(crate) fn evaluate_protocols(
                 ),
                 precondition_failures: Vec::new(),
                 unsatisfied_conditions: Vec::new(),
+                waiting_reason: None,
             },
             libagent::CandidateStatus::Blocked {
                 precondition_failures,
@@ -243,9 +246,11 @@ pub(crate) fn evaluate_protocols(
                     inputs: Vec::new(),
                     precondition_failures: failures,
                     unsatisfied_conditions: Vec::new(),
+                    waiting_reason: None,
                 }
             }
             libagent::CandidateStatus::Waiting {
+                waiting_reason,
                 mut unsatisfied_conditions,
             } => {
                 if let Some(condition) = &cycle_condition
@@ -264,6 +269,7 @@ pub(crate) fn evaluate_protocols(
                     inputs: Vec::new(),
                     precondition_failures: Vec::new(),
                     unsatisfied_conditions,
+                    waiting_reason: Some(waiting_reason),
                 }
             }
         };

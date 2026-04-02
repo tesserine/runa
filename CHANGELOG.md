@@ -50,6 +50,10 @@ Semantic Versioning.
   scope, so out-of-scope hard cycles no longer warn, suppress execution plans,
   or force `runa run --dry-run` to exit `3`, while in-scope cycles still warn
   and remain non-executable.
+- Make `runa run` derive quiescent completion from the shared waiting-state
+  enum instead of the display string `"outputs are current"`, so the command
+  no longer reports blocked quiescence when non-blocking waiting messages
+  change wording.
 - Make `runa state` and `runa step` share one executable definition by
   reporting in-scope hard-cycle participants as `WAITING` with an explicit
   cycle condition instead of showing them as `READY` and dropping them later.

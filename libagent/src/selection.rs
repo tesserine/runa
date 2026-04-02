@@ -46,7 +46,17 @@ pub enum CandidateStatus {
         scan_incomplete_types: Vec<String>,
     },
     /// Trigger not satisfied, or outputs are already current.
-    Waiting { unsatisfied_conditions: Vec<String> },
+    Waiting {
+        waiting_reason: WaitingReason,
+        unsatisfied_conditions: Vec<String>,
+    },
+}
+
+/// Semantic reason a candidate is waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitingReason {
+    TriggerUnsatisfied,
+    OutputsCurrent,
 }
 
 /// A (protocol, work_unit) pair with its classification and scan trust.
@@ -690,6 +700,7 @@ pub fn classify_candidates(
                         partially_scanned_types,
                     ) {
                         CandidateStatus::Waiting {
+                            waiting_reason: WaitingReason::OutputsCurrent,
                             unsatisfied_conditions: vec!["outputs are current".to_string()],
                         }
                     } else {
@@ -703,6 +714,7 @@ pub fn classify_candidates(
                 }
             } else if trigger_scan_failures.is_empty() && readiness_scan_failures.is_empty() {
                 CandidateStatus::Waiting {
+                    waiting_reason: WaitingReason::TriggerUnsatisfied,
                     unsatisfied_conditions: collect_unsatisfied_conditions(
                         &protocol.trigger,
                         protocol,
@@ -2454,9 +2466,11 @@ mod tests {
         ));
         assert!(!classified[0].trigger_satisfied);
         if let CandidateStatus::Waiting {
+            waiting_reason,
             unsatisfied_conditions,
         } = &classified[0].status
         {
+            assert_eq!(*waiting_reason, WaitingReason::TriggerUnsatisfied);
             assert!(!unsatisfied_conditions.is_empty());
         }
     }
@@ -2619,9 +2633,11 @@ mod tests {
         ));
         assert!(classified[0].trigger_satisfied);
         if let CandidateStatus::Waiting {
+            waiting_reason,
             unsatisfied_conditions,
         } = &classified[0].status
         {
+            assert_eq!(*waiting_reason, WaitingReason::OutputsCurrent);
             assert_eq!(unsatisfied_conditions, &["outputs are current"]);
         }
     }
