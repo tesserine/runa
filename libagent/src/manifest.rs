@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::model::{ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition};
+use crate::model::{
+    ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition, validate_output_scope,
+};
 
 // ---------------------------------------------------------------------------
 // Raw TOML deserialization types
@@ -89,11 +91,6 @@ pub enum ManifestError {
         protocol: String,
         artifact_type: String,
     },
-    /// Scoped protocol declares an output schema that does not require work_unit.
-    ScopedProtocolOutputMissingRequiredWorkUnit {
-        protocol: String,
-        artifact_type: String,
-    },
 }
 
 impl fmt::Display for ManifestError {
@@ -157,18 +154,6 @@ impl fmt::Display for ManifestError {
                     "protocol '{protocol}' is declared unscoped but output artifact type \
                      '{artifact_type}' requires 'work_unit'; declare 'scoped = true' or \
                      remove 'work_unit' from the output schema's required fields"
-                )
-            }
-            ManifestError::ScopedProtocolOutputMissingRequiredWorkUnit {
-                protocol,
-                artifact_type,
-            } => {
-                write!(
-                    f,
-                    "protocol '{protocol}' is declared scoped but output artifact type \
-                     '{artifact_type}' does not require 'work_unit'; scoped protocols must \
-                     produce work-unit-partitioned artifacts, so the output schema must \
-                     include 'work_unit' in its required fields"
                 )
             }
         }
@@ -281,22 +266,11 @@ fn validate_resolved_manifest(manifest: &Manifest) -> Result<(), ManifestError> 
                 continue;
             };
 
-            let schema_requires_work_unit = artifact_type.schema_requires_work_unit();
-
-            match (protocol.scoped, schema_requires_work_unit) {
-                (false, true) => {
-                    return Err(ManifestError::UnscopedProtocolOutputRequiresWorkUnit {
-                        protocol: protocol.name.clone(),
-                        artifact_type: artifact_type.name.clone(),
-                    });
-                }
-                (true, false) => {
-                    return Err(ManifestError::ScopedProtocolOutputMissingRequiredWorkUnit {
-                        protocol: protocol.name.clone(),
-                        artifact_type: artifact_type.name.clone(),
-                    });
-                }
-                _ => {}
+            if let Err(error) = validate_output_scope(protocol, artifact_type) {
+                return Err(ManifestError::UnscopedProtocolOutputRequiresWorkUnit {
+                    protocol: error.protocol,
+                    artifact_type: error.artifact_type,
+                });
             }
         }
     }
@@ -677,7 +651,7 @@ trigger = { type = "on_change", name = "implementation" }
     }
 
     #[test]
-    fn parse_rejects_scoped_produces_schema_missing_required_work_unit() {
+    fn parse_allows_scoped_produces_schema_missing_required_work_unit() {
         let dir = tempfile::tempdir().unwrap();
         write_layout(
             dir.path(),
@@ -695,7 +669,7 @@ trigger = { type = "on_change", name = "implementation" }
         );
 
         let toml = r#"
-name = "invalid-scoped-produces"
+name = "valid-scoped-project-produces"
 
 [[artifact_types]]
 name = "implementation"
@@ -709,15 +683,12 @@ trigger = { type = "on_change", name = "implementation" }
         let manifest_path = dir.path().join("manifest.toml");
         std::fs::write(&manifest_path, toml).unwrap();
 
-        let err = parse(&manifest_path).unwrap_err();
-        assert!(err.to_string().contains("implement"), "err: {err}");
-        assert!(err.to_string().contains("implementation"), "err: {err}");
-        assert!(err.to_string().contains("scoped"), "err: {err}");
-        assert!(err.to_string().contains("work_unit"), "err: {err}");
+        let manifest = parse(&manifest_path).unwrap();
+        assert!(manifest.protocols[0].scoped);
     }
 
     #[test]
-    fn parse_rejects_scoped_may_produce_schema_missing_required_work_unit() {
+    fn parse_allows_scoped_may_produce_schema_without_required_work_unit() {
         let dir = tempfile::tempdir().unwrap();
         write_layout(
             dir.path(),
@@ -735,7 +706,7 @@ trigger = { type = "on_change", name = "implementation" }
         );
 
         let toml = r#"
-name = "invalid-scoped-may-produce"
+name = "valid-scoped-project-may-produce"
 
 [[artifact_types]]
 name = "implementation"
@@ -749,15 +720,12 @@ trigger = { type = "on_change", name = "implementation" }
         let manifest_path = dir.path().join("manifest.toml");
         std::fs::write(&manifest_path, toml).unwrap();
 
-        let err = parse(&manifest_path).unwrap_err();
-        assert!(err.to_string().contains("implement"), "err: {err}");
-        assert!(err.to_string().contains("implementation"), "err: {err}");
-        assert!(err.to_string().contains("scoped"), "err: {err}");
-        assert!(err.to_string().contains("work_unit"), "err: {err}");
+        let manifest = parse(&manifest_path).unwrap();
+        assert!(manifest.protocols[0].scoped);
     }
 
     #[test]
-    fn parse_rejects_scoped_output_schema_with_optional_work_unit() {
+    fn parse_allows_scoped_output_schema_with_optional_work_unit() {
         let dir = tempfile::tempdir().unwrap();
         write_layout(
             dir.path(),
@@ -776,7 +744,7 @@ trigger = { type = "on_change", name = "implementation" }
         );
 
         let toml = r#"
-name = "invalid-scoped-optional-work-unit"
+name = "valid-scoped-optional-work-unit"
 
 [[artifact_types]]
 name = "implementation"
@@ -790,11 +758,8 @@ trigger = { type = "on_change", name = "implementation" }
         let manifest_path = dir.path().join("manifest.toml");
         std::fs::write(&manifest_path, toml).unwrap();
 
-        let err = parse(&manifest_path).unwrap_err();
-        assert!(err.to_string().contains("implement"), "err: {err}");
-        assert!(err.to_string().contains("implementation"), "err: {err}");
-        assert!(err.to_string().contains("scoped"), "err: {err}");
-        assert!(err.to_string().contains("work_unit"), "err: {err}");
+        let manifest = parse(&manifest_path).unwrap();
+        assert!(manifest.protocols[0].scoped);
     }
 
     #[test]

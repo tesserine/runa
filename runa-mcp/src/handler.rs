@@ -10,7 +10,7 @@ use serde_json::Value;
 use tracing::{info, warn};
 
 use libagent::validation::validate_artifact;
-use libagent::{ArtifactStore, ArtifactType, ProtocolDeclaration};
+use libagent::{ArtifactStore, ArtifactType, ProtocolDeclaration, validate_output_scope};
 
 pub struct RunaHandler {
     protocol: ProtocolDeclaration,
@@ -143,7 +143,7 @@ pub fn validate_protocol_scope(
 pub fn validate_output_types(
     protocol: &ProtocolDeclaration,
     store: &ArtifactStore,
-    work_unit: Option<&str>,
+    _work_unit: Option<&str>,
 ) -> Result<(), String> {
     for type_name in &protocol.produces {
         let Some(at) = store.artifact_type(type_name) else {
@@ -166,10 +166,9 @@ pub fn validate_output_types(
                  for MCP tool generation"
             ));
         }
-        if work_unit.is_none() && at.schema_requires_work_unit() {
+        if let Err(error) = validate_output_scope(protocol, at) {
             return Err(format!(
-                "required output type '{type_name}': schema requires 'work_unit' but \
-                 candidate has no work_unit; tool calls would always fail validation"
+                "{error}; declare 'scoped = true' or remove 'work_unit' from the output schema's required fields"
             ));
         }
     }
@@ -188,7 +187,7 @@ pub fn validate_output_types(
             if has_composition_keywords(&at.schema) {
                 return false;
             }
-            if work_unit.is_none() && at.schema_requires_work_unit() {
+            if validate_output_scope(protocol, at).is_err() {
                 return false;
             }
             true
@@ -839,7 +838,37 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
-            scoped: false,
+            scoped: true,
+            trigger: TriggerCondition::OnChange {
+                name: "unused".into(),
+            },
+            instructions: None,
+        };
+
+        assert!(validate_output_types(&protocol, &store, Some("wu")).is_ok());
+    }
+
+    #[test]
+    fn validate_output_types_accepts_scoped_project_level_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let types = vec![ArtifactType {
+            name: "implementation".into(),
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" }
+                },
+                "required": ["title"]
+            }),
+        }];
+        let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
+        let protocol = ProtocolDeclaration {
+            name: "implement".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: vec!["implementation".into()],
+            may_produce: Vec::new(),
+            scoped: true,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
