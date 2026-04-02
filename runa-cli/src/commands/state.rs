@@ -48,10 +48,15 @@ pub fn run(
     working_dir: &Path,
     config_override: Option<&Path>,
     json_output: bool,
+    work_unit: Option<&str>,
 ) -> Result<(), StateError> {
     let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
     let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
-    let evaluated = protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings);
+    let scope = match work_unit {
+        Some(work_unit) => libagent::EvaluationScope::Scoped(work_unit),
+        None => libagent::EvaluationScope::Unscoped,
+    };
+    let evaluated = protocol_eval::evaluate_protocols(&loaded, working_dir, &scan_findings, scope);
     let warnings = scan_findings.warnings.clone();
 
     if json_output {

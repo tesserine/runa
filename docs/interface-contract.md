@@ -35,10 +35,14 @@ A protocol declaration:
 - **accepts** — zero or more artifact type names
 - **produces** — zero or more artifact type names
 - **may_produce** — zero or more artifact type names. Absent optional outputs do not fail postconditions, but they also do not create completion evidence. If output should always be produced, the artifact type belongs in `produces`.
+- **scoped** — optional boolean, default `false`. When `false`, the protocol participates only in unscoped evaluation. When `true`, the protocol participates only in caller-scoped evaluation for an explicit work unit supplied by the orchestrator.
+- Output schema consistency is part of manifest validity for unscoped protocols. Unscoped protocols (`scoped = false` or omitted) must not declare output schemas in `produces` or `may_produce` whose top-level `required` array includes `work_unit`.
 - Completion is derived from output artifact timestamps. Protocols with no `produces` types are never suppressed by freshness — runa cannot derive completion from artifacts that don't exist. If a protocol needs completion tracking, it must declare at least one `produces` artifact type.
 - **trigger** — one trigger condition (see below)
 
 Topology is not declared. It emerges from the graph of requires/produces/may_produce relationships across protocols. A pipeline emerges when protocols chain linearly. A graph emerges when protocols fan in or fan out. A cycle emerges when a protocol produces an artifact type that another protocol's trigger monitors for change. The methodology does not tell runa what shape it is. runa computes the shape from declarations.
+
+Scope is not topology. Dependency edges remain type-level. `scoped = true` does not change graph structure, and runa does not infer scope from artifact schemas, `work_unit` fields, or artifact filenames. But unscoped protocols still cannot declare outputs whose schemas require `work_unit`: if a protocol's outputs require `work_unit`, the protocol itself must be declared `scoped = true`.
 
 ### 3. Trigger Conditions
 
@@ -63,7 +67,7 @@ runa is an event-driven runtime. The CLI commands (init, scan, list, state, step
 
 Given the declarations above, runa provides five runtime capabilities:
 
-**Monitoring.** runa watches artifact state and evaluates trigger conditions on relevant state changes. When a protocol's trigger condition becomes satisfied, runa activates the protocol.
+**Monitoring.** runa watches artifact state and evaluates trigger conditions on relevant state changes within the caller's evaluation scope. When a protocol's trigger condition becomes satisfied, runa activates the protocol.
 
 **Validation.** When an artifact is produced, runa validates it against its declared schema. A protocol's execution is not complete until its `produces` artifacts exist and validate. `may_produce` artifacts are validated if present but not required.
 
@@ -71,7 +75,7 @@ Given the declarations above, runa provides five runtime capabilities:
 
 **Enforcement.** A protocol cannot execute if any `requires` artifact type lacks a valid instance. A protocol's execution is incomplete if its `produces` artifacts are missing or invalid. These are hard constraints the runtime enforces regardless of what the methodology intends.
 
-**Context injection.** When a protocol is ready to execute, runa resolves which artifact instances the protocol needs — all valid `requires` instances and all available valid `accepts` instances — and delivers them as the protocol's input context alongside the protocol's instruction content and expected output artifact types. The protocol receives its inputs without querying the store directly.
+**Context injection.** When a protocol is ready to execute, runa resolves which artifact instances the protocol needs — all valid `requires` instances and all available valid `accepts` instances within the active scope — and delivers them as the protocol's input context alongside the protocol's instruction content and expected output artifact types. The protocol receives its inputs without querying the store directly.
 
 ## What runa Does Not Do
 
@@ -92,7 +96,7 @@ The interface contract defines conventional locations for methodology content re
 
 These conventions are part of the interface contract — the same layer that defines manifest format, field names, and trigger condition types. A valid methodology conforms to this layout. runa derives paths from names it already has; the manifest does not include explicit path fields.
 
-Both schema files and instruction files must exist at their conventional locations when the manifest is parsed. Missing files are parse errors, caught before any runtime operation. Schema files are read and parsed at parse time. Instruction files are also read at parse time and stored on the resolved protocol declarations.
+Both schema files and instruction files must exist at their conventional locations when the manifest is parsed. Missing files are parse errors, caught before any runtime operation. Schema files are read and parsed at parse time. Instruction files are also read at parse time and stored on the resolved protocol declarations. Resolved manifests also enforce the unscoped-output rule for declared outputs, rejecting unscoped protocols whose `produces` or `may_produce` schemas require `work_unit`.
 Unsafe artifact type or protocol names are also parse errors, rejected before runa attempts any layout-derived filesystem lookup.
 
 ## Methodology Registration

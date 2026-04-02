@@ -209,6 +209,7 @@ fn build_run_json_plan(
     working_dir: &Path,
     config_path: &Path,
     execution_state: &ExecutionState,
+    scope: libagent::EvaluationScope<'_>,
 ) -> Result<Vec<RunPlanJson>, RunError> {
     let preview_command = preview_runa_mcp_command();
     let concrete_entries: std::collections::HashMap<_, _> = build_plan_entries(
@@ -231,19 +232,13 @@ fn build_run_json_plan(
         .iter()
         .map(|protocol| (protocol.name.as_str(), protocol))
         .collect();
-    let topological_order = match &execution_state.evaluated.cycle {
-        Some(cycle) => {
-            let cycle_participants: std::collections::HashSet<&str> =
-                cycle.path.iter().map(|name| name.as_str()).collect();
-            loaded
-                .graph
-                .topological_order_excluding(&cycle_participants)
-        }
-        None => loaded
-            .graph
-            .topological_order()
-            .expect("evaluated execution state must already have resolved cycle handling"),
-    };
+    let topological_order: Vec<&str> = execution_state
+        .evaluated
+        .topology
+        .execution_order
+        .iter()
+        .map(String::as_str)
+        .collect();
     let initial_ready: Vec<_> = execution_state
         .planned_entries
         .iter()
@@ -259,6 +254,7 @@ fn build_run_json_plan(
         &topological_order,
         &initial_ready,
         &execution_state.scan_findings.affected_types,
+        scope,
     )
     .into_iter()
     .map(|entry| {
@@ -365,6 +361,7 @@ fn refresh_state_after_scan(
     working_dir: &Path,
     exhausted: &mut HashSet<CandidateKey>,
     scan_result: &libagent::ScanResult,
+    scope: libagent::EvaluationScope<'_>,
 ) -> ExecutionState {
     exhausted.retain(|candidate| {
         let protocol = loaded
@@ -380,7 +377,7 @@ fn refresh_state_after_scan(
         )
     });
 
-    evaluate_execution_state(loaded, working_dir, scan_result)
+    evaluate_execution_state(loaded, working_dir, scan_result, scope)
 }
 
 pub fn run(
@@ -388,6 +385,7 @@ pub fn run(
     config_override: Option<&Path>,
     dry_run: bool,
     json_output: bool,
+    work_unit: Option<&str>,
 ) -> Result<RunOutcome, RunError> {
     if !dry_run && json_output {
         return Err(RunError::from(StepError::JsonRequiresDryRun));
@@ -399,7 +397,11 @@ pub fn run(
     let (mut loaded, scan_result) = super::load_and_scan(working_dir, config_override)
         .map_err(StepError::from)
         .map_err(RunError::from)?;
-    let initial_state = evaluate_execution_state(&loaded, working_dir, &scan_result);
+    let scope = match work_unit {
+        Some(work_unit) => libagent::EvaluationScope::Scoped(work_unit),
+        None => libagent::EvaluationScope::Unscoped,
+    };
+    let initial_state = evaluate_execution_state(&loaded, working_dir, &scan_result, scope);
     let config_path = crate::project::resolve_config(working_dir, config_override)
         .map_err(CommandError::from)
         .map_err(StepError::from)
@@ -407,7 +409,7 @@ pub fn run(
 
     if dry_run {
         let execution_plan =
-            build_run_json_plan(&loaded, working_dir, &config_path, &initial_state)?;
+            build_run_json_plan(&loaded, working_dir, &config_path, &initial_state, scope)?;
 
         if json_output {
             let payload = RunJson {
@@ -517,8 +519,13 @@ pub fn run(
                 execution_entry,
             }) => {
                 exhausted.insert(key);
-                state =
-                    refresh_state_after_scan(&loaded, working_dir, &mut exhausted, &scan_result);
+                state = refresh_state_after_scan(
+                    &loaded,
+                    working_dir,
+                    &mut exhausted,
+                    &scan_result,
+                    scope,
+                );
                 println!(
                     "Executed: {}",
                     match &execution_entry.work_unit {
@@ -530,8 +537,13 @@ pub fn run(
             }
             Ok(ReconcileOutcome::PostconditionFailure { scan_result }) => {
                 failed.insert(key);
-                state =
-                    refresh_state_after_scan(&loaded, working_dir, &mut exhausted, &scan_result);
+                state = refresh_state_after_scan(
+                    &loaded,
+                    working_dir,
+                    &mut exhausted,
+                    &scan_result,
+                    scope,
+                );
             }
             Err(StepError::AgentCommandFailed {
                 protocol,
@@ -547,8 +559,13 @@ pub fn run(
                             source,
                         })
                     })?;
-                state =
-                    refresh_state_after_scan(&loaded, working_dir, &mut exhausted, &scan_result);
+                state = refresh_state_after_scan(
+                    &loaded,
+                    working_dir,
+                    &mut exhausted,
+                    &scan_result,
+                    scope,
+                );
             }
             Err(err) => return Err(RunError::from(err)),
         }

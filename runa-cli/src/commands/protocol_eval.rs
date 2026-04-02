@@ -80,6 +80,7 @@ pub(crate) struct ScanFindings {
 }
 
 pub(crate) struct EvaluatedProtocols {
+    pub(crate) topology: libagent::EvaluationTopology,
     pub(crate) cycle: Option<libagent::CycleError>,
     pub(crate) ready: Vec<ProtocolEntry>,
     pub(crate) blocked: Vec<ProtocolEntry>,
@@ -139,27 +140,20 @@ pub(crate) fn evaluate_protocols(
     loaded: &project::LoadedProject,
     working_dir: &Path,
     scan_findings: &ScanFindings,
+    scope: libagent::EvaluationScope<'_>,
 ) -> EvaluatedProtocols {
-    let (skill_order, cycle) = match loaded.graph.topological_order() {
-        Ok(order) => (order, None),
-        Err(cycle) => {
-            eprintln!("warning: {cycle}");
-            let cycle_participants: HashSet<&str> =
-                cycle.path.iter().map(|name| name.as_str()).collect();
-            let mut order = loaded
-                .graph
-                .topological_order_excluding(&cycle_participants);
-            order.extend(
-                loaded
-                    .manifest
-                    .protocols
-                    .iter()
-                    .map(|protocol| protocol.name.as_str())
-                    .filter(|name| cycle_participants.contains(name)),
-            );
-            (order, Some(cycle))
-        }
-    };
+    let topology =
+        libagent::resolve_evaluation_topology(&loaded.manifest.protocols, &loaded.graph, scope);
+    let cycle = topology.cycle.clone();
+    if let Some(cycle) = &cycle {
+        eprintln!("warning: {cycle}");
+    }
+    let skill_order: Vec<&str> = topology.status_order.iter().map(String::as_str).collect();
+    let cycle_participants: HashSet<&str> = cycle
+        .as_ref()
+        .map(|cycle| cycle.path.iter().map(|name| name.as_str()).collect())
+        .unwrap_or_default();
+    let cycle_condition = cycle.as_ref().map(ToString::to_string);
 
     let skill_map: HashMap<&str, &libagent::ProtocolDeclaration> = loaded
         .manifest
@@ -173,6 +167,7 @@ pub(crate) fn evaluate_protocols(
         &loaded.store,
         &skill_order,
         &scan_findings.affected_types,
+        scope,
     );
 
     let mut ready = Vec::new();
@@ -189,8 +184,23 @@ pub(crate) fn evaluate_protocols(
         } else {
             TriggerState::NotSatisfied
         };
+        let in_cycle = cycle_participants.contains(candidate.protocol_name.as_str());
 
         let entry = match candidate.status {
+            libagent::CandidateStatus::Ready if in_cycle => ProtocolEntry {
+                name: candidate.protocol_name,
+                work_unit: candidate.work_unit,
+                status: ProtocolStatus::Waiting,
+                trigger,
+                inputs: Vec::new(),
+                precondition_failures: Vec::new(),
+                unsatisfied_conditions: vec![
+                    cycle_condition
+                        .as_ref()
+                        .expect("cycle participants must have a cycle condition")
+                        .clone(),
+                ],
+            },
             libagent::CandidateStatus::Ready => ProtocolEntry {
                 name: candidate.protocol_name,
                 work_unit: candidate.work_unit.clone(),
@@ -236,16 +246,26 @@ pub(crate) fn evaluate_protocols(
                 }
             }
             libagent::CandidateStatus::Waiting {
-                unsatisfied_conditions,
-            } => ProtocolEntry {
-                name: candidate.protocol_name,
-                work_unit: candidate.work_unit,
-                status: ProtocolStatus::Waiting,
-                trigger,
-                inputs: Vec::new(),
-                precondition_failures: Vec::new(),
-                unsatisfied_conditions,
-            },
+                mut unsatisfied_conditions,
+            } => {
+                if let Some(condition) = &cycle_condition
+                    && in_cycle
+                    && !unsatisfied_conditions
+                        .iter()
+                        .any(|existing| existing == condition)
+                {
+                    unsatisfied_conditions.push(condition.clone());
+                }
+                ProtocolEntry {
+                    name: candidate.protocol_name,
+                    work_unit: candidate.work_unit,
+                    status: ProtocolStatus::Waiting,
+                    trigger,
+                    inputs: Vec::new(),
+                    precondition_failures: Vec::new(),
+                    unsatisfied_conditions,
+                }
+            }
         };
 
         match entry.status {
@@ -256,6 +276,7 @@ pub(crate) fn evaluate_protocols(
     }
 
     EvaluatedProtocols {
+        topology,
         cycle,
         ready,
         blocked,

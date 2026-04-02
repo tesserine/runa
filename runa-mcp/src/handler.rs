@@ -10,7 +10,7 @@ use serde_json::Value;
 use tracing::{info, warn};
 
 use libagent::validation::validate_artifact;
-use libagent::{ArtifactStore, ArtifactType, ProtocolDeclaration};
+use libagent::{ArtifactStore, ArtifactType, ProtocolDeclaration, validate_output_scope};
 
 pub struct RunaHandler {
     protocol: ProtocolDeclaration,
@@ -42,7 +42,7 @@ impl RunaHandler {
             .chain(protocol.may_produce.iter().filter(|type_name| {
                 if work_unit.is_none()
                     && let Some(at) = store.artifact_type(type_name)
-                    && schema_requires_work_unit(&at.schema)
+                    && at.schema_requires_work_unit()
                 {
                     warn!(
                         operation = "tool_generation",
@@ -118,23 +118,32 @@ fn has_composition_keywords(schema: &Value) -> bool {
         || schema.get("$ref").is_some()
 }
 
-/// True if a JSON Schema lists `"work_unit"` in its `required` array.
-fn schema_requires_work_unit(schema: &Value) -> bool {
-    schema
-        .get("required")
-        .and_then(|r| r.as_array())
-        .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some("work_unit")))
-}
-
 /// Check that all `produces` types can be served as MCP tools.
 ///
 /// Returns `Err` with a diagnostic message if any required output type has a
 /// schema that cannot be converted to an MCP tool (non-object root,
 /// composition keywords, or required work_unit without a scoped candidate).
+pub fn validate_protocol_scope(
+    protocol: &ProtocolDeclaration,
+    work_unit: Option<&str>,
+) -> Result<(), String> {
+    match (protocol.scoped, work_unit) {
+        (true, None) => Err(format!(
+            "protocol '{}' requires --work-unit because it is declared scoped",
+            protocol.name
+        )),
+        (false, Some(_)) => Err(format!(
+            "protocol '{}' does not accept --work-unit because it is declared unscoped",
+            protocol.name
+        )),
+        _ => Ok(()),
+    }
+}
+
 pub fn validate_output_types(
     protocol: &ProtocolDeclaration,
     store: &ArtifactStore,
-    work_unit: Option<&str>,
+    _work_unit: Option<&str>,
 ) -> Result<(), String> {
     for type_name in &protocol.produces {
         let Some(at) = store.artifact_type(type_name) else {
@@ -157,10 +166,9 @@ pub fn validate_output_types(
                  for MCP tool generation"
             ));
         }
-        if work_unit.is_none() && schema_requires_work_unit(&at.schema) {
+        if let Err(error) = validate_output_scope(protocol, at) {
             return Err(format!(
-                "required output type '{type_name}': schema requires 'work_unit' but \
-                 candidate has no work_unit; tool calls would always fail validation"
+                "{error}; declare 'scoped = true' or remove 'work_unit' from the output schema's required fields"
             ));
         }
     }
@@ -179,7 +187,7 @@ pub fn validate_output_types(
             if has_composition_keywords(&at.schema) {
                 return false;
             }
-            if work_unit.is_none() && schema_requires_work_unit(&at.schema) {
+            if validate_output_scope(protocol, at).is_err() {
                 return false;
             }
             true
@@ -326,20 +334,19 @@ impl ServerHandler for RunaHandler {
 
         validate_instance_id(&instance_id).map_err(|e| McpError::invalid_params(e, None))?;
 
-        // Inject work_unit into data if the schema declares it.
-        if let Value::Object(schema_map) = full_schema
-            && let Some(Value::Object(props)) = schema_map.get("properties")
-            && props.contains_key("work_unit")
+        let at = ArtifactType {
+            name: tool_name.to_string(),
+            schema: full_schema.clone(),
+        };
+
+        // Inject delegated work_unit whenever the full schema mentions it.
+        if at.schema_mentions_work_unit()
             && let (Value::Object(data_map), Some(wu)) = (&mut data, &self.work_unit)
         {
             data_map.insert("work_unit".to_string(), Value::String(wu.clone()));
         }
 
         // Validate against the full schema (including work_unit).
-        let at = ArtifactType {
-            name: tool_name.to_string(),
-            schema: full_schema.clone(),
-        };
         if let Err(e) = validate_artifact(&data, &at) {
             let msg = match e {
                 libagent::ValidationError::InvalidArtifact { violations, .. } => violations
@@ -465,6 +472,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
+            scoped: false,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -518,6 +526,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -569,6 +578,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: vec!["log_entries".into()],
+            scoped: false,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -618,6 +628,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: vec!["composed".into()],
+            scoped: false,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -666,6 +677,7 @@ mod tests {
             accepts: Vec::new(),
             produces: Vec::new(),
             may_produce: vec!["composed_a".into(), "composed_b".into()],
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -695,6 +707,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["log_entries".into()],
             may_produce: Vec::new(),
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -725,6 +738,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["composed".into()],
             may_produce: Vec::new(),
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -759,6 +773,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["output_a".into(), "output_b".into()],
             may_produce: Vec::new(),
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -789,6 +804,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -821,6 +837,37 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
+            scoped: true,
+            trigger: TriggerCondition::OnChange {
+                name: "unused".into(),
+            },
+            instructions: None,
+        };
+
+        assert!(validate_output_types(&protocol, &store, Some("wu")).is_ok());
+    }
+
+    #[test]
+    fn validate_output_types_accepts_scoped_project_level_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let types = vec![ArtifactType {
+            name: "implementation".into(),
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" }
+                },
+                "required": ["title"]
+            }),
+        }];
+        let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
+        let protocol = ProtocolDeclaration {
+            name: "implement".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: vec!["implementation".into()],
+            may_produce: Vec::new(),
+            scoped: true,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -860,6 +907,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["output".into()],
             may_produce: vec!["scoped_output".into()],
+            scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
             },
@@ -876,5 +924,45 @@ mod tests {
         // Only "output" should be a tool; "scoped_output" filtered out.
         assert_eq!(handler.tools.len(), 1);
         assert_eq!(handler.tools[0].name.as_ref(), "output");
+    }
+
+    #[test]
+    fn validate_protocol_scope_requires_work_unit_for_scoped_protocols() {
+        let protocol = ProtocolDeclaration {
+            name: "implement".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: Vec::new(),
+            may_produce: Vec::new(),
+            scoped: true,
+            trigger: TriggerCondition::OnChange {
+                name: "unused".into(),
+            },
+            instructions: None,
+        };
+
+        let error = validate_protocol_scope(&protocol, None).unwrap_err();
+        assert!(error.contains("requires --work-unit"));
+        assert!(validate_protocol_scope(&protocol, Some("wu-a")).is_ok());
+    }
+
+    #[test]
+    fn validate_protocol_scope_rejects_work_unit_for_unscoped_protocols() {
+        let protocol = ProtocolDeclaration {
+            name: "ground".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: Vec::new(),
+            may_produce: Vec::new(),
+            scoped: false,
+            trigger: TriggerCondition::OnChange {
+                name: "unused".into(),
+            },
+            instructions: None,
+        };
+
+        let error = validate_protocol_scope(&protocol, Some("wu-a")).unwrap_err();
+        assert!(error.contains("does not accept --work-unit"));
+        assert!(validate_protocol_scope(&protocol, None).is_ok());
     }
 }

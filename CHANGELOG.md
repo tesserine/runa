@@ -10,6 +10,7 @@ Semantic Versioning.
 ### Added
 
 - Add a runnable `examples/quickstart-methodology/` example with a README, manifest, schemas, and protocol instructions for the two-protocol review pipeline used in the methodology authoring guide.
+- Add manifest-declared protocol scoping with `scoped = true`, plus `--work-unit <ID>` support on `runa state`, `runa step`, and `runa run` so delegated execution scope comes from the caller instead of artifact-state sibling discovery.
 
 ### Changed
 
@@ -41,9 +42,18 @@ Semantic Versioning.
   graph-based projection that derives downstream execution entirely from
   manifest topology, current evaluated work-unit state, and assumed-success
   `produces` outputs.
+- Make readiness evaluation and dry-run projection scope-driven: unscoped commands now evaluate only unscoped protocols, scoped commands evaluate only scoped protocols for the requested work unit, and no readiness path enumerates sibling work units from artifact state.
 
 ### Fixed
 
+- Make cycle detection and execution ordering respect the active evaluation
+  scope, so out-of-scope hard cycles no longer warn, suppress execution plans,
+  or force `runa run --dry-run` to exit `3`, while in-scope cycles still warn
+  and remain non-executable.
+- Make `runa state` and `runa step` share one executable definition by
+  reporting in-scope hard-cycle participants as `WAITING` with an explicit
+  cycle condition instead of showing them as `READY` and dropping them later.
+- Reject malformed methodology manifests earlier when an unscoped protocol declares a `produces` or `may_produce` schema whose top-level `required` array includes `work_unit`, so `runa state`, `runa step --dry-run`, and `runa-mcp` no longer disagree about executability.
 - Make `on_artifact` and required-input readiness existential over valid instances: mixed invalid, malformed, or stale siblings no longer block `runa state`, `runa step --dry-run`, or `runa run --dry-run` when a valid instance exists, while artifact health reporting stays unchanged and `on_artifact` waiting reasons now report the absence of valid instances.
 - Revert freshness suppression for `on_artifact` and required inputs to use any recorded sibling change, so invalidated or removed previously valid inputs reopen work instead of leaving stale outputs marked current in readiness evaluation or dry-run projection.
 - Make the quickstart example's `review` protocol require both `requirements` and `design`, matching runa's declared-input injection contract, and add a regression test covering `runa step --dry-run --json`.
@@ -73,6 +83,9 @@ Semantic Versioning.
   reconciliations or agent-failing reconciliations that still emitted usable
   artifacts when those reconciliations changed relevant inputs, and stop
   treating `may_produce` outputs as guaranteed in `run --dry-run`.
+- Reject scope-mismatched MCP invocations so `runa-mcp` now fails fast when a
+  scoped protocol is invoked without `--work-unit` or an unscoped protocol is
+  invoked with one.
 - Make `runa run` treat unresolved hard dependency cycles as blocked quiescence
   instead of false success, and keep `run --dry-run --json` current-entry
   contexts tied to real on-disk inputs instead of projected accepted artifacts.

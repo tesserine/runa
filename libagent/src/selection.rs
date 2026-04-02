@@ -1,18 +1,32 @@
-//! Work-unit discovery, protocol readiness evaluation, and candidate classification.
+//! Scope-driven protocol readiness evaluation and candidate classification.
 //!
 //! Evaluates protocols in topological order to discover which `(protocol, work_unit)`
 //! pairs are ready for execution, blocked on preconditions, or waiting on triggers.
 //! The main entry points are [`discover_ready_candidates`] (returns only ready pairs)
 //! and [`classify_candidates`] (returns all pairs with their classification).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use crate::enforcement::ArtifactFailure;
+use crate::graph::{CycleError, DependencyGraph};
 use crate::model::{ProtocolDeclaration, TriggerCondition};
-use crate::store::{ArtifactStore, ValidationStatus};
+use crate::store::ArtifactStore;
 use crate::trigger::{
     TriggerContext, TriggerResult, derived_completion_timestamp, evaluate as evaluate_trigger,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvaluationScope<'a> {
+    Unscoped,
+    Scoped(&'a str),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvaluationTopology {
+    pub status_order: Vec<String>,
+    pub execution_order: Vec<String>,
+    pub cycle: Option<CycleError>,
+}
 
 /// A (protocol, work_unit) pair that is ready for execution.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,22 +73,6 @@ pub(crate) enum FreshnessInputMode {
     ValidOnly,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CandidateWorkUnitMode {
-    Valid,
-    Invalid,
-    Recorded,
-}
-
-pub(crate) trait CandidateWorkUnitSource {
-    fn is_partially_scanned(&self, artifact_type: &str) -> bool;
-    fn artifact_work_units(
-        &self,
-        artifact_type: &str,
-        mode: CandidateWorkUnitMode,
-    ) -> BTreeSet<Option<String>>;
-}
-
 /// Discover all (protocol, work_unit) pairs that are ready for execution.
 ///
 /// Evaluates protocols in topological order. For each protocol, discovers
@@ -88,15 +86,71 @@ pub fn discover_ready_candidates(
     store: &ArtifactStore,
     topological_order: &[&str],
     partially_scanned_types: &HashSet<String>,
+    scope: EvaluationScope<'_>,
 ) -> Vec<Candidate> {
-    classify_candidates(protocols, store, topological_order, partially_scanned_types)
-        .into_iter()
-        .filter(|c| matches!(c.status, CandidateStatus::Ready))
-        .map(|c| Candidate {
-            protocol_name: c.protocol_name,
-            work_unit: c.work_unit,
-        })
-        .collect()
+    classify_candidates(
+        protocols,
+        store,
+        topological_order,
+        partially_scanned_types,
+        scope,
+    )
+    .into_iter()
+    .filter(|c| matches!(c.status, CandidateStatus::Ready))
+    .map(|c| Candidate {
+        protocol_name: c.protocol_name,
+        work_unit: c.work_unit,
+    })
+    .collect()
+}
+
+pub fn resolve_evaluation_topology(
+    protocols: &[ProtocolDeclaration],
+    graph: &DependencyGraph,
+    scope: EvaluationScope<'_>,
+) -> EvaluationTopology {
+    let excluded: HashSet<&str> = protocols
+        .iter()
+        .filter(|protocol| !protocol_in_scope(protocol, scope))
+        .map(|protocol| protocol.name.as_str())
+        .collect();
+
+    match graph.topological_order_filtered(&excluded) {
+        Ok(order) => EvaluationTopology {
+            status_order: order.iter().map(|name| (*name).to_string()).collect(),
+            execution_order: order.iter().map(|name| (*name).to_string()).collect(),
+            cycle: None,
+        },
+        Err(cycle) => {
+            let cycle_participants: HashSet<&str> =
+                cycle.path.iter().map(|name| name.as_str()).collect();
+            let combined_exclusions: HashSet<&str> = excluded
+                .iter()
+                .copied()
+                .chain(cycle_participants.iter().copied())
+                .collect();
+            let execution_order: Vec<String> = graph
+                .topological_order_excluding(&combined_exclusions)
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            let mut status_order = execution_order.clone();
+            status_order.extend(
+                protocols
+                    .iter()
+                    .filter(|protocol| protocol_in_scope(protocol, scope))
+                    .map(|protocol| protocol.name.as_str())
+                    .filter(|name| cycle_participants.contains(name))
+                    .map(str::to_owned),
+            );
+
+            EvaluationTopology {
+                status_order,
+                execution_order,
+                cycle: Some(cycle),
+            }
+        }
+    }
 }
 
 /// Returns the `requires` and trigger-referenced artifact types for this protocol
@@ -129,23 +183,6 @@ pub fn protocol_scan_incomplete_types(
     }
 
     incomplete
-}
-
-/// Discover candidate work units for a protocol by collecting work unit values
-/// from all artifact instances referenced by the protocol's edges and trigger tree.
-///
-/// Returns `{None}` (unscoped execution) when no work-unit-bearing instances exist.
-/// Skips artifact types with incomplete scans.
-pub fn protocol_work_units(
-    protocol: &ProtocolDeclaration,
-    store: &ArtifactStore,
-    partially_scanned_types: &HashSet<String>,
-) -> BTreeSet<Option<String>> {
-    let source = StoreCandidateWorkUnitSource {
-        store,
-        partially_scanned_types,
-    };
-    collect_candidate_work_units(protocol, &source)
 }
 
 /// Collect the artifact type names that affect freshness for this protocol:
@@ -334,144 +371,6 @@ pub(crate) fn protocol_freshness_inputs(
         );
     }
     freshness_inputs
-}
-
-struct StoreCandidateWorkUnitSource<'a> {
-    store: &'a ArtifactStore,
-    partially_scanned_types: &'a HashSet<String>,
-}
-
-impl CandidateWorkUnitSource for StoreCandidateWorkUnitSource<'_> {
-    fn is_partially_scanned(&self, artifact_type: &str) -> bool {
-        self.partially_scanned_types.contains(artifact_type)
-    }
-
-    fn artifact_work_units(
-        &self,
-        artifact_type: &str,
-        mode: CandidateWorkUnitMode,
-    ) -> BTreeSet<Option<String>> {
-        collect_store_work_units(self.store, artifact_type, mode)
-    }
-}
-
-/// Collect candidate work units from valid protocol inputs plus trigger-relevant
-/// instances, using the same primitive-specific validity filters as trigger
-/// evaluation. Invalid scoped siblings therefore cannot create scoped
-/// candidates for `on_artifact`.
-pub(crate) fn collect_candidate_work_units<S: CandidateWorkUnitSource>(
-    protocol: &ProtocolDeclaration,
-    source: &S,
-) -> BTreeSet<Option<String>> {
-    let mut work_units = BTreeSet::new();
-
-    for artifact_type in &protocol.requires {
-        extend_candidate_work_units(
-            source,
-            artifact_type,
-            CandidateWorkUnitMode::Valid,
-            &mut work_units,
-        );
-    }
-
-    for artifact_type in &protocol.accepts {
-        extend_candidate_work_units(
-            source,
-            artifact_type,
-            CandidateWorkUnitMode::Valid,
-            &mut work_units,
-        );
-    }
-
-    collect_trigger_work_units(&protocol.trigger, source, &mut work_units);
-    normalize_candidate_work_units(work_units)
-}
-
-fn extend_candidate_work_units<S: CandidateWorkUnitSource>(
-    source: &S,
-    artifact_type: &str,
-    mode: CandidateWorkUnitMode,
-    out: &mut BTreeSet<Option<String>>,
-) {
-    if source.is_partially_scanned(artifact_type) {
-        return;
-    }
-    out.extend(source.artifact_work_units(artifact_type, mode));
-}
-
-fn collect_trigger_work_units<S: CandidateWorkUnitSource>(
-    condition: &TriggerCondition,
-    source: &S,
-    out: &mut BTreeSet<Option<String>>,
-) {
-    match condition {
-        TriggerCondition::OnArtifact { name } => {
-            extend_candidate_work_units(source, name, CandidateWorkUnitMode::Valid, out);
-        }
-        TriggerCondition::OnChange { name } => {
-            extend_candidate_work_units(source, name, CandidateWorkUnitMode::Recorded, out);
-        }
-        TriggerCondition::OnInvalid { name } => {
-            extend_candidate_work_units(source, name, CandidateWorkUnitMode::Invalid, out);
-        }
-        TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
-            for child in conditions {
-                collect_trigger_work_units(child, source, out);
-            }
-        }
-    }
-}
-
-fn collect_store_work_units(
-    store: &ArtifactStore,
-    artifact_type: &str,
-    mode: CandidateWorkUnitMode,
-) -> BTreeSet<Option<String>> {
-    store
-        .instances_of(artifact_type, None)
-        .into_iter()
-        .filter_map(|(_, state)| {
-            if candidate_mode_matches_status(mode, &state.status) {
-                Some(state.work_unit.clone())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-fn candidate_mode_matches_status(mode: CandidateWorkUnitMode, status: &ValidationStatus) -> bool {
-    match mode {
-        CandidateWorkUnitMode::Valid => matches!(status, ValidationStatus::Valid),
-        CandidateWorkUnitMode::Invalid => matches!(
-            status,
-            ValidationStatus::Invalid(_) | ValidationStatus::Malformed(_)
-        ),
-        CandidateWorkUnitMode::Recorded => true,
-    }
-}
-
-fn normalize_candidate_work_units(
-    mut work_units: BTreeSet<Option<String>>,
-) -> BTreeSet<Option<String>> {
-    // Drop the unscoped entry when scoped work units are present.
-    // Scoped queries already include unscoped instances (via
-    // matches_work_unit_filter), so the None entry would create a
-    // redundant candidate that duplicates per-work-unit runs.
-    //
-    // None candidates appear naturally for planning-phase protocols
-    // (survey, decompose) and the phase bridge (begin), whose
-    // inputs predate work-unit identity. Execution-phase protocols
-    // always have scoped inputs, so None is always removed for them.
-    if work_units.iter().any(|wu| wu.is_some()) {
-        work_units.remove(&None);
-    }
-
-    if work_units.is_empty() {
-        work_units.insert(None);
-    }
-
-    work_units
 }
 
 // --- Trigger trust evaluation (moved from runa-cli/src/commands/protocol_eval.rs) ---
@@ -729,6 +628,7 @@ pub fn classify_candidates(
     store: &ArtifactStore,
     topological_order: &[&str],
     partially_scanned_types: &HashSet<String>,
+    scope: EvaluationScope<'_>,
 ) -> Vec<ClassifiedCandidate> {
     let mut classified = Vec::new();
 
@@ -742,7 +642,7 @@ pub fn classify_candidates(
         let readiness_scan_failures =
             precondition_scan_incomplete_types(protocol, partially_scanned_types);
 
-        let work_units = protocol_work_units(protocol, store, partially_scanned_types);
+        let work_units = candidate_work_units_for_scope(protocol, scope);
         let freshness_inputs = protocol_freshness_inputs(protocol);
 
         for wu in &work_units {
@@ -838,6 +738,26 @@ pub fn classify_candidates(
     classified
 }
 
+pub(crate) fn candidate_work_units_for_scope(
+    protocol: &ProtocolDeclaration,
+    scope: EvaluationScope<'_>,
+) -> Vec<Option<String>> {
+    match scope {
+        EvaluationScope::Unscoped if !protocol.scoped => vec![None],
+        EvaluationScope::Scoped(work_unit) if protocol.scoped => {
+            vec![Some(work_unit.to_string())]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn protocol_in_scope(protocol: &ProtocolDeclaration, scope: EvaluationScope<'_>) -> bool {
+    matches!(
+        (scope, protocol.scoped),
+        (EvaluationScope::Unscoped, false) | (EvaluationScope::Scoped(_), true)
+    )
+}
+
 /// Collect scan-incomplete types from trigger eval scan_types and requires types.
 fn trigger_scan_incomplete_failures(
     protocol: &ProtocolDeclaration,
@@ -894,6 +814,39 @@ mod tests {
             store,
             topological_order,
             partially_scanned_types,
+            EvaluationScope::Unscoped,
+        )
+    }
+
+    fn discover_ready_candidates_scoped(
+        protocols: &[ProtocolDeclaration],
+        store: &ArtifactStore,
+        topological_order: &[&str],
+        partially_scanned_types: &HashSet<String>,
+        work_unit: &str,
+    ) -> Vec<Candidate> {
+        super::discover_ready_candidates(
+            protocols,
+            store,
+            topological_order,
+            partially_scanned_types,
+            EvaluationScope::Scoped(work_unit),
+        )
+    }
+
+    fn classify_candidates_scoped(
+        protocols: &[ProtocolDeclaration],
+        store: &ArtifactStore,
+        topological_order: &[&str],
+        partially_scanned_types: &HashSet<String>,
+        work_unit: &str,
+    ) -> Vec<ClassifiedCandidate> {
+        super::classify_candidates(
+            protocols,
+            store,
+            topological_order,
+            partially_scanned_types,
+            EvaluationScope::Scoped(work_unit),
         )
     }
 
@@ -911,6 +864,7 @@ mod tests {
             accepts: accepts.iter().map(|s| s.to_string()).collect(),
             produces: produces.iter().map(|s| s.to_string()).collect(),
             may_produce: may_produce.iter().map(|s| s.to_string()).collect(),
+            scoped: false,
             trigger,
             instructions: None,
         }
@@ -1093,126 +1047,6 @@ mod tests {
     }
 
     #[test]
-    fn protocol_work_units_returns_none_when_no_instances() {
-        let tmp = TempDir::new().unwrap();
-        let store = make_store(&tmp.path().join("s"), vec!["doc"]);
-
-        let protocol = make_protocol(
-            "ground",
-            &["doc"],
-            &[],
-            &[],
-            &[],
-            TriggerCondition::OnArtifact { name: "doc".into() },
-        );
-        let wus = protocol_work_units(&protocol, &store, &HashSet::new());
-        assert_eq!(wus, BTreeSet::from([None]));
-    }
-
-    #[test]
-    fn protocol_work_units_returns_distinct_values() {
-        let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
-        store
-            .record(
-                "doc",
-                "a1",
-                Path::new("a1.json"),
-                &json!({"title": "A", "work_unit": "wu-a"}),
-            )
-            .unwrap();
-        store
-            .record(
-                "doc",
-                "b1",
-                Path::new("b1.json"),
-                &json!({"title": "B", "work_unit": "wu-b"}),
-            )
-            .unwrap();
-        store
-            .record(
-                "doc",
-                "shared",
-                Path::new("shared.json"),
-                &json!({"title": "S"}),
-            )
-            .unwrap();
-
-        let protocol = make_protocol(
-            "ground",
-            &["doc"],
-            &[],
-            &[],
-            &[],
-            TriggerCondition::OnArtifact { name: "doc".into() },
-        );
-        let wus = protocol_work_units(&protocol, &store, &HashSet::new());
-        assert_eq!(
-            wus,
-            BTreeSet::from([Some("wu-a".into()), Some("wu-b".into())])
-        );
-    }
-
-    #[test]
-    fn protocol_work_units_keeps_none_when_all_unscoped() {
-        let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
-        store
-            .record("doc", "a1", Path::new("a1.json"), &json!({"title": "A"}))
-            .unwrap();
-        store
-            .record("doc", "b1", Path::new("b1.json"), &json!({"title": "B"}))
-            .unwrap();
-
-        let protocol = make_protocol(
-            "ground",
-            &["doc"],
-            &[],
-            &[],
-            &[],
-            TriggerCondition::OnArtifact { name: "doc".into() },
-        );
-        let wus = protocol_work_units(&protocol, &store, &HashSet::new());
-        assert_eq!(wus, BTreeSet::from([None]));
-    }
-
-    #[test]
-    fn protocol_work_units_excludes_partially_scanned_types() {
-        let tmp = TempDir::new().unwrap();
-        let mut store = make_store(&tmp.path().join("s"), vec!["notes", "constraints"]);
-        store
-            .record(
-                "notes",
-                "wu-stale",
-                Path::new("notes-stale.json"),
-                &json!({"title": "Stale", "work_unit": "wu-stale"}),
-            )
-            .unwrap();
-        store
-            .record(
-                "constraints",
-                "wu-good",
-                Path::new("constraints-good.json"),
-                &json!({"title": "Good", "work_unit": "wu-good"}),
-            )
-            .unwrap();
-
-        let protocol = make_protocol(
-            "ground",
-            &["notes", "constraints"],
-            &[],
-            &[],
-            &[],
-            TriggerCondition::OnArtifact {
-                name: "constraints".into(),
-            },
-        );
-        let partial = HashSet::from(["notes".to_string()]);
-        let wus = protocol_work_units(&protocol, &store, &partial);
-        assert_eq!(wus, BTreeSet::from([Some("wu-good".into())]));
-    }
-
-    #[test]
     fn artifact_only_protocol_evaluated_once_unscoped() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["doc"]);
@@ -1258,7 +1092,7 @@ mod tests {
             )
             .unwrap();
 
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "implement",
             &["constraints"],
             &[],
@@ -1268,14 +1102,28 @@ mod tests {
                 name: "constraints".into(),
             },
         );
+        protocol.scoped = true;
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
+        let wu_a = discover_ready_candidates_scoped(
+            &[protocol.clone()],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+            "wu-a",
+        );
+        let wu_b = discover_ready_candidates_scoped(
+            &[protocol],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+            "wu-b",
+        );
 
-        assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].protocol_name, "implement");
-        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
-        assert_eq!(candidates[1].work_unit, Some("wu-b".into()));
+        assert_eq!(wu_a.len(), 1);
+        assert_eq!(wu_a[0].protocol_name, "implement");
+        assert_eq!(wu_a[0].work_unit, Some("wu-a".into()));
+        assert_eq!(wu_b.len(), 1);
+        assert_eq!(wu_b[0].work_unit, Some("wu-b".into()));
     }
 
     #[test]
@@ -1299,7 +1147,7 @@ mod tests {
             )
             .unwrap();
 
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "implement",
             &["constraints"],
             &[],
@@ -1309,9 +1157,15 @@ mod tests {
                 name: "constraints".into(),
             },
         );
+        protocol.scoped = true;
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
+        let candidates = discover_ready_candidates_scoped(
+            &[protocol],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+            "wu-a",
+        );
 
         assert!(candidates.is_empty());
     }
@@ -1339,7 +1193,7 @@ mod tests {
             )
             .unwrap();
 
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "implement",
             &["constraints"],
             &[],
@@ -1349,9 +1203,15 @@ mod tests {
                 name: "constraints".into(),
             },
         );
+        protocol.scoped = true;
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
+        let candidates = discover_ready_candidates_scoped(
+            &[protocol],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+            "wu-a",
+        );
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -1390,7 +1250,7 @@ mod tests {
             )
             .unwrap();
 
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "publish",
             &["request"],
             &[],
@@ -1400,12 +1260,14 @@ mod tests {
                 name: "request".into(),
             },
         );
+        protocol.scoped = true;
 
-        let classified = classify_candidates(
+        let classified = classify_candidates_scoped(
             std::slice::from_ref(&protocol),
             &store,
             &["publish"],
             &HashSet::new(),
+            "wu-a",
         );
 
         assert_eq!(classified.len(), 1);
@@ -1413,8 +1275,13 @@ mod tests {
         assert_eq!(classified[0].work_unit, Some("wu-a".into()));
         assert!(matches!(&classified[0].status, CandidateStatus::Ready));
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["publish"], &HashSet::new());
+        let candidates = discover_ready_candidates_scoped(
+            &[protocol],
+            &store,
+            &["publish"],
+            &HashSet::new(),
+            "wu-a",
+        );
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "publish");
         assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
@@ -1457,6 +1324,7 @@ mod tests {
             &store,
             &["publish"],
             &HashSet::new(),
+            EvaluationScope::Unscoped,
         );
 
         assert_eq!(classified.len(), 1);
@@ -1516,7 +1384,7 @@ mod tests {
             )
             .unwrap();
 
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "publish",
             &["request"],
             &[],
@@ -1526,12 +1394,14 @@ mod tests {
                 name: "request".into(),
             },
         );
+        protocol.scoped = true;
 
-        let classified = classify_candidates(
+        let classified = classify_candidates_scoped(
             std::slice::from_ref(&protocol),
             &store,
             &["publish"],
             &HashSet::new(),
+            "wu-a",
         );
 
         assert_eq!(classified.len(), 1);
@@ -1539,8 +1409,13 @@ mod tests {
         assert_eq!(classified[0].work_unit, Some("wu-a".into()));
         assert!(matches!(&classified[0].status, CandidateStatus::Ready));
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["publish"], &HashSet::new());
+        let candidates = discover_ready_candidates_scoped(
+            &[protocol],
+            &store,
+            &["publish"],
+            &HashSet::new(),
+            "wu-a",
+        );
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "publish");
         assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
@@ -1587,7 +1462,7 @@ mod tests {
             )
             .unwrap();
 
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "implement",
             &["constraints"],
             &[],
@@ -1597,9 +1472,15 @@ mod tests {
                 name: "constraints".into(),
             },
         );
+        protocol.scoped = true;
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
+        let candidates = discover_ready_candidates_scoped(
+            &[protocol],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+            "wu-a",
+        );
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -1681,7 +1562,7 @@ mod tests {
             )
             .unwrap();
 
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "implement",
             &["constraints"],
             &[],
@@ -1691,9 +1572,15 @@ mod tests {
                 name: "constraints".into(),
             },
         );
+        protocol.scoped = true;
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
+        let candidates = discover_ready_candidates_scoped(
+            &[protocol],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+            "wu-a",
+        );
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -2042,7 +1929,7 @@ mod tests {
 
         let partial = HashSet::from(["implementation".to_string()]);
 
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "implement",
             &["constraints"],
             &[],
@@ -2052,12 +1939,22 @@ mod tests {
                 name: "constraints".into(),
             },
         );
+        protocol.scoped = true;
 
-        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let wu_a = discover_ready_candidates_scoped(
+            &[protocol.clone()],
+            &store,
+            &["implement"],
+            &partial,
+            "wu-a",
+        );
+        let wu_b =
+            discover_ready_candidates_scoped(&[protocol], &store, &["implement"], &partial, "wu-b");
 
-        assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
-        assert_eq!(candidates[1].work_unit, Some("wu-b".into()));
+        assert_eq!(wu_a.len(), 1);
+        assert_eq!(wu_a[0].work_unit, Some("wu-a".into()));
+        assert_eq!(wu_b.len(), 1);
+        assert_eq!(wu_b[0].work_unit, Some("wu-b".into()));
     }
 
     #[test]
@@ -2074,7 +1971,7 @@ mod tests {
             .unwrap();
 
         let partial = HashSet::from(["implementation".to_string()]);
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "implement",
             &["constraints"],
             &[],
@@ -2084,8 +1981,10 @@ mod tests {
                 name: "constraints".into(),
             },
         );
+        protocol.scoped = true;
 
-        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let candidates =
+            discover_ready_candidates_scoped(&[protocol], &store, &["implement"], &partial, "wu-a");
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -2129,6 +2028,7 @@ mod tests {
             &store,
             &["review"],
             &partial,
+            EvaluationScope::Unscoped,
         );
 
         assert_eq!(classified.len(), 1);
@@ -2186,7 +2086,7 @@ mod tests {
         store.mark_instance_scan_gap("reviewed", "a");
 
         let partial = HashSet::from(["reviewed".to_string()]);
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "review",
             &[],
             &[],
@@ -2194,31 +2094,41 @@ mod tests {
             &[],
             TriggerCondition::OnChange { name: "doc".into() },
         );
+        protocol.scoped = true;
 
-        let classified = classify_candidates(
+        let classified_a = classify_candidates_scoped(
             std::slice::from_ref(&protocol),
             &store,
             &["review"],
             &partial,
+            "wu-a",
+        );
+        let classified_b = classify_candidates_scoped(
+            std::slice::from_ref(&protocol),
+            &store,
+            &["review"],
+            &partial,
+            "wu-b",
         );
 
-        assert_eq!(classified.len(), 2);
-        let wu_a = classified
-            .iter()
-            .find(|candidate| candidate.work_unit.as_deref() == Some("wu-a"))
-            .unwrap();
-        let wu_b = classified
-            .iter()
-            .find(|candidate| candidate.work_unit.as_deref() == Some("wu-b"))
-            .unwrap();
+        assert_eq!(classified_a.len(), 1);
+        assert!(matches!(classified_a[0].status, CandidateStatus::Ready));
+        assert_eq!(classified_b.len(), 1);
+        assert!(matches!(classified_b[0].status, CandidateStatus::Ready));
 
-        assert!(matches!(wu_a.status, CandidateStatus::Ready));
-        assert!(matches!(wu_b.status, CandidateStatus::Ready));
-
-        let candidates = discover_ready_candidates(&[protocol], &store, &["review"], &partial);
-        assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
-        assert_eq!(candidates[1].work_unit, Some("wu-b".into()));
+        let wu_a = discover_ready_candidates_scoped(
+            &[protocol.clone()],
+            &store,
+            &["review"],
+            &partial,
+            "wu-a",
+        );
+        let wu_b =
+            discover_ready_candidates_scoped(&[protocol], &store, &["review"], &partial, "wu-b");
+        assert_eq!(wu_a.len(), 1);
+        assert_eq!(wu_a[0].work_unit, Some("wu-a".into()));
+        assert_eq!(wu_b.len(), 1);
+        assert_eq!(wu_b[0].work_unit, Some("wu-b".into()));
     }
 
     #[test]
@@ -2247,7 +2157,7 @@ mod tests {
 
         let partial = HashSet::from(["notes".to_string()]);
 
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "implement",
             &["constraints"],
             &[],
@@ -2257,8 +2167,10 @@ mod tests {
                 name: "constraints".into(),
             },
         );
+        protocol.scoped = true;
 
-        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let candidates =
+            discover_ready_candidates_scoped(&[protocol], &store, &["implement"], &partial, "wu-a");
 
         assert!(candidates.is_empty());
     }
@@ -2296,7 +2208,7 @@ mod tests {
             .unwrap();
 
         let partial = HashSet::from(["notes".to_string()]);
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "implement",
             &["constraints"],
             &[],
@@ -2306,8 +2218,10 @@ mod tests {
                 name: "constraints".into(),
             },
         );
+        protocol.scoped = true;
 
-        let candidates = discover_ready_candidates(&[protocol], &store, &["implement"], &partial);
+        let candidates =
+            discover_ready_candidates_scoped(&[protocol], &store, &["implement"], &partial, "wu-a");
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -2441,7 +2355,7 @@ mod tests {
             )
             .unwrap();
 
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "implement",
             &["constraints"],
             &[],
@@ -2451,9 +2365,15 @@ mod tests {
                 name: "constraints".into(),
             },
         );
+        protocol.scoped = true;
 
-        let candidates =
-            discover_ready_candidates(&[protocol], &store, &["implement"], &HashSet::new());
+        let candidates = discover_ready_candidates_scoped(
+            &[protocol],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+            "wu-a",
+        );
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "implement");
@@ -2475,7 +2395,7 @@ mod tests {
             )
             .unwrap();
 
-        let protocol = make_protocol(
+        let mut protocol = make_protocol(
             "implement",
             &["constraints"],
             &[],
@@ -2485,8 +2405,15 @@ mod tests {
                 name: "constraints".into(),
             },
         );
+        protocol.scoped = true;
 
-        let classified = classify_candidates(&[protocol], &store, &["implement"], &HashSet::new());
+        let classified = classify_candidates_scoped(
+            &[protocol],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+            "wu-a",
+        );
 
         assert_eq!(classified.len(), 1);
         assert_eq!(classified[0].protocol_name, "implement");
@@ -2512,7 +2439,13 @@ mod tests {
             },
         );
 
-        let classified = classify_candidates(&[protocol], &store, &["ground"], &HashSet::new());
+        let classified = classify_candidates(
+            &[protocol],
+            &store,
+            &["ground"],
+            &HashSet::new(),
+            EvaluationScope::Unscoped,
+        );
 
         assert_eq!(classified.len(), 1);
         assert!(matches!(
@@ -2526,6 +2459,65 @@ mod tests {
         {
             assert!(!unsatisfied_conditions.is_empty());
         }
+    }
+
+    #[test]
+    fn classify_candidates_respects_declared_scope_boundary() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["constraints", "implementation"]);
+        store
+            .record(
+                "constraints",
+                "a1",
+                Path::new("a1.json"),
+                &json!({"title": "A", "work_unit": "wu-a"}),
+            )
+            .unwrap();
+
+        let mut scoped = make_protocol(
+            "implement",
+            &["constraints"],
+            &[],
+            &["implementation"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+        scoped.scoped = true;
+
+        let unscoped = make_protocol(
+            "ground",
+            &[],
+            &[],
+            &["constraints"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+        );
+
+        let unscoped_only = classify_candidates(
+            &[scoped.clone(), unscoped.clone()],
+            &store,
+            &["ground", "implement"],
+            &HashSet::new(),
+            EvaluationScope::Unscoped,
+        );
+        assert_eq!(unscoped_only.len(), 1);
+        assert_eq!(unscoped_only[0].protocol_name, "ground");
+        assert_eq!(unscoped_only[0].work_unit, None);
+
+        let scoped_only = classify_candidates(
+            &[scoped, unscoped],
+            &store,
+            &["ground", "implement"],
+            &HashSet::new(),
+            EvaluationScope::Scoped("wu-a"),
+        );
+        assert_eq!(scoped_only.len(), 1);
+        assert_eq!(scoped_only[0].protocol_name, "implement");
+        assert_eq!(scoped_only[0].work_unit.as_deref(), Some("wu-a"));
     }
 
     #[test]
@@ -2553,7 +2545,13 @@ mod tests {
             },
         );
 
-        let classified = classify_candidates(&[protocol], &store, &["implement"], &HashSet::new());
+        let classified = classify_candidates(
+            &[protocol],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+            EvaluationScope::Unscoped,
+        );
 
         assert_eq!(classified.len(), 1);
         assert!(matches!(
@@ -2606,7 +2604,13 @@ mod tests {
             },
         );
 
-        let classified = classify_candidates(&[protocol], &store, &["implement"], &HashSet::new());
+        let classified = classify_candidates(
+            &[protocol],
+            &store,
+            &["implement"],
+            &HashSet::new(),
+            EvaluationScope::Unscoped,
+        );
 
         assert_eq!(classified.len(), 1);
         assert!(matches!(
@@ -2648,7 +2652,13 @@ mod tests {
             },
         );
 
-        let classified = classify_candidates(&[protocol], &store, &["implement"], &partial);
+        let classified = classify_candidates(
+            &[protocol],
+            &store,
+            &["implement"],
+            &partial,
+            EvaluationScope::Unscoped,
+        );
 
         assert_eq!(classified.len(), 1);
         assert!(matches!(
@@ -2711,6 +2721,7 @@ mod tests {
             &store,
             &["implement"],
             &HashSet::new(),
+            EvaluationScope::Unscoped,
         );
         let ready_from_classify: Vec<_> = classified
             .iter()

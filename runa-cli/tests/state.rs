@@ -88,6 +88,383 @@ fn scan_project(project_dir: &std::path::Path) {
 }
 
 #[test]
+fn state_filters_protocols_by_declared_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "ground"
+produces = ["constraints"]
+trigger = { type = "on_artifact", name = "constraints" }
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+produces = ["implementation"]
+scoped = true
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "implementation",
+                r#"{"type":"object","required":["done","work_unit"],"properties":{"done":{"type":"boolean"},"work_unit":{"type":"string"}}}"#,
+            ),
+        ],
+        &["ground", "implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-a.json"),
+        r#"{"title":"ship state","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+
+    let unscoped = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        unscoped.status.success(),
+        "state failed: {}",
+        String::from_utf8_lossy(&unscoped.stderr)
+    );
+    let unscoped_json: serde_json::Value = serde_json::from_slice(&unscoped.stdout).unwrap();
+    let unscoped_protocols = unscoped_json["protocols"].as_array().unwrap();
+    assert_eq!(unscoped_protocols.len(), 1);
+    assert_eq!(unscoped_protocols[0]["name"], "ground");
+    assert!(unscoped_protocols[0].get("work_unit").is_none());
+
+    let scoped = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        scoped.status.success(),
+        "state --work-unit failed: {}",
+        String::from_utf8_lossy(&scoped.stderr)
+    );
+    let scoped_json: serde_json::Value = serde_json::from_slice(&scoped.stdout).unwrap();
+    let scoped_protocols = scoped_json["protocols"].as_array().unwrap();
+    assert_eq!(scoped_protocols.len(), 1);
+    assert_eq!(scoped_protocols[0]["name"], "implement");
+    assert_eq!(scoped_protocols[0]["work_unit"], "wu-a");
+}
+
+#[test]
+fn state_scoped_ignores_unscoped_cycle_participants() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "x"
+
+[[artifact_types]]
+name = "y"
+
+[[protocols]]
+name = "publish"
+requires = ["y"]
+produces = ["x"]
+trigger = { type = "on_artifact", name = "y" }
+
+[[protocols]]
+name = "implement"
+requires = ["x"]
+produces = ["y"]
+scoped = true
+trigger = { type = "on_artifact", name = "x" }
+"#,
+        &[
+            (
+                "x",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "y",
+                r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+        ],
+        &["publish", "implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("x")).unwrap();
+    fs::write(workspace.join("x/input.json"), r#"{"title":"ship"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 1, "{value:#}");
+    assert_eq!(protocols[0]["name"], "implement");
+    assert_eq!(protocols[0]["status"], "ready");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
+}
+
+#[test]
+fn state_unscoped_ignores_scoped_cycle_participants() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "seed"
+
+[[artifact_types]]
+name = "result"
+
+[[artifact_types]]
+name = "a"
+
+[[artifact_types]]
+name = "b"
+
+[[protocols]]
+name = "publish"
+requires = ["seed"]
+produces = ["result"]
+trigger = { type = "on_artifact", name = "seed" }
+
+[[protocols]]
+name = "first"
+requires = ["b"]
+produces = ["a"]
+scoped = true
+trigger = { type = "on_artifact", name = "b" }
+
+[[protocols]]
+name = "second"
+requires = ["a"]
+produces = ["b"]
+scoped = true
+trigger = { type = "on_artifact", name = "a" }
+"#,
+        &[
+            (
+                "seed",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "result",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+            (
+                "a",
+                r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+            (
+                "b",
+                r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+        ],
+        &["publish", "first", "second"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("seed")).unwrap();
+    fs::write(workspace.join("seed/input.json"), r#"{"title":"ship"}"#).unwrap();
+    fs::create_dir_all(workspace.join("a")).unwrap();
+    fs::create_dir_all(workspace.join("b")).unwrap();
+    fs::write(
+        workspace.join("a/current.json"),
+        r#"{"title":"a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("b/current.json"),
+        r#"{"title":"b","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 1, "{value:#}");
+    assert_eq!(protocols[0]["name"], "publish");
+    assert_eq!(protocols[0]["status"], "ready");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
+}
+
+#[test]
+fn state_scoped_cycle_participants_are_waiting_not_ready() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "seed-a"
+
+[[artifact_types]]
+name = "seed-b"
+
+[[artifact_types]]
+name = "a"
+
+[[artifact_types]]
+name = "b"
+
+[[protocols]]
+name = "first"
+requires = ["b"]
+produces = ["a"]
+scoped = true
+trigger = { type = "on_artifact", name = "seed-a" }
+
+[[protocols]]
+name = "second"
+requires = ["a"]
+produces = ["b"]
+scoped = true
+trigger = { type = "on_artifact", name = "seed-b" }
+"#,
+        &[
+            (
+                "seed-a",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "seed-b",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "a",
+                r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+            (
+                "b",
+                r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+        ],
+        &["first", "second"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("a")).unwrap();
+    fs::create_dir_all(workspace.join("b")).unwrap();
+    fs::create_dir_all(workspace.join("seed-a")).unwrap();
+    fs::create_dir_all(workspace.join("seed-b")).unwrap();
+    fs::write(
+        workspace.join("a/current.json"),
+        r#"{"title":"a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("b/current.json"),
+        r#"{"title":"b","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    scan_project(&project_dir);
+    fs::write(workspace.join("seed-a/input.json"), r#"{"title":"seed-a"}"#).unwrap();
+    fs::write(workspace.join("seed-b/input.json"), r#"{"title":"seed-b"}"#).unwrap();
+
+    let output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "warning: dependency cycle detected: first -> second\n"
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 2, "{value:#}");
+    assert_eq!(protocols[0]["status"], "waiting");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
+    assert_eq!(
+        protocols[0]["unsatisfied_conditions"],
+        serde_json::json!(["dependency cycle detected: first -> second"])
+    );
+    assert_eq!(protocols[1]["status"], "waiting");
+    assert_eq!(protocols[1]["trigger"], "satisfied");
+    assert_eq!(
+        protocols[1]["unsatisfied_conditions"],
+        serde_json::json!(["dependency cycle detected: first -> second"])
+    );
+}
+
+#[test]
 fn state_groups_ready_blocked_and_waiting_after_implicit_scan() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
@@ -1237,7 +1614,7 @@ trigger = { type = "on_change", name = "doc" }
 
 #[cfg(unix)]
 #[test]
-fn state_unscopes_new_unreadable_outputs_across_all_work_units() {
+fn state_scoped_partial_outputs_reopen_each_delegated_work_unit() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1255,6 +1632,7 @@ name = "reviewed"
 [[protocols]]
 name = "review"
 produces = ["reviewed"]
+scoped = true
 trigger = { type = "on_change", name = "doc" }
 "#,
         &[
@@ -1329,38 +1707,50 @@ trigger = { type = "on_change", name = "doc" }
     .unwrap();
     fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o0)).unwrap();
 
-    let output = runa_bin()
+    let wu_a_output = runa_bin()
         .arg("state")
         .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    let wu_b_output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-b")
         .current_dir(&project_dir)
         .output()
         .unwrap();
 
     fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o644)).unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    for output in [&wu_a_output, &wu_b_output] {
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let reviews: Vec<_> = value["protocols"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|protocol| protocol["name"] == "review")
-        .collect();
+    let wu_a_value: serde_json::Value = serde_json::from_slice(&wu_a_output.stdout).unwrap();
+    let wu_a_reviews = wu_a_value["protocols"].as_array().unwrap();
+    assert_eq!(wu_a_reviews.len(), 1, "{wu_a_value:#}");
+    assert_eq!(wu_a_reviews[0]["name"], "review");
+    assert_eq!(wu_a_reviews[0]["work_unit"], "wu-a");
+    assert_eq!(wu_a_reviews[0]["status"], "ready");
 
-    assert_eq!(reviews.len(), 2, "{value:#}");
-    assert!(
-        reviews.iter().all(|protocol| protocol["status"] == "ready"),
-        "{value:#}"
-    );
+    let wu_b_value: serde_json::Value = serde_json::from_slice(&wu_b_output.stdout).unwrap();
+    let wu_b_reviews = wu_b_value["protocols"].as_array().unwrap();
+    assert_eq!(wu_b_reviews.len(), 1, "{wu_b_value:#}");
+    assert_eq!(wu_b_reviews[0]["name"], "review");
+    assert_eq!(wu_b_reviews[0]["work_unit"], "wu-b");
+    assert_eq!(wu_b_reviews[0]["status"], "ready");
 }
 
 #[test]
-fn state_reports_per_work_unit_on_change_readiness_when_freshness_is_mixed() {
+fn state_reports_scoped_on_change_readiness_when_freshness_is_mixed() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
@@ -1376,6 +1766,7 @@ name = "reviewed"
 [[protocols]]
 name = "review"
 produces = ["reviewed"]
+scoped = true
 trigger = { type = "on_change", name = "doc" }
 "#,
         &[
@@ -1450,41 +1841,44 @@ trigger = { type = "on_change", name = "doc" }
     )
     .unwrap();
 
-    let output = runa_bin()
+    let wu_a_output = runa_bin()
         .arg("state")
         .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    let wu_b_output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-b")
         .current_dir(&project_dir)
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    for output in [&wu_a_output, &wu_b_output] {
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let reviews: Vec<_> = value["protocols"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|protocol| protocol["name"] == "review")
-        .collect();
+    let wu_a_value: serde_json::Value = serde_json::from_slice(&wu_a_output.stdout).unwrap();
+    let wu_a_reviews = wu_a_value["protocols"].as_array().unwrap();
+    assert_eq!(wu_a_reviews.len(), 1, "{wu_a_value:#}");
+    assert_eq!(wu_a_reviews[0]["work_unit"], "wu-a");
+    assert_eq!(wu_a_reviews[0]["status"], "ready");
+    assert_eq!(wu_a_reviews[0]["trigger"], "satisfied");
 
-    assert_eq!(reviews.len(), 2, "{value:#}");
-    let ready = reviews
-        .iter()
-        .find(|protocol| protocol["status"] == "ready")
-        .unwrap();
-    let waiting = reviews
-        .iter()
-        .find(|protocol| protocol["status"] == "waiting")
-        .unwrap();
-
-    assert_eq!(ready["work_unit"], "wu-a");
-    assert_eq!(ready["trigger"], "satisfied");
-    assert_eq!(waiting["work_unit"], "wu-b");
-    assert_eq!(waiting["trigger"], "not_satisfied");
+    let wu_b_value: serde_json::Value = serde_json::from_slice(&wu_b_output.stdout).unwrap();
+    let wu_b_reviews = wu_b_value["protocols"].as_array().unwrap();
+    assert_eq!(wu_b_reviews.len(), 1, "{wu_b_value:#}");
+    assert_eq!(wu_b_reviews[0]["work_unit"], "wu-b");
+    assert_eq!(wu_b_reviews[0]["status"], "waiting");
+    assert_eq!(wu_b_reviews[0]["trigger"], "not_satisfied");
 }
 
 #[cfg(unix)]
@@ -1579,7 +1973,7 @@ trigger = { type = "on_change", name = "doc" }
 
 #[cfg(unix)]
 #[test]
-fn state_unscopes_partial_output_reruns_across_all_work_units() {
+fn state_scoped_reruns_reopen_when_output_scan_gaps_exist() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1597,6 +1991,7 @@ name = "reviewed"
 [[protocols]]
 name = "review"
 produces = ["reviewed"]
+scoped = true
 trigger = { type = "on_change", name = "doc" }
 "#,
         &[
@@ -1666,39 +2061,49 @@ trigger = { type = "on_change", name = "doc" }
     let unreadable_output = workspace.join("reviewed/a.json");
     fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o0)).unwrap();
 
-    let output = runa_bin()
+    let wu_a_output = runa_bin()
         .arg("state")
         .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    let wu_b_output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-b")
         .current_dir(&project_dir)
         .output()
         .unwrap();
 
     fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o644)).unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    for output in [&wu_a_output, &wu_b_output] {
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let reviews: Vec<_> = value["protocols"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|protocol| protocol["name"] == "review")
-        .collect();
+    let wu_a_value: serde_json::Value = serde_json::from_slice(&wu_a_output.stdout).unwrap();
+    let wu_a_reviews = wu_a_value["protocols"].as_array().unwrap();
+    assert_eq!(wu_a_reviews.len(), 1, "{wu_a_value:#}");
+    assert_eq!(wu_a_reviews[0]["work_unit"], "wu-a");
+    assert_eq!(wu_a_reviews[0]["status"], "ready");
 
-    assert_eq!(reviews.len(), 2, "{value:#}");
-    assert!(
-        reviews.iter().all(|protocol| protocol["status"] == "ready"),
-        "{value:#}"
-    );
+    let wu_b_value: serde_json::Value = serde_json::from_slice(&wu_b_output.stdout).unwrap();
+    let wu_b_reviews = wu_b_value["protocols"].as_array().unwrap();
+    assert_eq!(wu_b_reviews.len(), 1, "{wu_b_value:#}");
+    assert_eq!(wu_b_reviews[0]["work_unit"], "wu-b");
+    assert_eq!(wu_b_reviews[0]["status"], "ready");
 }
 
 #[cfg(unix)]
 #[test]
-fn state_unscopes_partial_outputs_when_the_stored_work_unit_is_unverifiable() {
+fn state_scoped_outputs_ignore_unverifiable_stored_work_unit_labels() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1716,6 +2121,7 @@ name = "reviewed"
 [[protocols]]
 name = "review"
 produces = ["reviewed"]
+scoped = true
 trigger = { type = "on_change", name = "doc" }
 "#,
         &[
@@ -1790,34 +2196,44 @@ trigger = { type = "on_change", name = "doc" }
     .unwrap();
     fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o0)).unwrap();
 
-    let output = runa_bin()
+    let wu_a_output = runa_bin()
         .arg("state")
         .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-a")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    let wu_b_output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("wu-b")
         .current_dir(&project_dir)
         .output()
         .unwrap();
 
     fs::set_permissions(&unreadable_output, fs::Permissions::from_mode(0o644)).unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    for output in [&wu_a_output, &wu_b_output] {
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let reviews: Vec<_> = value["protocols"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|protocol| protocol["name"] == "review")
-        .collect();
+    let wu_a_value: serde_json::Value = serde_json::from_slice(&wu_a_output.stdout).unwrap();
+    let wu_a_reviews = wu_a_value["protocols"].as_array().unwrap();
+    assert_eq!(wu_a_reviews.len(), 1, "{wu_a_value:#}");
+    assert_eq!(wu_a_reviews[0]["work_unit"], "wu-a");
+    assert_eq!(wu_a_reviews[0]["status"], "ready");
 
-    assert_eq!(reviews.len(), 2, "{value:#}");
-    assert!(
-        reviews.iter().all(|protocol| protocol["status"] == "ready"),
-        "{value:#}"
-    );
+    let wu_b_value: serde_json::Value = serde_json::from_slice(&wu_b_output.stdout).unwrap();
+    let wu_b_reviews = wu_b_value["protocols"].as_array().unwrap();
+    assert_eq!(wu_b_reviews.len(), 1, "{wu_b_value:#}");
+    assert_eq!(wu_b_reviews[0]["work_unit"], "wu-b");
+    assert_eq!(wu_b_reviews[0]["status"], "ready");
 }
 
 #[cfg(unix)]

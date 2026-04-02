@@ -203,24 +203,36 @@ impl DependencyGraph {
     /// returns `CycleError`; a cycle only in soft edges is ignored and the
     /// hard-edge order is returned.
     pub fn topological_order(&self) -> Result<Vec<&str>, CycleError> {
+        let empty = HashSet::new();
+        self.topological_order_filtered(&empty)
+    }
+
+    /// Return protocols in a valid execution order with excluded nodes removed.
+    ///
+    /// Uses Kahn's algorithm on the retained subgraph. If the retained hard-edge
+    /// subgraph still contains a cycle, returns that retained cycle.
+    pub fn topological_order_filtered(
+        &self,
+        exclude: &HashSet<&str>,
+    ) -> Result<Vec<&str>, CycleError> {
         // Try combined (hard + soft) edges first.
-        if let Some(order) = self.kahns_sort(true) {
+        if let Some(order) = self.kahns_sort_excluding(true, exclude) {
             return Ok(order
                 .iter()
                 .map(|&i| self.protocol_names[i].as_str())
                 .collect());
         }
 
-        // Combined graph has a cycle. Try hard edges only.
-        if let Some(order) = self.kahns_sort(false) {
+        // Combined retained graph has a cycle. Try hard edges only.
+        if let Some(order) = self.kahns_sort_excluding(false, exclude) {
             return Ok(order
                 .iter()
                 .map(|&i| self.protocol_names[i].as_str())
                 .collect());
         }
 
-        // Hard edges have a cycle. Extract the cycle path.
-        Err(self.extract_cycle())
+        // Retained hard edges still have a cycle. Extract the retained cycle path.
+        Err(self.extract_cycle_excluding(exclude))
     }
 
     /// Return protocols in execution order with the named protocols removed.
@@ -228,30 +240,19 @@ impl DependencyGraph {
     /// Uses the same combined-then-hard fallback as `topological_order()` but
     /// ignores all excluded nodes and edges incident to them.
     pub fn topological_order_excluding(&self, exclude: &HashSet<&str>) -> Vec<&str> {
-        if let Some(order) = self.kahns_sort_excluding(true, exclude) {
-            return order
-                .iter()
-                .map(|&i| self.protocol_names[i].as_str())
-                .collect();
-        }
+        self.topological_order_filtered(exclude)
+            .unwrap_or_else(|_| {
+                debug_assert!(
+                    false,
+                    "topological_order_excluding encountered an unexpected remaining hard cycle"
+                );
 
-        if let Some(order) = self.kahns_sort_excluding(false, exclude) {
-            return order
-                .iter()
-                .map(|&i| self.protocol_names[i].as_str())
-                .collect();
-        }
-
-        debug_assert!(
-            false,
-            "topological_order_excluding encountered an unexpected remaining hard cycle"
-        );
-
-        self.protocol_names
-            .iter()
-            .map(String::as_str)
-            .filter(|name| !exclude.contains(name))
-            .collect()
+                self.protocol_names
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|name| !exclude.contains(name))
+                    .collect()
+            })
     }
 
     /// Return `(protocol_name, missing_artifact_types)` for each protocol that has
@@ -314,18 +315,6 @@ impl DependencyGraph {
                     .collect()
             })
             .unwrap_or_default()
-    }
-
-    /// Run Kahn's algorithm. Returns `None` if a cycle is detected.
-    /// When `include_soft` is true, both hard and soft edges are considered.
-    fn kahns_sort(&self, include_soft: bool) -> Option<Vec<usize>> {
-        let empty = HashSet::new();
-        let order = self.kahns_prefix(include_soft, &empty);
-        if order.len() == self.protocol_names.len() {
-            Some(order)
-        } else {
-            None
-        }
     }
 
     /// Run Kahn's algorithm with exclusions. Returns `None` if a cycle is detected
@@ -407,15 +396,19 @@ impl DependencyGraph {
     }
 
     /// Extract a cycle from hard edges using DFS. Called only when a hard cycle exists.
-    fn extract_cycle(&self) -> CycleError {
+    fn extract_cycle_excluding(&self, exclude: &HashSet<&str>) -> CycleError {
         let n = self.protocol_names.len();
         // 0 = unvisited, 1 = in current path, 2 = done
         let mut state = vec![0u8; n];
         let mut path = Vec::new();
+        let is_excluded = |idx: usize| exclude.contains(self.protocol_names[idx].as_str());
 
         for start in 0..n {
+            if is_excluded(start) {
+                continue;
+            }
             if state[start] == 0
-                && let Some(cycle) = self.dfs_cycle(start, &mut state, &mut path)
+                && let Some(cycle) = self.dfs_cycle_excluding(start, &mut state, &mut path, exclude)
             {
                 return cycle;
             }
@@ -427,16 +420,20 @@ impl DependencyGraph {
         }
     }
 
-    fn dfs_cycle(
+    fn dfs_cycle_excluding(
         &self,
         node: usize,
         state: &mut [u8],
         path: &mut Vec<usize>,
+        exclude: &HashSet<&str>,
     ) -> Option<CycleError> {
         state[node] = 1;
         path.push(node);
 
         for &dep in &self.hard_deps[node] {
+            if exclude.contains(self.protocol_names[dep].as_str()) {
+                continue;
+            }
             if state[dep] == 1 {
                 // Found a cycle. Extract from `dep` to current position.
                 let cycle_start = path.iter().position(|&n| n == dep).unwrap();
@@ -447,7 +444,7 @@ impl DependencyGraph {
                 return Some(CycleError { path: cycle_path });
             }
             if state[dep] == 0
-                && let Some(cycle) = self.dfs_cycle(dep, state, path)
+                && let Some(cycle) = self.dfs_cycle_excluding(dep, state, path, exclude)
             {
                 return Some(cycle);
             }
@@ -480,6 +477,7 @@ mod tests {
             accepts: vec![],
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: vec![],
+            scoped: false,
             trigger: default_trigger(requires, produces),
             instructions: None,
         }
@@ -497,6 +495,7 @@ mod tests {
             accepts: vec![],
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: may_produce.iter().map(|s| (*s).into()).collect(),
+            scoped: false,
             trigger: default_trigger(requires, produces),
             instructions: None,
         }
@@ -514,6 +513,7 @@ mod tests {
             accepts: accepts.iter().map(|s| (*s).into()).collect(),
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: vec![],
+            scoped: false,
             trigger: default_trigger(requires, produces),
             instructions: None,
         }
@@ -643,6 +643,21 @@ mod tests {
         let exclude: HashSet<&str> = ["first", "second"].into_iter().collect();
         let order = graph.topological_order_excluding(&exclude);
         assert_eq!(order, vec!["independent", "publish"]);
+    }
+
+    #[test]
+    fn topological_order_filtered_ignores_cycle_among_excluded_protocols() {
+        let protocols = vec![
+            protocol("publish", &["Y"], &["X"]),
+            protocol("implement", &["X"], &["Y"]),
+            protocol("ground", &[], &["seed"]),
+        ];
+        let graph = DependencyGraph::build(&protocols).unwrap();
+        let exclude: HashSet<&str> = ["publish", "implement"].into_iter().collect();
+
+        let order = graph.topological_order_filtered(&exclude).unwrap();
+
+        assert_eq!(order, vec!["ground"]);
     }
 
     // --- Soft edges ---

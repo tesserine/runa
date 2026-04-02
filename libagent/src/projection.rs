@@ -4,13 +4,12 @@
 //! executing any agents. Used by `runa run --dry-run` to preview the cascade
 //! that would result from declared `produces` outputs.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use crate::model::{ProtocolDeclaration, TriggerCondition};
 use crate::selection::{
-    Candidate, CandidateWorkUnitMode, CandidateWorkUnitSource, FreshnessInputMode,
-    collect_candidate_work_units, protocol_freshness_inputs, protocol_relevant_input_types,
-    protocol_scan_incomplete_types,
+    Candidate, EvaluationScope, FreshnessInputMode, candidate_work_units_for_scope,
+    protocol_freshness_inputs, protocol_relevant_input_types, protocol_scan_incomplete_types,
 };
 use crate::store::{ArtifactStore, ValidationStatus};
 
@@ -59,6 +58,7 @@ pub fn project_cascade(
     topological_order: &[&str],
     initial_ready: &[Candidate],
     partially_scanned_types: &HashSet<String>,
+    scope: EvaluationScope<'_>,
 ) -> Vec<ProjectionCandidate> {
     let protocol_map: HashMap<&str, &ProtocolDeclaration> = protocols
         .iter()
@@ -75,7 +75,7 @@ pub fn project_cascade(
 
     loop {
         let Some(next) =
-            discover_ready_candidates_projection(protocols, &projection, topological_order)
+            discover_ready_candidates_projection(protocols, &projection, topological_order, scope)
                 .into_iter()
                 .find(|candidate| {
                     !exhausted.contains(&candidate_key(
@@ -120,6 +120,7 @@ fn discover_ready_candidates_projection(
     protocols: &[ProtocolDeclaration],
     projection: &ProjectionState<'_>,
     topological_order: &[&str],
+    scope: EvaluationScope<'_>,
 ) -> Vec<Candidate> {
     let mut ready = Vec::new();
 
@@ -131,7 +132,7 @@ fn discover_ready_candidates_projection(
             continue;
         };
 
-        let work_units = protocol_work_units_projection(protocol, projection);
+        let work_units = candidate_work_units_for_scope(protocol, scope);
         for work_unit in work_units {
             if candidate_is_ready(protocol, projection, work_unit.as_deref()) {
                 ready.push(Candidate {
@@ -247,13 +248,6 @@ fn derived_completion_timestamp(
         .min()
 }
 
-fn protocol_work_units_projection(
-    protocol: &ProtocolDeclaration,
-    projection: &ProjectionState<'_>,
-) -> BTreeSet<Option<String>> {
-    collect_candidate_work_units(protocol, projection)
-}
-
 fn trigger_is_satisfied(
     condition: &TriggerCondition,
     protocol: &ProtocolDeclaration,
@@ -355,14 +349,6 @@ impl<'a> ProjectionState<'a> {
         changes
     }
 
-    fn projected_work_units(&self, artifact_type: &str) -> BTreeSet<Option<String>> {
-        self.projected_outputs
-            .keys()
-            .filter(|(projected_type, _)| projected_type == artifact_type)
-            .map(|(_, work_unit)| work_unit.clone())
-            .collect()
-    }
-
     fn latest_modification_ms(&self, artifact_type: &str, work_unit: Option<&str>) -> Option<u64> {
         self.store
             .latest_modification_ms(artifact_type, work_unit)
@@ -438,48 +424,6 @@ impl<'a> ProjectionState<'a> {
     }
 }
 
-impl CandidateWorkUnitSource for ProjectionState<'_> {
-    fn is_partially_scanned(&self, artifact_type: &str) -> bool {
-        self.partially_scanned_types.contains(artifact_type)
-    }
-
-    fn artifact_work_units(
-        &self,
-        artifact_type: &str,
-        mode: CandidateWorkUnitMode,
-    ) -> BTreeSet<Option<String>> {
-        let mut work_units: BTreeSet<_> = self
-            .store
-            .instances_of(artifact_type, None)
-            .into_iter()
-            .filter_map(|(_, state)| match mode {
-                CandidateWorkUnitMode::Valid if matches!(state.status, ValidationStatus::Valid) => {
-                    Some(state.work_unit.clone())
-                }
-                CandidateWorkUnitMode::Invalid
-                    if matches!(
-                        state.status,
-                        ValidationStatus::Invalid(_) | ValidationStatus::Malformed(_)
-                    ) =>
-                {
-                    Some(state.work_unit.clone())
-                }
-                CandidateWorkUnitMode::Recorded => Some(state.work_unit.clone()),
-                _ => None,
-            })
-            .collect();
-
-        if matches!(
-            mode,
-            CandidateWorkUnitMode::Valid | CandidateWorkUnitMode::Recorded
-        ) {
-            work_units.extend(self.projected_work_units(artifact_type));
-        }
-
-        work_units
-    }
-}
-
 fn matches_projected_work_unit(
     projected_work_unit: Option<&str>,
     candidate_work_unit: Option<&str>,
@@ -511,6 +455,7 @@ mod tests {
             accepts: Vec::new(),
             produces: produces.iter().map(|value| value.to_string()).collect(),
             may_produce: Vec::new(),
+            scoped: false,
             trigger,
             instructions: None,
         }
@@ -540,49 +485,42 @@ mod tests {
             )
             .unwrap();
 
-        let protocols = vec![
-            protocol(
-                "build",
-                &["input"],
-                &["constrained"],
-                TriggerCondition::OnArtifact {
-                    name: "input".into(),
-                },
-            ),
-            protocol(
-                "verify",
-                &["constrained"],
-                &["done"],
-                TriggerCondition::OnArtifact {
-                    name: "constrained".into(),
-                },
-            ),
-        ];
+        let mut build = protocol(
+            "build",
+            &["input"],
+            &["constrained"],
+            TriggerCondition::OnArtifact {
+                name: "input".into(),
+            },
+        );
+        build.scoped = true;
+        let mut verify = protocol(
+            "verify",
+            &["constrained"],
+            &["done"],
+            TriggerCondition::OnArtifact {
+                name: "constrained".into(),
+            },
+        );
+        verify.scoped = true;
+        let protocols = vec![build, verify];
 
         let plan = project_cascade(
             &protocols,
             &store,
             &["build", "verify"],
-            &[
-                Candidate {
-                    protocol_name: "build".into(),
-                    work_unit: Some("wu-a".into()),
-                },
-                Candidate {
-                    protocol_name: "build".into(),
-                    work_unit: Some("wu-b".into()),
-                },
-            ],
+            &[Candidate {
+                protocol_name: "build".into(),
+                work_unit: Some("wu-a".into()),
+            }],
             &HashSet::new(),
+            EvaluationScope::Scoped("wu-a"),
         );
 
-        assert_eq!(plan.len(), 4);
+        assert_eq!(plan.len(), 2);
         assert_eq!(plan[0].work_unit.as_deref(), Some("wu-a"));
-        assert_eq!(plan[1].work_unit.as_deref(), Some("wu-b"));
-        assert_eq!(plan[2].work_unit.as_deref(), Some("wu-a"));
-        assert_eq!(plan[3].work_unit.as_deref(), Some("wu-b"));
-        assert_eq!(plan[2].projection, ProjectionClass::Projected);
-        assert_eq!(plan[3].projection, ProjectionClass::Projected);
+        assert_eq!(plan[1].work_unit.as_deref(), Some("wu-a"));
+        assert_eq!(plan[1].projection, ProjectionClass::Projected);
     }
 
     #[test]
@@ -617,7 +555,7 @@ mod tests {
             )
             .unwrap();
 
-        let protocol = protocol(
+        let mut protocol = protocol(
             "publish",
             &["request"],
             &["published"],
@@ -625,10 +563,16 @@ mod tests {
                 name: "request".into(),
             },
         );
+        protocol.scoped = true;
         let partials = HashSet::new();
         let projection = ProjectionState::new(&store, &partials);
 
-        let ready = discover_ready_candidates_projection(&[protocol], &projection, &["publish"]);
+        let ready = discover_ready_candidates_projection(
+            &[protocol],
+            &projection,
+            &["publish"],
+            EvaluationScope::Scoped("wu-a"),
+        );
         assert_eq!(
             ready,
             vec![Candidate {
@@ -670,7 +614,12 @@ mod tests {
         let partials = HashSet::new();
         let projection = ProjectionState::new(&store, &partials);
 
-        let ready = discover_ready_candidates_projection(&[protocol], &projection, &["publish"]);
+        let ready = discover_ready_candidates_projection(
+            &[protocol],
+            &projection,
+            &["publish"],
+            EvaluationScope::Unscoped,
+        );
         assert_eq!(
             ready,
             vec![Candidate {
@@ -721,7 +670,7 @@ mod tests {
             )
             .unwrap();
 
-        let protocol = protocol(
+        let mut protocol = protocol(
             "publish",
             &["request"],
             &["published"],
@@ -729,10 +678,16 @@ mod tests {
                 name: "request".into(),
             },
         );
+        protocol.scoped = true;
         let partials = HashSet::new();
         let projection = ProjectionState::new(&store, &partials);
 
-        let ready = discover_ready_candidates_projection(&[protocol], &projection, &["publish"]);
+        let ready = discover_ready_candidates_projection(
+            &[protocol],
+            &projection,
+            &["publish"],
+            EvaluationScope::Scoped("wu-a"),
+        );
         assert_eq!(
             ready,
             vec![Candidate {

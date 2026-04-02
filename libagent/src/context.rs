@@ -338,6 +338,7 @@ mod tests {
             accepts: vec!["notes".into()],
             produces: vec!["implementation".into()],
             may_produce: vec!["scratchpad".into()],
+            scoped: false,
             trigger: crate::TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -409,6 +410,7 @@ mod tests {
             accepts: vec!["notes".into(), "missing".into()],
             produces: Vec::new(),
             may_produce: Vec::new(),
+            scoped: false,
             trigger: crate::TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -512,6 +514,7 @@ mod tests {
             accepts: Vec::new(),
             produces: Vec::new(),
             may_produce: Vec::new(),
+            scoped: false,
             trigger: crate::TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },

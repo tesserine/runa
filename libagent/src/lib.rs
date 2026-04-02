@@ -38,7 +38,10 @@ pub use enforcement::{
 pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use logging::{LoggingError, ResolvedLoggingConfig, configure_tracing, resolve_logging_config};
 pub use manifest::ManifestError;
-pub use model::{ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition};
+pub use model::{
+    ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition,
+    UnscopedOutputRequiresWorkUnitError, validate_output_scope,
+};
 pub use project::{Config, LoadedProject, LogFormat, LoggingConfig, ProjectError, State};
 pub use projection::{ProjectionCandidate, ProjectionClass, project_cascade};
 pub use scan::{
@@ -46,9 +49,9 @@ pub use scan::{
     UnreadableArtifact, scan,
 };
 pub use selection::{
-    Candidate, CandidateStatus, ClassifiedCandidate, ScanTrust, classify_candidates,
-    collect_unsatisfied_conditions, discover_ready_candidates, protocol_relevant_input_types,
-    protocol_relevant_inputs_changed,
+    Candidate, CandidateStatus, ClassifiedCandidate, EvaluationScope, EvaluationTopology,
+    ScanTrust, classify_candidates, collect_unsatisfied_conditions, discover_ready_candidates,
+    protocol_relevant_input_types, protocol_relevant_inputs_changed, resolve_evaluation_topology,
 };
 pub use store::{ArtifactState, ArtifactStore, StoreError, ValidationStatus};
 pub use trigger::{TriggerContext, TriggerResult, evaluate as evaluate_trigger};

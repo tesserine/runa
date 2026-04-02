@@ -40,6 +40,66 @@ pub struct ArtifactType {
     pub schema: serde_json::Value,
 }
 
+impl ArtifactType {
+    /// True when the schema's top-level `required` array includes `work_unit`.
+    pub fn schema_requires_work_unit(&self) -> bool {
+        self.schema
+            .get("required")
+            .and_then(|required| required.as_array())
+            .is_some_and(|required| {
+                required
+                    .iter()
+                    .any(|value| value.as_str() == Some("work_unit"))
+            })
+    }
+
+    /// True when the schema mentions `work_unit` at the top level, either as a
+    /// required field or as a declared property.
+    pub fn schema_mentions_work_unit(&self) -> bool {
+        self.schema_requires_work_unit()
+            || self
+                .schema
+                .get("properties")
+                .and_then(|properties| properties.as_object())
+                .is_some_and(|properties| properties.contains_key("work_unit"))
+    }
+}
+
+/// An unscoped protocol declares an output schema that requires `work_unit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnscopedOutputRequiresWorkUnitError {
+    pub protocol: String,
+    pub artifact_type: String,
+}
+
+impl fmt::Display for UnscopedOutputRequiresWorkUnitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "protocol '{}' is declared unscoped but output artifact type '{}' requires 'work_unit'",
+            self.protocol, self.artifact_type
+        )
+    }
+}
+
+impl std::error::Error for UnscopedOutputRequiresWorkUnitError {}
+
+/// Reject the accepted manifest/output mismatch: unscoped protocols cannot
+/// declare outputs whose schemas require `work_unit`.
+pub fn validate_output_scope(
+    protocol: &ProtocolDeclaration,
+    artifact_type: &ArtifactType,
+) -> Result<(), UnscopedOutputRequiresWorkUnitError> {
+    if !protocol.scoped && artifact_type.schema_requires_work_unit() {
+        return Err(UnscopedOutputRequiresWorkUnitError {
+            protocol: protocol.name.clone(),
+            artifact_type: artifact_type.name.clone(),
+        });
+    }
+
+    Ok(())
+}
+
 /// A protocol's declared relationship to artifacts and its activation condition.
 ///
 /// Protocols declare what they require, accept, produce, and may produce.
@@ -60,6 +120,9 @@ pub struct ProtocolDeclaration {
     /// Artifact types that may be produced; validated if present.
     #[serde(default)]
     pub may_produce: Vec<String>,
+    /// Whether this protocol must be evaluated within a delegated work-unit scope.
+    #[serde(default)]
+    pub scoped: bool,
     /// Condition that activates this protocol.
     pub trigger: TriggerCondition,
     /// Protocol instruction content loaded from the methodology layout
@@ -148,6 +211,7 @@ mod tests {
             accepts: vec!["prior-design".into()],
             produces: vec!["design-doc".into()],
             may_produce: vec!["design-notes".into()],
+            scoped: true,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -241,6 +305,7 @@ mod tests {
             accepts: vec![],
             produces: vec![],
             may_produce: vec![],
+            scoped: false,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
             },
@@ -249,6 +314,24 @@ mod tests {
         let json = serde_json::to_string(&protocol).unwrap();
         let deserialized: ProtocolDeclaration = serde_json::from_str(&json).unwrap();
         assert_eq!(protocol, deserialized);
+    }
+
+    #[test]
+    fn protocol_declaration_defaults_scoped_to_false() {
+        let json = serde_json::json!({
+            "name": "artifact-only",
+            "requires": [],
+            "accepts": [],
+            "produces": [],
+            "may_produce": [],
+            "trigger": {
+                "type": "on_artifact",
+                "name": "constraints"
+            }
+        });
+
+        let deserialized: ProtocolDeclaration = serde_json::from_value(json).unwrap();
+        assert!(!deserialized.scoped);
     }
 
     #[test]
@@ -292,5 +375,96 @@ mod tests {
             tc.to_string(),
             "all_of(on_artifact(X), any_of(on_invalid(Z), on_artifact(Y)))"
         );
+    }
+
+    #[test]
+    fn validate_output_scope_rejects_unscoped_output_requiring_work_unit() {
+        let protocol = ProtocolDeclaration {
+            name: "implement".into(),
+            requires: vec![],
+            accepts: vec![],
+            produces: vec!["implementation".into()],
+            may_produce: vec![],
+            scoped: false,
+            trigger: TriggerCondition::OnArtifact {
+                name: "draft".into(),
+            },
+            instructions: None,
+        };
+        let artifact_type = ArtifactType {
+            name: "implementation".into(),
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "work_unit": { "type": "string" }
+                },
+                "required": ["title", "work_unit"]
+            }),
+        };
+
+        let error = validate_output_scope(&protocol, &artifact_type).unwrap_err();
+        assert_eq!(error.protocol, "implement");
+        assert_eq!(error.artifact_type, "implementation");
+    }
+
+    #[test]
+    fn validate_output_scope_allows_scoped_output_without_required_work_unit() {
+        let protocol = ProtocolDeclaration {
+            name: "summarize".into(),
+            requires: vec![],
+            accepts: vec![],
+            produces: vec!["summary".into()],
+            may_produce: vec![],
+            scoped: true,
+            trigger: TriggerCondition::OnArtifact {
+                name: "draft".into(),
+            },
+            instructions: None,
+        };
+        let artifact_type = ArtifactType {
+            name: "summary".into(),
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" }
+                },
+                "required": ["title"]
+            }),
+        };
+
+        assert!(validate_output_scope(&protocol, &artifact_type).is_ok());
+    }
+
+    #[test]
+    fn schema_mentions_work_unit_when_optional_property_is_declared() {
+        let artifact_type = ArtifactType {
+            name: "summary".into(),
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "work_unit": { "type": "string" }
+                },
+                "required": ["title"]
+            }),
+        };
+
+        assert!(artifact_type.schema_mentions_work_unit());
+        assert!(!artifact_type.schema_requires_work_unit());
+    }
+
+    #[test]
+    fn schema_mentions_work_unit_when_required_without_declared_property() {
+        let artifact_type = ArtifactType {
+            name: "implementation".into(),
+            schema: serde_json::json!({
+                "type": "object",
+                "required": ["title", "work_unit"]
+            }),
+        };
+
+        assert!(artifact_type.schema_mentions_work_unit());
+        assert!(artifact_type.schema_requires_work_unit());
     }
 }

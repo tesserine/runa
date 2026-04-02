@@ -42,6 +42,10 @@ enum Commands {
         /// Emit machine-readable JSON instead of text output
         #[arg(long)]
         json: bool,
+
+        /// Evaluate only the specified delegated work unit
+        #[arg(long)]
+        work_unit: Option<String>,
     },
     /// Build an execution plan for protocols that are ready to run
     Step {
@@ -52,6 +56,10 @@ enum Commands {
         /// Emit machine-readable JSON instead of text output
         #[arg(long)]
         json: bool,
+
+        /// Evaluate only the specified delegated work unit
+        #[arg(long)]
+        work_unit: Option<String>,
     },
     /// Cascade through ready protocols until quiescence
     Run {
@@ -62,6 +70,10 @@ enum Commands {
         /// Emit machine-readable JSON instead of text output
         #[arg(long)]
         json: bool,
+
+        /// Evaluate only the specified delegated work unit
+        #[arg(long)]
+        work_unit: Option<String>,
     },
 }
 
@@ -152,19 +164,43 @@ fn main() {
                 fatal_command_error("scan", &err);
             }
         }
-        Commands::State { json } => {
-            if let Err(err) = commands::state::run(&working_dir, config_override_ref, json) {
+        Commands::State { json, work_unit } => {
+            if let Err(err) = commands::state::run(
+                &working_dir,
+                config_override_ref,
+                json,
+                work_unit.as_deref(),
+            ) {
                 fatal_command_error("state", &err);
             }
         }
-        Commands::Step { dry_run, json } => {
-            if let Err(err) = commands::step::run(&working_dir, config_override_ref, dry_run, json)
-            {
+        Commands::Step {
+            dry_run,
+            json,
+            work_unit,
+        } => {
+            if let Err(err) = commands::step::run(
+                &working_dir,
+                config_override_ref,
+                dry_run,
+                json,
+                work_unit.as_deref(),
+            ) {
                 fatal_command_error("step", &err);
             }
         }
-        Commands::Run { dry_run, json } => {
-            match commands::run::run(&working_dir, config_override_ref, dry_run, json) {
+        Commands::Run {
+            dry_run,
+            json,
+            work_unit,
+        } => {
+            match commands::run::run(
+                &working_dir,
+                config_override_ref,
+                dry_run,
+                json,
+                work_unit.as_deref(),
+            ) {
                 Ok(outcome) => {
                     let exit_code = outcome.exit_code();
                     if exit_code != 0 {
