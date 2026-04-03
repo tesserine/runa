@@ -51,14 +51,14 @@ pub struct ArtifactState {
     pub work_unit: Option<String>,
 }
 
-/// A valid input instance recorded for freshness comparison.
+/// A recorded input instance persisted for freshness comparison.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionInput {
     pub instance_id: String,
     pub content_hash: String,
 }
 
-/// The valid freshness-relevant inputs seen by one protocol execution.
+/// The freshness-relevant inputs seen by one protocol execution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ExecutionInputSnapshot {
     pub artifact_types: BTreeMap<String, Vec<ExecutionInput>>,

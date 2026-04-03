@@ -330,10 +330,9 @@ pub(crate) fn build_execution_plan(
                 work_unit: entry.work_unit.clone(),
                 trigger: protocol.trigger.to_string(),
                 context,
-                input_snapshot: loaded.store.execution_input_snapshot(
-                    libagent::protocol_relevant_input_types(protocol)
-                        .iter()
-                        .map(|name| name.as_str()),
+                input_snapshot: libagent::protocol_execution_input_snapshot(
+                    protocol,
+                    &loaded.store,
                     entry.work_unit.as_deref(),
                 ),
             }

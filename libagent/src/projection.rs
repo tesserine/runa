@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use crate::model::{ProtocolDeclaration, TriggerCondition};
 use crate::selection::{
     Candidate, EvaluationScope, FreshnessInputMode, candidate_work_units_for_scope,
+    execution_input_snapshot_for_freshness_inputs, protocol_execution_record_inputs,
     protocol_freshness_inputs, protocol_relevant_input_types, protocol_scan_incomplete_types,
 };
 use crate::store::{
@@ -116,12 +117,9 @@ pub fn project_cascade(
         let protocol = protocol_map
             .get(next.protocol_name.as_str())
             .expect("projected protocol must exist");
-        let input_snapshot = projection.execution_input_snapshot(
-            protocol_freshness_inputs(protocol)
-                .keys()
-                .map(|name| name.as_str()),
-            next.work_unit.as_deref(),
-        );
+        let freshness_inputs = protocol_execution_record_inputs(protocol);
+        let input_snapshot =
+            projection.execution_input_snapshot(&freshness_inputs, next.work_unit.as_deref());
         let changes =
             projection.record_protocol_outputs(protocol, next.work_unit.as_deref(), input_snapshot);
         exhausted.retain(|candidate| {
@@ -223,10 +221,11 @@ fn protocol_is_current(
     };
 
     let freshness_inputs = protocol_freshness_inputs(protocol);
+    let execution_record_inputs = protocol_execution_record_inputs(protocol);
 
     if let Some(record) = projection.execution_record(&protocol.name, work_unit) {
-        let current_inputs = projection
-            .execution_input_snapshot(freshness_inputs.keys().map(|name| name.as_str()), work_unit);
+        let current_inputs =
+            projection.execution_input_snapshot(&execution_record_inputs, work_unit);
         return record.inputs == current_inputs;
     }
 
@@ -475,18 +474,14 @@ impl<'a> ProjectionState<'a> {
             .or_else(|| self.store.execution_record(protocol, work_unit))
     }
 
-    fn execution_input_snapshot<'b, I>(
+    fn execution_input_snapshot(
         &self,
-        artifact_types: I,
+        freshness_inputs: &HashMap<String, FreshnessInputMode>,
         work_unit: Option<&str>,
-    ) -> ExecutionInputSnapshot
-    where
-        I: IntoIterator<Item = &'b str>,
-    {
-        let mut snapshot = self
-            .store
-            .execution_input_snapshot(artifact_types, work_unit)
-            .artifact_types;
+    ) -> ExecutionInputSnapshot {
+        let mut snapshot =
+            execution_input_snapshot_for_freshness_inputs(self.store, freshness_inputs, work_unit)
+                .artifact_types;
 
         for (artifact_type, inputs) in &mut snapshot {
             inputs.extend(
@@ -734,6 +729,68 @@ mod tests {
             EvaluationScope::Scoped("wu-a"),
         );
         assert!(ready.is_empty());
+    }
+
+    #[test]
+    fn execution_record_reopens_projection_when_any_recorded_invalid_input_changes() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["report", "findings"]);
+        store
+            .record_with_timestamp(
+                "report",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"work_unit":"wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "findings",
+                "done",
+                Path::new("done.json"),
+                &json!({"title":"done","work_unit":"wu-a"}),
+                2000,
+            )
+            .unwrap();
+        let mut protocol = protocol(
+            "repair",
+            &[],
+            &["findings"],
+            TriggerCondition::OnInvalid {
+                name: "report".into(),
+            },
+        );
+        protocol.scoped = true;
+        let snapshot = crate::protocol_execution_input_snapshot(&protocol, &store, Some("wu-a"));
+        store
+            .record_execution("repair", Some("wu-a"), snapshot)
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "report",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"detail":"changed","work_unit":"wu-a"}),
+                3000,
+            )
+            .unwrap();
+        let partials = HashSet::new();
+        let projection = ProjectionState::new(&store, &partials);
+
+        let ready = discover_ready_candidates_projection(
+            &[protocol],
+            &projection,
+            &["repair"],
+            EvaluationScope::Scoped("wu-a"),
+        );
+        assert_eq!(
+            ready,
+            vec![Candidate {
+                protocol_name: "repair".into(),
+                work_unit: Some("wu-a".into()),
+            }]
+        );
     }
 
     #[test]

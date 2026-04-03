@@ -5,12 +5,12 @@
 //! The main entry points are [`discover_ready_candidates`] (returns only ready pairs)
 //! and [`classify_candidates`] (returns all pairs with their classification).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::enforcement::ArtifactFailure;
 use crate::graph::{CycleError, DependencyGraph};
 use crate::model::{ProtocolDeclaration, TriggerCondition};
-use crate::store::ArtifactStore;
+use crate::store::{ArtifactStore, ExecutionInput, ExecutionInputSnapshot, ValidationStatus};
 use crate::trigger::{
     TriggerContext, TriggerResult, derived_completion_timestamp, evaluate as evaluate_trigger,
 };
@@ -79,7 +79,6 @@ pub struct ScanTrust {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FreshnessInputMode {
     AnyRecorded,
-    #[allow(dead_code)] // Reserved for future input-set tracking.
     ValidOnly,
 }
 
@@ -321,8 +320,12 @@ fn protocol_is_current(
     };
 
     if let Some(record) = store.execution_record(&protocol.name, work_unit) {
-        let current_inputs = store
-            .execution_input_snapshot(freshness_inputs.keys().map(|name| name.as_str()), work_unit);
+        let execution_record_inputs = protocol_execution_record_inputs(protocol);
+        let current_inputs = execution_input_snapshot_for_freshness_inputs(
+            store,
+            &execution_record_inputs,
+            work_unit,
+        );
         return record.inputs == current_inputs;
     }
 
@@ -355,6 +358,50 @@ fn record_freshness_input(
         .or_insert(mode);
 }
 
+pub(crate) fn execution_input_snapshot_for_freshness_inputs(
+    store: &ArtifactStore,
+    freshness_inputs: &HashMap<String, FreshnessInputMode>,
+    work_unit: Option<&str>,
+) -> ExecutionInputSnapshot {
+    let mut snapshot = BTreeMap::new();
+
+    for (artifact_type, mode) in freshness_inputs {
+        let mut inputs: Vec<_> = store
+            .instances_of(artifact_type, work_unit)
+            .into_iter()
+            .filter(|(_, state)| match mode {
+                FreshnessInputMode::AnyRecorded => true,
+                FreshnessInputMode::ValidOnly => {
+                    matches!(state.status, ValidationStatus::Valid)
+                }
+            })
+            .map(|(instance_id, state)| ExecutionInput {
+                instance_id: instance_id.to_string(),
+                content_hash: state.content_hash.clone(),
+            })
+            .collect();
+        inputs.sort_by(|left, right| {
+            left.instance_id
+                .cmp(&right.instance_id)
+                .then_with(|| left.content_hash.cmp(&right.content_hash))
+        });
+        snapshot.insert(artifact_type.clone(), inputs);
+    }
+
+    ExecutionInputSnapshot {
+        artifact_types: snapshot,
+    }
+}
+
+pub fn protocol_execution_input_snapshot(
+    protocol: &ProtocolDeclaration,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+) -> ExecutionInputSnapshot {
+    let execution_record_inputs = protocol_execution_record_inputs(protocol);
+    execution_input_snapshot_for_freshness_inputs(store, &execution_record_inputs, work_unit)
+}
+
 fn trigger_freshness_inputs(
     condition: &TriggerCondition,
     out: &mut HashMap<String, FreshnessInputMode>,
@@ -384,6 +431,40 @@ pub(crate) fn protocol_freshness_inputs(
             &mut freshness_inputs,
             name.as_str(),
             FreshnessInputMode::AnyRecorded,
+        );
+    }
+    freshness_inputs
+}
+
+fn trigger_execution_record_inputs(
+    condition: &TriggerCondition,
+    out: &mut HashMap<String, FreshnessInputMode>,
+) {
+    match condition {
+        TriggerCondition::OnArtifact { name } => {
+            record_freshness_input(out, name.as_str(), FreshnessInputMode::ValidOnly);
+        }
+        TriggerCondition::OnChange { name } | TriggerCondition::OnInvalid { name } => {
+            record_freshness_input(out, name.as_str(), FreshnessInputMode::AnyRecorded);
+        }
+        TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
+            for child in conditions {
+                trigger_execution_record_inputs(child, out);
+            }
+        }
+    }
+}
+
+pub(crate) fn protocol_execution_record_inputs(
+    protocol: &ProtocolDeclaration,
+) -> HashMap<String, FreshnessInputMode> {
+    let mut freshness_inputs = HashMap::new();
+    trigger_execution_record_inputs(&protocol.trigger, &mut freshness_inputs);
+    for name in &protocol.requires {
+        record_freshness_input(
+            &mut freshness_inputs,
+            name.as_str(),
+            FreshnessInputMode::ValidOnly,
         );
     }
     freshness_inputs
@@ -983,6 +1064,24 @@ mod tests {
     }
 
     #[test]
+    fn protocol_execution_record_inputs_use_valid_only_for_artifact_and_requires() {
+        let protocol = make_protocol(
+            "publish",
+            &["request"],
+            &[],
+            &["published"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+
+        let inputs = protocol_execution_record_inputs(&protocol);
+
+        assert_eq!(inputs.get("request"), Some(&FreshnessInputMode::ValidOnly));
+    }
+
+    #[test]
     fn protocol_relevant_inputs_changed_ignores_other_work_units() {
         let protocol = make_protocol(
             "review",
@@ -1563,6 +1662,66 @@ mod tests {
         );
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol_name, "publish");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+    }
+
+    #[test]
+    fn execution_record_reopens_when_any_recorded_invalid_input_changes() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["report", "findings"]);
+        store
+            .record_with_timestamp(
+                "report",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"work_unit":"wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "findings",
+                "done",
+                Path::new("done.json"),
+                &json!({"title":"done","work_unit":"wu-a"}),
+                2000,
+            )
+            .unwrap();
+        let mut protocol = make_protocol(
+            "repair",
+            &[],
+            &[],
+            &["findings"],
+            &[],
+            TriggerCondition::OnInvalid {
+                name: "report".into(),
+            },
+        );
+        protocol.scoped = true;
+        let snapshot = protocol_execution_input_snapshot(&protocol, &store, Some("wu-a"));
+        store
+            .record_execution("repair", Some("wu-a"), snapshot)
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "report",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"detail":"changed","work_unit":"wu-a"}),
+                3000,
+            )
+            .unwrap();
+
+        let candidates = discover_ready_candidates_scoped(
+            &[protocol],
+            &store,
+            &["repair"],
+            &HashSet::new(),
+            "wu-a",
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "repair");
         assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
     }
 
