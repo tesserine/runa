@@ -7,91 +7,88 @@ Semantic Versioning.
 
 ## [Unreleased]
 
-### Added
+## [0.1.0] — 2026-04-03
 
-- Add a runnable `examples/quickstart-methodology/` example with a README, manifest, schemas, and protocol instructions for the two-protocol review pipeline used in the methodology authoring guide.
-- Add manifest-declared protocol scoping with `scoped = true`, plus `--work-unit <ID>` support on `runa state`, `runa step`, and `runa run` so delegated execution scope comes from the caller instead of artifact-state sibling discovery.
-- Add persisted execution-record metadata under `.runa/store/execution-records.json`, storing the valid freshness-relevant input set from the last successful execution for each `(protocol, work_unit)` pair.
+First release. Runa is a runtime that makes multi-step AI agent workflows
+reliable by validating every work product against declared schemas, computing
+which steps are ready to run, and delivering only validated inputs to each
+agent invocation.
 
-### Changed
+### Methodology model
 
-- Move the README Documentation section directly after Quick Start, expand its navigation links, and add the methodology authoring guide and interface contract to `AGENTS.md`'s required orientation list.
-- Split CLI execution into `runa step` and `runa run`. `step` now executes or previews only the next concrete protocol invocation, while `run` owns cascade-to-quiescence behavior, tolerant continuation after per-protocol failures, and outcome-specific exit codes (`0`, `2`, `3`, `130` for interrupted).
+- Methodology plugins register via TOML manifest declaring artifact types,
+  protocols, and trigger conditions.
+- Artifact types carry JSON Schemas; every instance is validated on scan.
+- Protocols declare artifact relationships through four edges: requires,
+  accepts, produces, may_produce. Execution order emerges from the dependency
+  graph — it is not declared.
+- Three trigger primitives — on_artifact, on_change, on_invalid — compose
+  through all_of and any_of with arbitrary nesting.
+- Protocol scoping: unscoped (default) or scoped with caller-supplied work
+  unit via `--work-unit`.
+- Directory layout convention derives paths from declared names: schemas at
+  `schemas/{name}.schema.json`, instructions at
+  `protocols/{name}/PROTOCOL.md`.
 
-- Rename the readiness command from `runa status` to `runa state` for naming
-  consistency with the container-runtime model runa follows. This is a
-  breaking CLI change with no compatibility alias.
-- Define methodology layout standard in the interface contract. Schema content
-  is derived from `schemas/{artifact_type_name}.schema.json` and protocol
-  instruction file existence is validated at `protocols/{protocol_name}/PROTOCOL.md`,
-  both relative to the manifest directory. The manifest TOML no longer includes
-  explicit `schema` fields on artifact type declarations.
-- Preload protocol instruction content during manifest parsing and include it in
-  the shared context payload used by `runa step --dry-run`, so agents receive
-  the exact self-contained instructions that real execution uses.
-- Allow `runa step` to execute a configured `[agent].command` by sending each
-  planned protocol as a rendered natural-language prompt on stdin, while
-  keeping `--dry-run` as the exact execution preview surface.
-- Pass candidate-specific `runa-mcp` launch configuration through
-  `RUNA_MCP_CONFIG` for both dry-run inspection and live `step` execution, so
-  agent wrappers can attach the advertised MCP tools to the same prompt-driven
-  workflow.
-- Simplify `runa-mcp` into a pure tool server with required `--protocol` and
-  optional `--work-unit` arguments, removing workspace scanning, candidate
-  selection, and shutdown postcondition checks from the MCP process.
-- Replace `run --dry-run`'s schema-synthesis shadow-store simulation with a
-  graph-based projection that derives downstream execution entirely from
-  manifest topology, current evaluated work-unit state, and assumed-success
-  `produces` outputs.
-- Make readiness evaluation and dry-run projection scope-driven: unscoped commands now evaluate only unscoped protocols, scoped commands evaluate only scoped protocols for the requested work unit, and no readiness path enumerates sibling work units from artifact state.
+### CLI
 
-### Fixed
+- `runa init` — initialize a project from a methodology manifest.
+- `runa scan` — reconcile the artifact workspace into the store; classifies
+  artifacts as valid, invalid, malformed, or removed.
+- `runa list` — display protocols in topological execution order with
+  dependency and trigger details.
+- `runa state` — evaluate and classify protocol readiness as READY, BLOCKED,
+  or WAITING. Supports `--json` and `--work-unit`.
+- `runa step` — execute or preview (`--dry-run`) the next ready protocol.
+  Delivers a natural-language context prompt on stdin and exports
+  `RUNA_MCP_CONFIG` for agent wrappers.
+- `runa run` — walk the ready frontier to quiescence with tolerant
+  continuation after per-protocol failures, outcome-specific exit codes
+  (0, 2, 3, 130), and boundary-scoped Ctrl-C interrupt handling.
+- `runa doctor` — check project health: artifact validity, protocol
+  readiness, cycle detection.
+- Configuration resolution chain: `--config` flag, `RUNA_CONFIG` env var,
+  `.runa/config.toml`, XDG config. First match wins.
 
-- Make cycle detection and execution ordering respect the active evaluation
-  scope, so out-of-scope hard cycles no longer warn, suppress execution plans,
-  or force `runa run --dry-run` to exit `3`, while in-scope cycles still warn
-  and remain non-executable.
-- Make `runa run` derive quiescent completion from the shared waiting-state
-  enum instead of the display string `"outputs are current"`, so the command
-  no longer reports blocked quiescence when non-blocking waiting messages
-  change wording.
-- Make `runa state` and `runa step` share one executable definition by
-  reporting in-scope hard-cycle participants as `WAITING` with an explicit
-  cycle condition instead of showing them as `READY` and dropping them later.
-- Reject malformed methodology manifests earlier when an unscoped protocol declares a `produces` or `may_produce` schema whose top-level `required` array includes `work_unit`, so `runa state`, `runa step --dry-run`, and `runa-mcp` no longer disagree about executability.
-- Make `on_artifact` and required-input readiness existential over valid instances: mixed invalid, malformed, or stale siblings no longer block `runa state`, `runa step --dry-run`, or `runa run --dry-run` when a valid instance exists, while artifact health reporting stays unchanged and `on_artifact` waiting reasons now report the absence of valid instances.
-- Revert freshness suppression for `on_artifact` and required inputs to use any recorded sibling change, so invalidated or removed previously valid inputs reopen work instead of leaving stale outputs marked current in readiness evaluation or dry-run projection.
-- Make freshness suppression compare the current valid input set against the last successful execution record when available, falling back to timestamp freshness only when no record exists. This avoids spurious reruns from newly invalid siblings while still reopening work when a previously valid input disappears or changes.
-- Make the quickstart example's `review` protocol require both `requirements` and `design`, matching runa's declared-input injection contract, and add a regression test covering `runa step --dry-run --json`.
-- Fail live `runa step` and `runa run` explicitly on non-Linux platforms instead of silently dropping Linux-only execution guarantees.
-- Restore `runa run`'s double-`Ctrl-C` escape hatch: the first interrupt remains a graceful boundary-scoped stop, and the second forces immediate exit with status `130`.
-- Preserve exhausted live `runa step` candidates across unrelated workspace
-  transitions by reopening previously executed work only when the changed
-  artifact types overlap that protocol's required or trigger-referenced inputs.
-- Preserve valid Unix artifact filenames containing non-UTF8 bytes across
-  `.runa/store` persistence and live `runa step` prompt rendering by keeping
-  exact paths internally, storing a byte-preserving encoded path on disk, and
-  exposing only display-only `display_path` strings in the dry-run context
-  payload.
-- Wrap the documented Claude example wrapper's `--mcp-config` file in Claude's
-  required `mcpServers.runa` schema and export absolute resolved MCP command
-  and config paths from `runa step`, so live agent execution no longer depends
-  on the wrapper's working directory.
-- Move prompt rendering into libagent so live `runa step` writes the agent's
-  prose prompt on stdin while `runa-mcp` advertises tool capabilities only.
-- Preserve `status` and `step` readiness reporting when scans encounter
-  unreadable produced artifacts by disabling freshness suppression for the
-  affected output type instead of blocking protocols outright.
-- Restore `runa step` MCP discovery so `--dry-run` remains a planning-only
-  preview when `runa-mcp` is absent, while live execution prefers a sibling
-  `runa-mcp` binary and falls back to `PATH` for split-install layouts.
-- Make `runa run` reopen exhausted work after postcondition-failing
-  reconciliations or agent-failing reconciliations that still emitted usable
-  artifacts when those reconciliations changed relevant inputs, and stop
-  treating `may_produce` outputs as guaranteed in `run --dry-run`.
-- Reject scope-mismatched MCP invocations so `runa-mcp` now fails fast when a
-  scoped protocol is invoked without `--work-unit` or an unscoped protocol is
-  invoked with one.
-- Make `runa run` treat unresolved hard dependency cycles as blocked quiescence
-  instead of false success, and keep `run --dry-run --json` current-entry
-  contexts tied to real on-disk inputs instead of projected accepted artifacts.
+### MCP server
+
+- `runa-mcp` — single-session stdio MCP server serving one protocol
+  invocation per process.
+- Each output artifact type (produces and may_produce) becomes one MCP tool
+  with a schema-derived input schema.
+- Validates artifact instances against the full schema before writing to the
+  workspace. Invalid artifacts are rejected with validation error details.
+- Scope validation: rejects scoped protocols without `--work-unit` and
+  unscoped protocols with one.
+
+### Execution model
+
+- Agent execution via configurable `[agent].command` with a rendered
+  natural-language prompt on stdin.
+- `RUNA_MCP_CONFIG` exports the resolved runa-mcp command, arguments, and
+  environment so agent wrappers can launch the MCP server as a child process.
+- Precondition enforcement before execution; postcondition enforcement after.
+  Requires-edge inputs must have at least one valid instance. Produces-edge
+  outputs must all exist and validate.
+- Freshness suppression skips work whose valid outputs are current, using
+  execution-record input-set comparison with timestamp fallback.
+- Graph-based dry-run projection for `runa run --dry-run` derives the
+  optimistic cascade from manifest topology without synthesizing artifacts.
+- Scope-driven evaluation: unscoped and scoped commands see only their
+  respective protocols. No readiness path enumerates sibling work units from
+  artifact state.
+
+### Runtime
+
+- Artifact store under `.runa/store/` with content hashing (canonical JSON,
+  SHA-256), modification timestamps, and schema-hash tracking.
+- Execution records persisted per (protocol, work_unit) pair for freshness
+  decisions across invocations.
+- Scan-gap awareness: unreadable files become metadata rather than command
+  failures; partial scans conservatively block affected protocols.
+- Rust 2024 edition. Three-crate workspace: libagent (domain logic),
+  runa-cli, runa-mcp.
+- Linux target for live execution. Non-Linux platforms are rejected
+  explicitly before agent launch.
+- Quickstart example: a two-protocol review pipeline with manifest, schemas,
+  and protocol instructions.
