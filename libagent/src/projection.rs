@@ -9,9 +9,13 @@ use std::collections::{HashMap, HashSet};
 use crate::model::{ProtocolDeclaration, TriggerCondition};
 use crate::selection::{
     Candidate, EvaluationScope, FreshnessInputMode, candidate_work_units_for_scope,
+    collect_satisfied_execution_record_inputs, execution_input_snapshot_for_freshness_inputs,
     protocol_freshness_inputs, protocol_relevant_input_types, protocol_scan_incomplete_types,
 };
-use crate::store::{ArtifactStore, ValidationStatus};
+use crate::store::{
+    ArtifactStore, ExecutionInput, ExecutionInputSnapshot, ExecutionRecord, ValidationStatus,
+    raw_content_hash,
+};
 
 /// Whether a projected candidate is evaluated from current artifact state or
 /// from assumed-success outputs of an earlier projected step.
@@ -42,6 +46,15 @@ struct CandidateKey {
 struct ProjectedChange {
     artifact_type: String,
     work_unit: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectedOutput {
+    artifact_type: String,
+    work_unit: Option<String>,
+    producer: CandidateKey,
+    input: ExecutionInput,
+    timestamp_ms: u64,
 }
 
 /// Project the full optimistic execution cascade to quiescence.
@@ -104,7 +117,13 @@ pub fn project_cascade(
         let protocol = protocol_map
             .get(next.protocol_name.as_str())
             .expect("projected protocol must exist");
-        let changes = projection.record_protocol_outputs(protocol, next.work_unit.as_deref());
+        let execution_record =
+            projection.protocol_execution_record(protocol, next.work_unit.as_deref());
+        let changes = projection.record_protocol_outputs(
+            protocol,
+            next.work_unit.as_deref(),
+            execution_record,
+        );
         exhausted.retain(|candidate| {
             let protocol = protocol_map
                 .get(candidate.protocol_name.as_str())
@@ -204,6 +223,12 @@ fn protocol_is_current(
     };
 
     let freshness_inputs = protocol_freshness_inputs(protocol);
+
+    if let Some(record) = projection.execution_record(&protocol.name, work_unit) {
+        let current_inputs =
+            projection.execution_input_snapshot(record.input_modes.iter(), work_unit);
+        return record.inputs == current_inputs;
+    }
 
     freshness_inputs
         .iter()
@@ -306,7 +331,8 @@ fn candidate_key(protocol_name: &str, work_unit: Option<&str>) -> CandidateKey {
 struct ProjectionState<'a> {
     store: &'a ArtifactStore,
     partially_scanned_types: &'a HashSet<String>,
-    projected_outputs: HashMap<(String, Option<String>), u64>,
+    projected_outputs: Vec<ProjectedOutput>,
+    projected_execution_records: HashMap<CandidateKey, ExecutionRecord>,
     next_timestamp_ms: u64,
 }
 
@@ -323,7 +349,8 @@ impl<'a> ProjectionState<'a> {
         Self {
             store,
             partially_scanned_types,
-            projected_outputs: HashMap::new(),
+            projected_outputs: Vec::new(),
+            projected_execution_records: HashMap::new(),
             next_timestamp_ms,
         }
     }
@@ -332,14 +359,36 @@ impl<'a> ProjectionState<'a> {
         &mut self,
         protocol: &ProtocolDeclaration,
         work_unit: Option<&str>,
+        execution_record: ExecutionRecord,
     ) -> Vec<ProjectedChange> {
+        let producer = candidate_key(&protocol.name, work_unit);
+        self.projected_execution_records
+            .insert(producer.clone(), execution_record);
         let mut changes = Vec::new();
         for artifact_type in &protocol.produces {
             let scoped_work_unit = work_unit.map(str::to_owned);
-            self.projected_outputs.insert(
-                (artifact_type.clone(), scoped_work_unit.clone()),
-                self.next_timestamp_ms,
-            );
+            self.projected_outputs.retain(|output| {
+                !(output.artifact_type == *artifact_type
+                    && output.producer == producer
+                    && output.work_unit == scoped_work_unit)
+            });
+            let timestamp_ms = self.next_timestamp_ms;
+            self.projected_outputs.push(ProjectedOutput {
+                artifact_type: artifact_type.clone(),
+                work_unit: scoped_work_unit.clone(),
+                producer: producer.clone(),
+                input: ExecutionInput {
+                    instance_id: projected_instance_id(&producer, artifact_type),
+                    content_hash: raw_content_hash(
+                        format!(
+                            "{}:{}:{:?}:{}",
+                            producer.protocol_name, artifact_type, producer.work_unit, timestamp_ms
+                        )
+                        .as_bytes(),
+                    ),
+                },
+                timestamp_ms,
+            });
             self.next_timestamp_ms += 1;
             changes.push(ProjectedChange {
                 artifact_type: artifact_type.clone(),
@@ -356,14 +405,11 @@ impl<'a> ProjectionState<'a> {
             .chain(
                 self.projected_outputs
                     .iter()
-                    .filter(|((projected_type, projected_work_unit), _)| {
-                        projected_type == artifact_type
-                            && matches_projected_work_unit(
-                                projected_work_unit.as_deref(),
-                                work_unit,
-                            )
+                    .filter(|output| {
+                        output.artifact_type == artifact_type
+                            && matches_projected_work_unit(output.work_unit.as_deref(), work_unit)
                     })
-                    .map(|(_, timestamp)| *timestamp),
+                    .map(|output| output.timestamp_ms),
             )
             .max()
     }
@@ -379,27 +425,21 @@ impl<'a> ProjectionState<'a> {
             .chain(
                 self.projected_outputs
                     .iter()
-                    .filter(|((projected_type, projected_work_unit), _)| {
-                        projected_type == artifact_type
-                            && matches_projected_work_unit(
-                                projected_work_unit.as_deref(),
-                                work_unit,
-                            )
+                    .filter(|output| {
+                        output.artifact_type == artifact_type
+                            && matches_projected_work_unit(output.work_unit.as_deref(), work_unit)
                     })
-                    .map(|(_, timestamp)| *timestamp),
+                    .map(|output| output.timestamp_ms),
             )
             .max()
     }
 
     fn type_has_any_valid(&self, artifact_type: &str, work_unit: Option<&str>) -> bool {
         self.store.has_any_valid(artifact_type, work_unit)
-            || self
-                .projected_outputs
-                .iter()
-                .any(|((projected_type, projected_work_unit), _)| {
-                    projected_type == artifact_type
-                        && matches_projected_work_unit(projected_work_unit.as_deref(), work_unit)
-                })
+            || self.projected_outputs.iter().any(|output| {
+                output.artifact_type == artifact_type
+                    && matches_projected_work_unit(output.work_unit.as_deref(), work_unit)
+            })
     }
 
     fn type_is_fully_valid(&self, artifact_type: &str, work_unit: Option<&str>) -> bool {
@@ -414,13 +454,91 @@ impl<'a> ProjectionState<'a> {
         real_instances
             .iter()
             .any(|(_, state)| matches!(state.status, ValidationStatus::Valid))
-            || self
-                .projected_outputs
-                .iter()
-                .any(|((projected_type, projected_work_unit), _)| {
-                    projected_type == artifact_type
-                        && matches_projected_work_unit(projected_work_unit.as_deref(), work_unit)
-                })
+            || self.projected_outputs.iter().any(|output| {
+                output.artifact_type == artifact_type
+                    && matches_projected_work_unit(output.work_unit.as_deref(), work_unit)
+            })
+    }
+
+    fn execution_record(
+        &self,
+        protocol: &str,
+        work_unit: Option<&str>,
+    ) -> Option<&ExecutionRecord> {
+        let key = candidate_key(protocol, work_unit);
+        self.projected_execution_records
+            .get(&key)
+            .or_else(|| self.store.execution_record(protocol, work_unit))
+    }
+
+    fn execution_input_snapshot<'b, I>(
+        &self,
+        freshness_inputs: I,
+        work_unit: Option<&str>,
+    ) -> ExecutionInputSnapshot
+    where
+        I: IntoIterator<Item = (&'b String, &'b FreshnessInputMode)>,
+    {
+        let mut snapshot =
+            execution_input_snapshot_for_freshness_inputs(self.store, freshness_inputs, work_unit)
+                .artifact_types;
+
+        for (artifact_type, inputs) in &mut snapshot {
+            inputs.extend(
+                self.projected_outputs
+                    .iter()
+                    .filter(|output| {
+                        output.artifact_type == *artifact_type
+                            && matches_projected_work_unit(output.work_unit.as_deref(), work_unit)
+                    })
+                    .map(|output| output.input.clone()),
+            );
+            inputs.sort_by(|left, right| {
+                left.instance_id
+                    .cmp(&right.instance_id)
+                    .then_with(|| left.content_hash.cmp(&right.content_hash))
+            });
+        }
+
+        ExecutionInputSnapshot {
+            artifact_types: snapshot,
+        }
+    }
+
+    fn protocol_execution_record(
+        &self,
+        protocol: &ProtocolDeclaration,
+        work_unit: Option<&str>,
+    ) -> ExecutionRecord {
+        let mut input_modes = HashMap::new();
+        collect_satisfied_execution_record_inputs(
+            &protocol.trigger,
+            &mut input_modes,
+            &|condition| trigger_is_satisfied(condition, protocol, self, work_unit),
+        );
+        for artifact_type in &protocol.requires {
+            input_modes
+                .entry(artifact_type.clone())
+                .or_insert(FreshnessInputMode::ValidOnly);
+        }
+
+        let input_modes: std::collections::BTreeMap<_, _> = input_modes.into_iter().collect();
+        let inputs = self.execution_input_snapshot(input_modes.iter(), work_unit);
+
+        ExecutionRecord {
+            input_modes,
+            inputs,
+        }
+    }
+}
+
+fn projected_instance_id(producer: &CandidateKey, artifact_type: &str) -> String {
+    match producer.work_unit.as_deref() {
+        Some(work_unit) => format!(
+            "__projected__{}__{}__{}",
+            producer.protocol_name, artifact_type, work_unit
+        ),
+        None => format!("__projected__{}__{}", producer.protocol_name, artifact_type),
     }
 }
 
@@ -577,6 +695,207 @@ mod tests {
             ready,
             vec![Candidate {
                 protocol_name: "publish".into(),
+                work_unit: Some("wu-a".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn execution_record_suppresses_invalid_sibling_projection_rerun() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["request", "published"]);
+        store
+            .record_with_timestamp(
+                "request",
+                "good",
+                Path::new("good.json"),
+                &json!({"title":"good","work_unit":"wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "published",
+                "good",
+                Path::new("published.json"),
+                &json!({"title":"published","work_unit":"wu-a"}),
+                2000,
+            )
+            .unwrap();
+        let snapshot = store.execution_input_snapshot(["request"], Some("wu-a"));
+        store
+            .record_execution(
+                "publish",
+                Some("wu-a"),
+                ExecutionRecord {
+                    input_modes: [("request".to_string(), FreshnessInputMode::ValidOnly)]
+                        .into_iter()
+                        .collect(),
+                    inputs: snapshot,
+                },
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"work_unit":"wu-a"}),
+                3000,
+            )
+            .unwrap();
+
+        let mut protocol = protocol(
+            "publish",
+            &["request"],
+            &["published"],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+        protocol.scoped = true;
+        let partials = HashSet::new();
+        let projection = ProjectionState::new(&store, &partials);
+
+        let ready = discover_ready_candidates_projection(
+            &[protocol],
+            &projection,
+            &["publish"],
+            EvaluationScope::Scoped("wu-a"),
+        );
+        assert!(ready.is_empty());
+    }
+
+    #[test]
+    fn execution_record_suppresses_invalid_sibling_projection_for_mixed_any_of_trigger() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["request", "published"]);
+        store
+            .record_with_timestamp(
+                "request",
+                "good",
+                Path::new("good.json"),
+                &json!({"title":"good","work_unit":"wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "published",
+                "good",
+                Path::new("published.json"),
+                &json!({"title":"published","work_unit":"wu-a"}),
+                2000,
+            )
+            .unwrap();
+
+        let mut protocol = protocol(
+            "publish",
+            &["request"],
+            &["published"],
+            TriggerCondition::AnyOf {
+                conditions: vec![
+                    TriggerCondition::OnArtifact {
+                        name: "request".into(),
+                    },
+                    TriggerCondition::OnChange {
+                        name: "request".into(),
+                    },
+                ],
+            },
+        );
+        protocol.scoped = true;
+        let partials = HashSet::new();
+        let projection = ProjectionState::new(&store, &partials);
+
+        store
+            .record_execution(
+                "publish",
+                Some("wu-a"),
+                projection.protocol_execution_record(&protocol, Some("wu-a")),
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"work_unit":"wu-a"}),
+                3000,
+            )
+            .unwrap();
+        let projection = ProjectionState::new(&store, &partials);
+
+        let ready = discover_ready_candidates_projection(
+            &[protocol],
+            &projection,
+            &["publish"],
+            EvaluationScope::Scoped("wu-a"),
+        );
+        assert!(ready.is_empty());
+    }
+
+    #[test]
+    fn execution_record_reopens_projection_when_any_recorded_invalid_input_changes() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["report", "findings"]);
+        store
+            .record_with_timestamp(
+                "report",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"work_unit":"wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "findings",
+                "done",
+                Path::new("done.json"),
+                &json!({"title":"done","work_unit":"wu-a"}),
+                2000,
+            )
+            .unwrap();
+        let mut protocol = protocol(
+            "repair",
+            &[],
+            &["findings"],
+            TriggerCondition::OnInvalid {
+                name: "report".into(),
+            },
+        );
+        protocol.scoped = true;
+        let partials = HashSet::new();
+        let projection = ProjectionState::new(&store, &partials);
+        store
+            .record_execution(
+                "repair",
+                Some("wu-a"),
+                projection.protocol_execution_record(&protocol, Some("wu-a")),
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "report",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"detail":"changed","work_unit":"wu-a"}),
+                3000,
+            )
+            .unwrap();
+        let projection = ProjectionState::new(&store, &partials);
+
+        let ready = discover_ready_candidates_projection(
+            &[protocol],
+            &projection,
+            &["repair"],
+            EvaluationScope::Scoped("wu-a"),
+        );
+        assert_eq!(
+            ready,
+            vec![Candidate {
+                protocol_name: "repair".into(),
                 work_unit: Some("wu-a".into()),
             }]
         );

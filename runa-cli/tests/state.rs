@@ -2441,3 +2441,110 @@ trigger = { type = "on_artifact", name = "request" }
     assert!(protocols[0].get("precondition_failures").is_none());
     assert!(protocols[0].get("unsatisfied_conditions").is_none());
 }
+
+#[test]
+fn state_uses_execution_record_to_suppress_invalid_sibling_rerun() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "request"
+
+[[artifact_types]]
+name = "published"
+
+[[protocols]]
+name = "publish"
+requires = ["request"]
+produces = ["published"]
+trigger = { type = "on_artifact", name = "request" }
+"#,
+        &[
+            (
+                "request",
+                r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+            ),
+            (
+                "published",
+                r#"{"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}}}"#,
+            ),
+        ],
+        &["publish"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("request")).unwrap();
+    fs::create_dir_all(workspace.join("published")).unwrap();
+    fs::write(workspace.join("request/good.json"), r#"{"title":"ok"}"#).unwrap();
+    fs::write(workspace.join("request/bad.json"), r#"{"bad":true}"#).unwrap();
+    fs::write(
+        workspace.join("published/current.json"),
+        r#"{"title":"done"}"#,
+    )
+    .unwrap();
+
+    scan_project(&project_dir);
+
+    let request_store: serde_json::Value = serde_json::from_slice(
+        &fs::read(project_dir.join(".runa/store/request/good.json")).unwrap(),
+    )
+    .unwrap();
+    let manifest = libagent::manifest::parse(&manifest_path).unwrap();
+    let execution_records = serde_json::json!({
+        "contract_hash": libagent::execution_contract_hash(&manifest),
+        "records": [
+            {
+                "protocol": "publish",
+                "input_modes": {
+                    "request": "valid_only"
+                },
+                "inputs": {
+                    "artifact_types": {
+                        "request": [
+                            {
+                                "instance_id": "good",
+                                "content_hash": request_store["content_hash"].as_str().unwrap()
+                            }
+                        ]
+                    }
+                }
+            }
+        ]
+    });
+    fs::write(
+        project_dir.join(".runa/store/execution-records.json"),
+        serde_json::to_vec_pretty(&execution_records).unwrap(),
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let protocols = value["protocols"].as_array().unwrap();
+    assert_eq!(protocols.len(), 1, "{value:#}");
+    assert_eq!(protocols[0]["name"], "publish");
+    assert_eq!(protocols[0]["status"], "waiting");
+    assert_eq!(protocols[0]["trigger"], "satisfied");
+    assert_eq!(
+        protocols[0]["unsatisfied_conditions"],
+        serde_json::json!(["outputs are current"])
+    );
+}

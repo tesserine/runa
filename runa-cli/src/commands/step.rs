@@ -8,6 +8,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
 
+use libagent::ExecutionRecord;
 use libagent::context::{
     ArtifactRelationship, ContextInjection, ContextInjectionView, render_context_prompt,
 };
@@ -51,6 +52,11 @@ pub enum StepError {
         protocol: String,
         work_unit: Option<String>,
         source: libagent::EnforcementError,
+    },
+    PostExecutionRecord {
+        protocol: String,
+        work_unit: Option<String>,
+        source: libagent::StoreError,
     },
 }
 
@@ -138,6 +144,20 @@ impl fmt::Display for StepError {
                     "post-execution reconciliation failed for protocol '{protocol}': agent command succeeded but protocol outputs did not satisfy the contract\n{source}"
                 ),
             },
+            StepError::PostExecutionRecord {
+                protocol,
+                work_unit,
+                source,
+            } => match work_unit {
+                Some(work_unit) => write!(
+                    f,
+                    "post-execution reconciliation failed for protocol '{protocol}' (work_unit={work_unit}): agent command succeeded but execution metadata could not be recorded: {source}"
+                ),
+                None => write!(
+                    f,
+                    "post-execution reconciliation failed for protocol '{protocol}': agent command succeeded but execution metadata could not be recorded: {source}"
+                ),
+            },
         }
     }
 }
@@ -155,6 +175,7 @@ impl std::error::Error for StepError {
             StepError::AgentCommandFailed { .. } => None,
             StepError::PostExecutionScan { source, .. } => Some(source),
             StepError::PostExecutionEnforcement { source, .. } => Some(source),
+            StepError::PostExecutionRecord { source, .. } => Some(source),
         }
     }
 }
@@ -185,6 +206,8 @@ pub(crate) struct PlanEntry {
     pub(crate) mcp_config: McpServerConfig,
     #[serde(serialize_with = "serialize_context")]
     pub(crate) context: ContextInjection,
+    #[serde(skip)]
+    pub(crate) execution_record: ExecutionRecord,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -200,6 +223,7 @@ pub(crate) struct PlannedEntry {
     pub(crate) work_unit: Option<String>,
     pub(crate) trigger: String,
     pub(crate) context: ContextInjection,
+    pub(crate) execution_record: ExecutionRecord,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -306,6 +330,12 @@ pub(crate) fn build_execution_plan(
                 work_unit: entry.work_unit.clone(),
                 trigger: protocol.trigger.to_string(),
                 context,
+                execution_record: libagent::protocol_execution_record(
+                    protocol,
+                    &loaded.store,
+                    entry.work_unit.as_deref(),
+                    &scan_findings.affected_types,
+                ),
             }
         })
         .collect()
@@ -479,6 +509,19 @@ fn execute_live_single(
         work_unit: execution_entry.work_unit.clone(),
         source,
     })?;
+
+    loaded
+        .store
+        .record_execution(
+            &execution_entry.protocol,
+            execution_entry.work_unit.as_deref(),
+            execution_entry.execution_record.clone(),
+        )
+        .map_err(|source| StepError::PostExecutionRecord {
+            protocol: execution_entry.protocol.clone(),
+            work_unit: execution_entry.work_unit.clone(),
+            source,
+        })?;
 
     let refreshed = evaluate_execution_state(loaded, working_dir, &scan_result, scope);
 
@@ -681,6 +724,7 @@ pub(crate) fn build_plan_entries(
                 entry.work_unit.as_deref(),
             ),
             context: entry.context,
+            execution_record: entry.execution_record,
         })
         .collect()
 }

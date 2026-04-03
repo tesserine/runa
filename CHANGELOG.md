@@ -11,6 +11,7 @@ Semantic Versioning.
 
 - Add a runnable `examples/quickstart-methodology/` example with a README, manifest, schemas, and protocol instructions for the two-protocol review pipeline used in the methodology authoring guide.
 - Add manifest-declared protocol scoping with `scoped = true`, plus `--work-unit <ID>` support on `runa state`, `runa step`, and `runa run` so delegated execution scope comes from the caller instead of artifact-state sibling discovery.
+- Add persisted execution-record metadata under `.runa/store/execution-records.json`, storing the valid freshness-relevant input set from the last successful execution for each `(protocol, work_unit)` pair.
 
 ### Changed
 
@@ -60,6 +61,7 @@ Semantic Versioning.
 - Reject malformed methodology manifests earlier when an unscoped protocol declares a `produces` or `may_produce` schema whose top-level `required` array includes `work_unit`, so `runa state`, `runa step --dry-run`, and `runa-mcp` no longer disagree about executability.
 - Make `on_artifact` and required-input readiness existential over valid instances: mixed invalid, malformed, or stale siblings no longer block `runa state`, `runa step --dry-run`, or `runa run --dry-run` when a valid instance exists, while artifact health reporting stays unchanged and `on_artifact` waiting reasons now report the absence of valid instances.
 - Revert freshness suppression for `on_artifact` and required inputs to use any recorded sibling change, so invalidated or removed previously valid inputs reopen work instead of leaving stale outputs marked current in readiness evaluation or dry-run projection.
+- Make freshness suppression compare the current valid input set against the last successful execution record when available, falling back to timestamp freshness only when no record exists. This avoids spurious reruns from newly invalid siblings while still reopening work when a previously valid input disappears or changes.
 - Make the quickstart example's `review` protocol require both `requirements` and `design`, matching runa's declared-input injection contract, and add a regression test covering `runa step --dry-run --json`.
 - Fail live `runa step` and `runa run` explicitly on non-Linux platforms instead of silently dropping Linux-only execution guarantees.
 - Restore `runa run`'s double-`Ctrl-C` escape hatch: the first interrupt remains a graceful boundary-scoped stop, and the second forces immediate exit with status `130`.

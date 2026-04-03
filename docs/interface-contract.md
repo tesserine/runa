@@ -37,7 +37,7 @@ A protocol declaration:
 - **may_produce** — zero or more artifact type names. Absent optional outputs do not fail postconditions, but they also do not create completion evidence. If output should always be produced, the artifact type belongs in `produces`.
 - **scoped** — optional boolean, default `false`. When `false`, the protocol participates only in unscoped evaluation. When `true`, the protocol participates only in caller-scoped evaluation for an explicit work unit supplied by the orchestrator.
 - Output schema consistency is part of manifest validity for unscoped protocols. Unscoped protocols (`scoped = false` or omitted) must not declare output schemas in `produces` or `may_produce` whose top-level `required` array includes `work_unit`.
-- Completion is derived from output artifact timestamps. Protocols with no `produces` types are never suppressed by freshness — runa cannot derive completion from artifacts that don't exist. If a protocol needs completion tracking, it must declare at least one `produces` artifact type.
+- Freshness suppression uses successful execution records when available. After a protocol finishes with passing postconditions, runa records the freshness-relevant input set it processed for that `(protocol, work_unit)` pair. Those execution-record snapshots are mode-aware: `on_change` and `on_invalid` preserve any recorded matching instance, while `on_artifact` and `requires` compare only valid instances. Later evaluations suppress reruns only when the current mode-appropriate input set matches that execution record. If no execution record exists, runa falls back to output artifact timestamps, which still compare relevant inputs by latest recorded modification time. Protocols with no `produces` types are never suppressed by freshness.
 - **trigger** — one trigger condition (see below)
 
 Topology is not declared. It emerges from the graph of requires/produces/may_produce relationships across protocols. A pipeline emerges when protocols chain linearly. A graph emerges when protocols fan in or fan out. A cycle emerges when a protocol produces an artifact type that another protocol's trigger monitors for change. The methodology does not tell runa what shape it is. runa computes the shape from declarations.
@@ -49,10 +49,10 @@ Scope is not topology. Dependency edges remain type-level. `scoped = true` does 
 A trigger condition defines when runa should activate a protocol. Triggers are composable from three primitive types:
 
 - **on_artifact(name)** — at least one valid instance of the named artifact exists
-- **on_change(name)** — the named artifact is newer than this protocol's current output artifacts for the same work unit. runa derives freshness from artifact timestamps in the store rather than persisting separate completion records.
+- **on_change(name)** — the named artifact is newer than this protocol's current output artifacts for the same work unit. Trigger satisfaction remains timestamp-based even though freshness suppression may later use a recorded input set from the last successful execution.
 - **on_invalid(name)** — an instance of the named artifact type exists but fails validation against its declared schema
 
-Completion is derived from output artifact timestamps. For `on_change` protocols, the output must change content to evidence that the changed input was processed. If the correct response to changed input is "the existing output is still valid," the protocol's capstone should still reflect the verification — for example, by including a review timestamp or updated rationale that changes the content hash. Identical rewrites are invisible to the artifact store.
+For `on_change` protocols, timestamps still decide whether the trigger fires. A successful execution then records the freshness-relevant input set for later suppression checks. Because `on_change` uses any recorded matching instance in execution records, an invalid or malformed sibling changing content reopens the protocol instead of being hidden by a prior successful run; `on_artifact` and `requires` keep comparing only valid instances once execution-record freshness is available, so unrelated invalid siblings do not reopen purely-valid work forever. When no execution record exists yet, the timestamp fallback still applies.
 
 These compose through two operators:
 

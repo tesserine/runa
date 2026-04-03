@@ -348,6 +348,19 @@ fn execute_and_reconcile(
         return Ok(ReconcileOutcome::PostconditionFailure { scan_result });
     }
 
+    loaded
+        .store
+        .record_execution(
+            &execution_entry.protocol,
+            execution_entry.work_unit.as_deref(),
+            execution_entry.execution_record.clone(),
+        )
+        .map_err(|source| StepError::PostExecutionRecord {
+            protocol: execution_entry.protocol.clone(),
+            work_unit: execution_entry.work_unit.clone(),
+            source,
+        })?;
+
     Ok(ReconcileOutcome::Succeeded {
         scan_result,
         execution_entry: Box::new(execution_entry),

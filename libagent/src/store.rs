@@ -7,7 +7,7 @@
 //! process so completion and freshness checks can distinguish whole-type scan
 //! failures from unreadable specific instances.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::model::ArtifactType;
+use crate::model::{ArtifactType, Manifest};
 use crate::validation::{ValidationError, Violation, validate_artifact};
 
 /// Tracks artifact instances: their validation status, content hashes, and
@@ -23,6 +23,8 @@ use crate::validation::{ValidationError, Violation, validate_artifact};
 pub struct ArtifactStore {
     artifact_types: HashMap<String, ArtifactType>,
     artifacts: HashMap<(String, String), ArtifactState>,
+    execution_records: HashMap<(String, Option<String>), ExecutionRecord>,
+    execution_contract_hash: Option<String>,
     store_dir: PathBuf,
     // Populated by scan() for the current process only. These observations are
     // about scan completeness, not persisted artifact state.
@@ -47,6 +49,35 @@ pub struct ArtifactState {
     /// Work unit this artifact belongs to, extracted from artifact JSON at record time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_unit: Option<String>,
+}
+
+/// A recorded input instance persisted for freshness comparison.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionInput {
+    pub instance_id: String,
+    pub content_hash: String,
+}
+
+/// The freshness-relevant inputs seen by one protocol execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ExecutionInputSnapshot {
+    pub artifact_types: BTreeMap<String, Vec<ExecutionInput>>,
+}
+
+/// How a recorded input type participates in execution-record freshness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionInputMode {
+    AnyRecorded,
+    ValidOnly,
+}
+
+/// The persisted execution metadata for one `(protocol, work_unit)` pair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionRecord {
+    #[serde(default)]
+    pub input_modes: BTreeMap<String, ExecutionInputMode>,
+    pub inputs: ExecutionInputSnapshot,
 }
 
 /// Validation status of an artifact instance.
@@ -170,6 +201,26 @@ struct PersistedArtifactState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     work_unit: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedExecutionRecords {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contract_hash: Option<String>,
+    #[serde(default)]
+    records: Vec<PersistedExecutionRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedExecutionRecord {
+    protocol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    work_unit: Option<String>,
+    #[serde(default)]
+    input_modes: BTreeMap<String, ExecutionInputMode>,
+    inputs: ExecutionInputSnapshot,
+}
+
+type ExecutionRecordMap = HashMap<(String, Option<String>), ExecutionRecord>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -300,6 +351,80 @@ fn serialize_artifact_state(state: &ArtifactState) -> Result<String, StoreError>
         .map_err(|e| StoreError::Serialization(e.to_string()))
 }
 
+fn deserialize_execution_records(
+    content: &str,
+) -> Result<(Option<String>, ExecutionRecordMap), StoreError> {
+    let persisted: PersistedExecutionRecords =
+        serde_json::from_str(content).map_err(|e| StoreError::Serialization(e.to_string()))?;
+    let records = persisted
+        .records
+        .into_iter()
+        .filter_map(|record| {
+            if !record.inputs.artifact_types.is_empty() && record.input_modes.is_empty() {
+                return None;
+            }
+
+            Some((
+                (record.protocol, record.work_unit),
+                ExecutionRecord {
+                    input_modes: record.input_modes,
+                    inputs: record.inputs,
+                },
+            ))
+        })
+        .collect();
+    Ok((persisted.contract_hash, records))
+}
+
+fn serialize_execution_records(
+    contract_hash: Option<&str>,
+    records: &ExecutionRecordMap,
+) -> Result<String, StoreError> {
+    let mut persisted_records: Vec<_> = records
+        .iter()
+        .map(|((protocol, work_unit), record)| PersistedExecutionRecord {
+            protocol: protocol.clone(),
+            work_unit: work_unit.clone(),
+            input_modes: record.input_modes.clone(),
+            inputs: record.inputs.clone(),
+        })
+        .collect();
+    persisted_records.sort_by(|left, right| {
+        left.protocol
+            .cmp(&right.protocol)
+            .then_with(|| left.work_unit.cmp(&right.work_unit))
+    });
+    serde_json::to_string_pretty(&PersistedExecutionRecords {
+        contract_hash: contract_hash.map(str::to_owned),
+        records: persisted_records,
+    })
+    .map_err(|e| StoreError::Serialization(e.to_string()))
+}
+
+pub fn execution_contract_hash(manifest: &Manifest) -> String {
+    let protocols: Vec<_> = manifest
+        .protocols
+        .iter()
+        .map(|protocol| {
+            serde_json::json!({
+                "name": protocol.name,
+                "requires": protocol.requires,
+                "accepts": protocol.accepts,
+                "produces": protocol.produces,
+                "may_produce": protocol.may_produce,
+                "scoped": protocol.scoped,
+                "trigger": protocol.trigger,
+                "instructions": protocol.instructions,
+            })
+        })
+        .collect();
+    content_hash(&serde_json::json!({
+        "name": manifest.name,
+        "artifact_types": manifest.artifact_types,
+        "protocols": protocols,
+    }))
+}
+
 impl ArtifactStore {
     /// Create a store, loading existing state from disk if present.
     /// Creates `store_dir` if it doesn't exist.
@@ -346,9 +471,19 @@ impl ArtifactStore {
             }
         }
 
+        let execution_records_path = store_dir.join("execution-records.json");
+        let (execution_contract_hash, execution_records) =
+            match std::fs::read_to_string(&execution_records_path) {
+                Ok(content) => deserialize_execution_records(&content)?,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => (None, HashMap::new()),
+                Err(err) => return Err(StoreError::Io(err)),
+            };
+
         Ok(Self {
             artifact_types: type_map,
             artifacts,
+            execution_records,
+            execution_contract_hash,
             store_dir,
             type_level_scan_gaps: HashSet::new(),
             instance_level_scan_gaps: HashSet::new(),
@@ -400,6 +535,71 @@ impl ArtifactStore {
     pub fn get(&self, artifact_type: &str, instance_id: &str) -> Option<&ArtifactState> {
         self.artifacts
             .get(&(artifact_type.to_string(), instance_id.to_string()))
+    }
+
+    pub fn execution_record(
+        &self,
+        protocol: &str,
+        work_unit: Option<&str>,
+    ) -> Option<&ExecutionRecord> {
+        self.execution_records
+            .get(&(protocol.to_string(), work_unit.map(str::to_owned)))
+    }
+
+    pub fn execution_input_snapshot<'a, I>(
+        &self,
+        artifact_types: I,
+        work_unit: Option<&str>,
+    ) -> ExecutionInputSnapshot
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        let mut snapshot = BTreeMap::new();
+        for artifact_type in artifact_types {
+            let mut inputs: Vec<_> = self
+                .instances_of(artifact_type, work_unit)
+                .into_iter()
+                .filter(|(_, state)| matches!(state.status, ValidationStatus::Valid))
+                .map(|(instance_id, state)| ExecutionInput {
+                    instance_id: instance_id.to_string(),
+                    content_hash: state.content_hash.clone(),
+                })
+                .collect();
+            inputs.sort_by(|left, right| {
+                left.instance_id
+                    .cmp(&right.instance_id)
+                    .then_with(|| left.content_hash.cmp(&right.content_hash))
+            });
+            snapshot.insert(artifact_type.to_string(), inputs);
+        }
+
+        ExecutionInputSnapshot {
+            artifact_types: snapshot,
+        }
+    }
+
+    pub fn record_execution(
+        &mut self,
+        protocol: &str,
+        work_unit: Option<&str>,
+        record: ExecutionRecord,
+    ) -> Result<(), StoreError> {
+        self.execution_records
+            .insert((protocol.to_string(), work_unit.map(str::to_owned)), record);
+        self.persist_execution_records()
+    }
+
+    pub fn sync_execution_contract_hash(
+        &mut self,
+        contract_hash: Option<String>,
+    ) -> Result<(), StoreError> {
+        if self.execution_contract_hash == contract_hash {
+            return Ok(());
+        }
+
+        self.execution_contract_hash = contract_hash;
+        self.execution_records.clear();
+        self.persist_execution_records()
     }
 
     /// True only if ALL matching instances of this type have Valid status.
@@ -753,6 +953,18 @@ impl ArtifactStore {
         std::fs::rename(&tmp_path, &file_path).map_err(StoreError::Io)?;
         Ok(())
     }
+
+    fn persist_execution_records(&self) -> Result<(), StoreError> {
+        let file_path = self.store_dir.join("execution-records.json");
+        let tmp_path = self.store_dir.join("execution-records.json.tmp");
+        let json = serialize_execution_records(
+            self.execution_contract_hash.as_deref(),
+            &self.execution_records,
+        )?;
+        std::fs::write(&tmp_path, json).map_err(StoreError::Io)?;
+        std::fs::rename(&tmp_path, &file_path).map_err(StoreError::Io)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -943,6 +1155,105 @@ mod tests {
         assert_eq!(state.content_hash, content_hash(&data));
         assert_eq!(state.schema_hash, schema_hash(&simple_schema()));
         assert!(state.last_modified_ms > 0);
+    }
+
+    #[test]
+    fn execution_record_round_trips_through_persistence() {
+        let tmp = TempDir::new().unwrap();
+        let store_dir = tmp.path().join("artifacts");
+
+        {
+            let mut store = make_store(&store_dir, vec!["request"]);
+            store
+                .record(
+                    "request",
+                    "alpha",
+                    Path::new("alpha.json"),
+                    &json!({"title": "A", "work_unit": "wu-a"}),
+                )
+                .unwrap();
+            store
+                .sync_execution_contract_hash(Some("contract-v1".to_string()))
+                .unwrap();
+            let snapshot = store.execution_input_snapshot(["request"], Some("wu-a"));
+            store
+                .record_execution(
+                    "publish",
+                    Some("wu-a"),
+                    ExecutionRecord {
+                        input_modes: [("request".to_string(), ExecutionInputMode::ValidOnly)]
+                            .into_iter()
+                            .collect(),
+                        inputs: snapshot.clone(),
+                    },
+                )
+                .unwrap();
+
+            let record = store.execution_record("publish", Some("wu-a")).unwrap();
+            assert_eq!(
+                record.input_modes.get("request"),
+                Some(&ExecutionInputMode::ValidOnly)
+            );
+            assert_eq!(record.inputs, snapshot);
+        }
+
+        let mut reloaded = make_store(&store_dir, vec!["request"]);
+        reloaded
+            .sync_execution_contract_hash(Some("contract-v1".to_string()))
+            .unwrap();
+        let record = reloaded.execution_record("publish", Some("wu-a")).unwrap();
+        assert_eq!(
+            record
+                .inputs
+                .artifact_types
+                .get("request")
+                .expect("request snapshot"),
+            &vec![ExecutionInput {
+                instance_id: "alpha".to_string(),
+                content_hash: content_hash(&json!({"title": "A", "work_unit": "wu-a"})),
+            }]
+        );
+    }
+
+    #[test]
+    fn execution_contract_hash_mismatch_clears_execution_records() {
+        let tmp = TempDir::new().unwrap();
+        let store_dir = tmp.path().join("artifacts");
+
+        {
+            let mut store = make_store(&store_dir, vec!["request"]);
+            store
+                .record(
+                    "request",
+                    "alpha",
+                    Path::new("alpha.json"),
+                    &json!({"title": "A"}),
+                )
+                .unwrap();
+            store
+                .sync_execution_contract_hash(Some("contract-v1".to_string()))
+                .unwrap();
+            let snapshot = store.execution_input_snapshot(["request"], None);
+            store
+                .record_execution(
+                    "publish",
+                    None,
+                    ExecutionRecord {
+                        input_modes: [("request".to_string(), ExecutionInputMode::ValidOnly)]
+                            .into_iter()
+                            .collect(),
+                        inputs: snapshot,
+                    },
+                )
+                .unwrap();
+        }
+
+        let mut reloaded = make_store(&store_dir, vec!["request"]);
+        reloaded
+            .sync_execution_contract_hash(Some("contract-v2".to_string()))
+            .unwrap();
+
+        assert!(reloaded.execution_record("publish", None).is_none());
     }
 
     #[test]
