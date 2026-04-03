@@ -320,6 +320,12 @@ fn protocol_is_current(
         return false;
     };
 
+    if let Some(record) = store.execution_record(&protocol.name, work_unit) {
+        let current_inputs = store
+            .execution_input_snapshot(freshness_inputs.keys().map(|name| name.as_str()), work_unit);
+        return record.inputs == current_inputs;
+    }
+
     freshness_inputs
         .iter()
         .filter_map(|(artifact_type, mode)| match mode {
@@ -1300,6 +1306,64 @@ mod tests {
     }
 
     #[test]
+    fn execution_record_suppresses_invalid_sibling_rerun() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["request", "published"]);
+        store
+            .record_with_timestamp(
+                "request",
+                "good",
+                Path::new("good.json"),
+                &json!({"title":"good","work_unit":"wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "published",
+                "good",
+                Path::new("published.json"),
+                &json!({"title":"published","work_unit":"wu-a"}),
+                2000,
+            )
+            .unwrap();
+        let snapshot = store.execution_input_snapshot(["request"], Some("wu-a"));
+        store
+            .record_execution("publish", Some("wu-a"), snapshot)
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"work_unit":"wu-a"}),
+                3000,
+            )
+            .unwrap();
+
+        let mut protocol = make_protocol(
+            "publish",
+            &["request"],
+            &[],
+            &["published"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+        protocol.scoped = true;
+
+        let candidates = discover_ready_candidates_scoped(
+            &[protocol],
+            &store,
+            &["publish"],
+            &HashSet::new(),
+            "wu-a",
+        );
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
     fn unscoped_valid_artifact_does_not_promote_invalid_scoped_sibling() {
         let tmp = TempDir::new().unwrap();
         let mut store = make_store(&tmp.path().join("s"), vec!["request", "published"]);
@@ -1420,6 +1484,75 @@ mod tests {
         assert_eq!(classified[0].protocol_name, "publish");
         assert_eq!(classified[0].work_unit, Some("wu-a".into()));
         assert!(matches!(&classified[0].status, CandidateStatus::Ready));
+
+        let candidates = discover_ready_candidates_scoped(
+            &[protocol],
+            &store,
+            &["publish"],
+            &HashSet::new(),
+            "wu-a",
+        );
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol_name, "publish");
+        assert_eq!(candidates[0].work_unit, Some("wu-a".into()));
+    }
+
+    #[test]
+    fn execution_record_reopens_when_previously_valid_input_becomes_invalid() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["request", "published"]);
+        store
+            .record_with_timestamp(
+                "request",
+                "a",
+                Path::new("a.json"),
+                &json!({"title":"a","work_unit":"wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "b",
+                Path::new("b.json"),
+                &json!({"title":"b","work_unit":"wu-a"}),
+                1500,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "published",
+                "good",
+                Path::new("published.json"),
+                &json!({"title":"published","work_unit":"wu-a"}),
+                2000,
+            )
+            .unwrap();
+        let snapshot = store.execution_input_snapshot(["request"], Some("wu-a"));
+        store
+            .record_execution("publish", Some("wu-a"), snapshot)
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "b",
+                Path::new("b.json"),
+                &json!({"work_unit":"wu-a"}),
+                3000,
+            )
+            .unwrap();
+
+        let mut protocol = make_protocol(
+            "publish",
+            &["request"],
+            &[],
+            &["published"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+        protocol.scoped = true;
 
         let candidates = discover_ready_candidates_scoped(
             &[protocol],

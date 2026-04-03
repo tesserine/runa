@@ -238,7 +238,10 @@ pub fn load(
         None => runa_dir.join(DEFAULT_WORKSPACE_DIR),
     };
     let store_dir = runa_dir.join(STORE_DIRNAME);
-    let store = ArtifactStore::new(manifest.artifact_types.clone(), store_dir)
+    let mut store = ArtifactStore::new(manifest.artifact_types.clone(), store_dir)
+        .map_err(ProjectError::StoreError)?;
+    store
+        .sync_execution_contract_hash(Some(crate::store::execution_contract_hash(&manifest)))
         .map_err(ProjectError::StoreError)?;
 
     Ok(LoadedProject {
