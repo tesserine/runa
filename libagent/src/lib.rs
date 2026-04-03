@@ -51,12 +51,12 @@ pub use scan::{
 pub use selection::{
     Candidate, CandidateStatus, ClassifiedCandidate, EvaluationScope, EvaluationTopology,
     ScanTrust, WaitingReason, classify_candidates, collect_unsatisfied_conditions,
-    discover_ready_candidates, protocol_execution_input_snapshot, protocol_relevant_input_types,
-    protocol_relevant_inputs_changed, resolve_evaluation_topology,
+    discover_ready_candidates, protocol_execution_input_snapshot, protocol_execution_record,
+    protocol_relevant_input_types, protocol_relevant_inputs_changed, resolve_evaluation_topology,
 };
 pub use store::{
-    ArtifactState, ArtifactStore, ExecutionInput, ExecutionInputSnapshot, ExecutionRecord,
-    StoreError, ValidationStatus, execution_contract_hash,
+    ArtifactState, ArtifactStore, ExecutionInput, ExecutionInputMode, ExecutionInputSnapshot,
+    ExecutionRecord, StoreError, ValidationStatus, execution_contract_hash,
 };
 pub use trigger::{TriggerContext, TriggerResult, evaluate as evaluate_trigger};
 pub use validation::{ValidationError, Violation};

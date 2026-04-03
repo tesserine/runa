@@ -2502,6 +2502,9 @@ trigger = { type = "on_artifact", name = "request" }
         "records": [
             {
                 "protocol": "publish",
+                "input_modes": {
+                    "request": "valid_only"
+                },
                 "inputs": {
                     "artifact_types": {
                         "request": [

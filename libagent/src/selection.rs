@@ -10,7 +10,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::enforcement::ArtifactFailure;
 use crate::graph::{CycleError, DependencyGraph};
 use crate::model::{ProtocolDeclaration, TriggerCondition};
-use crate::store::{ArtifactStore, ExecutionInput, ExecutionInputSnapshot, ValidationStatus};
+use crate::store::{
+    ArtifactStore, ExecutionInput, ExecutionInputMode, ExecutionInputSnapshot, ExecutionRecord,
+    ValidationStatus,
+};
 use crate::trigger::{
     TriggerContext, TriggerResult, derived_completion_timestamp, evaluate as evaluate_trigger,
 };
@@ -76,11 +79,7 @@ pub struct ScanTrust {
     pub incomplete_types: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FreshnessInputMode {
-    AnyRecorded,
-    ValidOnly,
-}
+pub(crate) type FreshnessInputMode = ExecutionInputMode;
 
 /// Discover all (protocol, work_unit) pairs that are ready for execution.
 ///
@@ -320,10 +319,9 @@ fn protocol_is_current(
     };
 
     if let Some(record) = store.execution_record(&protocol.name, work_unit) {
-        let execution_record_inputs = protocol_execution_record_inputs(protocol);
         let current_inputs = execution_input_snapshot_for_freshness_inputs(
             store,
-            &execution_record_inputs,
+            record.input_modes.iter(),
             work_unit,
         );
         return record.inputs == current_inputs;
@@ -358,11 +356,14 @@ fn record_freshness_input(
         .or_insert(mode);
 }
 
-pub(crate) fn execution_input_snapshot_for_freshness_inputs(
+pub(crate) fn execution_input_snapshot_for_freshness_inputs<'a, I>(
     store: &ArtifactStore,
-    freshness_inputs: &HashMap<String, FreshnessInputMode>,
+    freshness_inputs: I,
     work_unit: Option<&str>,
-) -> ExecutionInputSnapshot {
+) -> ExecutionInputSnapshot
+where
+    I: IntoIterator<Item = (&'a String, &'a FreshnessInputMode)>,
+{
     let mut snapshot = BTreeMap::new();
 
     for (artifact_type, mode) in freshness_inputs {
@@ -398,8 +399,7 @@ pub fn protocol_execution_input_snapshot(
     store: &ArtifactStore,
     work_unit: Option<&str>,
 ) -> ExecutionInputSnapshot {
-    let execution_record_inputs = protocol_execution_record_inputs(protocol);
-    execution_input_snapshot_for_freshness_inputs(store, &execution_record_inputs, work_unit)
+    protocol_execution_record(protocol, store, work_unit, &HashSet::new()).inputs
 }
 
 fn trigger_freshness_inputs(
@@ -436,10 +436,17 @@ pub(crate) fn protocol_freshness_inputs(
     freshness_inputs
 }
 
-fn trigger_execution_record_inputs(
+pub(crate) fn collect_satisfied_execution_record_inputs<F>(
     condition: &TriggerCondition,
     out: &mut HashMap<String, FreshnessInputMode>,
-) {
+    is_satisfied: &F,
+) where
+    F: Fn(&TriggerCondition) -> bool,
+{
+    if !is_satisfied(condition) {
+        return;
+    }
+
     match condition {
         TriggerCondition::OnArtifact { name } => {
             record_freshness_input(out, name.as_str(), FreshnessInputMode::ValidOnly);
@@ -449,7 +456,7 @@ fn trigger_execution_record_inputs(
         }
         TriggerCondition::AllOf { conditions } | TriggerCondition::AnyOf { conditions } => {
             for child in conditions {
-                trigger_execution_record_inputs(child, out);
+                collect_satisfied_execution_record_inputs(child, out, is_satisfied);
             }
         }
     }
@@ -457,9 +464,26 @@ fn trigger_execution_record_inputs(
 
 pub(crate) fn protocol_execution_record_inputs(
     protocol: &ProtocolDeclaration,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+    partially_scanned_types: &HashSet<String>,
 ) -> HashMap<String, FreshnessInputMode> {
     let mut freshness_inputs = HashMap::new();
-    trigger_execution_record_inputs(&protocol.trigger, &mut freshness_inputs);
+    let context = TriggerContext {
+        store,
+        work_unit,
+        partially_scanned_types,
+    };
+    collect_satisfied_execution_record_inputs(
+        &protocol.trigger,
+        &mut freshness_inputs,
+        &|condition| {
+            matches!(
+                evaluate_trigger(condition, protocol, &context),
+                TriggerResult::Satisfied
+            )
+        },
+    );
     for name in &protocol.requires {
         record_freshness_input(
             &mut freshness_inputs,
@@ -468,6 +492,25 @@ pub(crate) fn protocol_execution_record_inputs(
         );
     }
     freshness_inputs
+}
+
+pub fn protocol_execution_record(
+    protocol: &ProtocolDeclaration,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+    partially_scanned_types: &HashSet<String>,
+) -> ExecutionRecord {
+    let input_modes: BTreeMap<_, _> =
+        protocol_execution_record_inputs(protocol, store, work_unit, partially_scanned_types)
+            .into_iter()
+            .collect();
+    let inputs =
+        execution_input_snapshot_for_freshness_inputs(store, input_modes.iter(), work_unit);
+
+    ExecutionRecord {
+        input_modes,
+        inputs,
+    }
 }
 
 // --- Trigger trust evaluation (moved from runa-cli/src/commands/protocol_eval.rs) ---
@@ -1065,6 +1108,17 @@ mod tests {
 
     #[test]
     fn protocol_execution_record_inputs_use_valid_only_for_artifact_and_requires() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["request", "published"]);
+        store
+            .record(
+                "request",
+                "good",
+                Path::new("good.json"),
+                &json!({"title":"good"}),
+            )
+            .unwrap();
+
         let protocol = make_protocol(
             "publish",
             &["request"],
@@ -1076,7 +1130,7 @@ mod tests {
             },
         );
 
-        let inputs = protocol_execution_record_inputs(&protocol);
+        let inputs = protocol_execution_record_inputs(&protocol, &store, None, &HashSet::new());
 
         assert_eq!(inputs.get("request"), Some(&FreshnessInputMode::ValidOnly));
     }
@@ -1428,7 +1482,16 @@ mod tests {
             .unwrap();
         let snapshot = store.execution_input_snapshot(["request"], Some("wu-a"));
         store
-            .record_execution("publish", Some("wu-a"), snapshot)
+            .record_execution(
+                "publish",
+                Some("wu-a"),
+                ExecutionRecord {
+                    input_modes: [("request".to_string(), FreshnessInputMode::ValidOnly)]
+                        .into_iter()
+                        .collect(),
+                    inputs: snapshot,
+                },
+            )
             .unwrap();
         store
             .record_with_timestamp(
@@ -1451,6 +1514,75 @@ mod tests {
             },
         );
         protocol.scoped = true;
+
+        let candidates = discover_ready_candidates_scoped(
+            &[protocol],
+            &store,
+            &["publish"],
+            &HashSet::new(),
+            "wu-a",
+        );
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn execution_record_suppresses_invalid_sibling_for_mixed_any_of_trigger() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["request", "published"]);
+        store
+            .record_with_timestamp(
+                "request",
+                "good",
+                Path::new("good.json"),
+                &json!({"title":"good","work_unit":"wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "published",
+                "good",
+                Path::new("published.json"),
+                &json!({"title":"published","work_unit":"wu-a"}),
+                2000,
+            )
+            .unwrap();
+
+        let mut protocol = make_protocol(
+            "publish",
+            &["request"],
+            &[],
+            &["published"],
+            &[],
+            TriggerCondition::AnyOf {
+                conditions: vec![
+                    TriggerCondition::OnArtifact {
+                        name: "request".into(),
+                    },
+                    TriggerCondition::OnChange {
+                        name: "request".into(),
+                    },
+                ],
+            },
+        );
+        protocol.scoped = true;
+
+        store
+            .record_execution(
+                "publish",
+                Some("wu-a"),
+                protocol_execution_record(&protocol, &store, Some("wu-a"), &HashSet::new()),
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"work_unit":"wu-a"}),
+                3000,
+            )
+            .unwrap();
 
         let candidates = discover_ready_candidates_scoped(
             &[protocol],
@@ -1629,7 +1761,16 @@ mod tests {
             .unwrap();
         let snapshot = store.execution_input_snapshot(["request"], Some("wu-a"));
         store
-            .record_execution("publish", Some("wu-a"), snapshot)
+            .record_execution(
+                "publish",
+                Some("wu-a"),
+                ExecutionRecord {
+                    input_modes: [("request".to_string(), FreshnessInputMode::ValidOnly)]
+                        .into_iter()
+                        .collect(),
+                    inputs: snapshot,
+                },
+            )
             .unwrap();
         store
             .record_with_timestamp(
@@ -1698,7 +1839,7 @@ mod tests {
             },
         );
         protocol.scoped = true;
-        let snapshot = protocol_execution_input_snapshot(&protocol, &store, Some("wu-a"));
+        let snapshot = protocol_execution_record(&protocol, &store, Some("wu-a"), &HashSet::new());
         store
             .record_execution("repair", Some("wu-a"), snapshot)
             .unwrap();

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use crate::model::{ProtocolDeclaration, TriggerCondition};
 use crate::selection::{
     Candidate, EvaluationScope, FreshnessInputMode, candidate_work_units_for_scope,
-    execution_input_snapshot_for_freshness_inputs, protocol_execution_record_inputs,
+    collect_satisfied_execution_record_inputs, execution_input_snapshot_for_freshness_inputs,
     protocol_freshness_inputs, protocol_relevant_input_types, protocol_scan_incomplete_types,
 };
 use crate::store::{
@@ -117,11 +117,13 @@ pub fn project_cascade(
         let protocol = protocol_map
             .get(next.protocol_name.as_str())
             .expect("projected protocol must exist");
-        let freshness_inputs = protocol_execution_record_inputs(protocol);
-        let input_snapshot =
-            projection.execution_input_snapshot(&freshness_inputs, next.work_unit.as_deref());
-        let changes =
-            projection.record_protocol_outputs(protocol, next.work_unit.as_deref(), input_snapshot);
+        let execution_record =
+            projection.protocol_execution_record(protocol, next.work_unit.as_deref());
+        let changes = projection.record_protocol_outputs(
+            protocol,
+            next.work_unit.as_deref(),
+            execution_record,
+        );
         exhausted.retain(|candidate| {
             let protocol = protocol_map
                 .get(candidate.protocol_name.as_str())
@@ -221,11 +223,10 @@ fn protocol_is_current(
     };
 
     let freshness_inputs = protocol_freshness_inputs(protocol);
-    let execution_record_inputs = protocol_execution_record_inputs(protocol);
 
     if let Some(record) = projection.execution_record(&protocol.name, work_unit) {
         let current_inputs =
-            projection.execution_input_snapshot(&execution_record_inputs, work_unit);
+            projection.execution_input_snapshot(record.input_modes.iter(), work_unit);
         return record.inputs == current_inputs;
     }
 
@@ -358,15 +359,11 @@ impl<'a> ProjectionState<'a> {
         &mut self,
         protocol: &ProtocolDeclaration,
         work_unit: Option<&str>,
-        input_snapshot: ExecutionInputSnapshot,
+        execution_record: ExecutionRecord,
     ) -> Vec<ProjectedChange> {
         let producer = candidate_key(&protocol.name, work_unit);
-        self.projected_execution_records.insert(
-            producer.clone(),
-            ExecutionRecord {
-                inputs: input_snapshot,
-            },
-        );
+        self.projected_execution_records
+            .insert(producer.clone(), execution_record);
         let mut changes = Vec::new();
         for artifact_type in &protocol.produces {
             let scoped_work_unit = work_unit.map(str::to_owned);
@@ -474,11 +471,14 @@ impl<'a> ProjectionState<'a> {
             .or_else(|| self.store.execution_record(protocol, work_unit))
     }
 
-    fn execution_input_snapshot(
+    fn execution_input_snapshot<'b, I>(
         &self,
-        freshness_inputs: &HashMap<String, FreshnessInputMode>,
+        freshness_inputs: I,
         work_unit: Option<&str>,
-    ) -> ExecutionInputSnapshot {
+    ) -> ExecutionInputSnapshot
+    where
+        I: IntoIterator<Item = (&'b String, &'b FreshnessInputMode)>,
+    {
         let mut snapshot =
             execution_input_snapshot_for_freshness_inputs(self.store, freshness_inputs, work_unit)
                 .artifact_types;
@@ -502,6 +502,32 @@ impl<'a> ProjectionState<'a> {
 
         ExecutionInputSnapshot {
             artifact_types: snapshot,
+        }
+    }
+
+    fn protocol_execution_record(
+        &self,
+        protocol: &ProtocolDeclaration,
+        work_unit: Option<&str>,
+    ) -> ExecutionRecord {
+        let mut input_modes = HashMap::new();
+        collect_satisfied_execution_record_inputs(
+            &protocol.trigger,
+            &mut input_modes,
+            &|condition| trigger_is_satisfied(condition, protocol, self, work_unit),
+        );
+        for artifact_type in &protocol.requires {
+            input_modes
+                .entry(artifact_type.clone())
+                .or_insert(FreshnessInputMode::ValidOnly);
+        }
+
+        let input_modes: std::collections::BTreeMap<_, _> = input_modes.into_iter().collect();
+        let inputs = self.execution_input_snapshot(input_modes.iter(), work_unit);
+
+        ExecutionRecord {
+            input_modes,
+            inputs,
         }
     }
 }
@@ -698,7 +724,16 @@ mod tests {
             .unwrap();
         let snapshot = store.execution_input_snapshot(["request"], Some("wu-a"));
         store
-            .record_execution("publish", Some("wu-a"), snapshot)
+            .record_execution(
+                "publish",
+                Some("wu-a"),
+                ExecutionRecord {
+                    input_modes: [("request".to_string(), FreshnessInputMode::ValidOnly)]
+                        .into_iter()
+                        .collect(),
+                    inputs: snapshot,
+                },
+            )
             .unwrap();
         store
             .record_with_timestamp(
@@ -720,6 +755,75 @@ mod tests {
         );
         protocol.scoped = true;
         let partials = HashSet::new();
+        let projection = ProjectionState::new(&store, &partials);
+
+        let ready = discover_ready_candidates_projection(
+            &[protocol],
+            &projection,
+            &["publish"],
+            EvaluationScope::Scoped("wu-a"),
+        );
+        assert!(ready.is_empty());
+    }
+
+    #[test]
+    fn execution_record_suppresses_invalid_sibling_projection_for_mixed_any_of_trigger() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["request", "published"]);
+        store
+            .record_with_timestamp(
+                "request",
+                "good",
+                Path::new("good.json"),
+                &json!({"title":"good","work_unit":"wu-a"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "published",
+                "good",
+                Path::new("published.json"),
+                &json!({"title":"published","work_unit":"wu-a"}),
+                2000,
+            )
+            .unwrap();
+
+        let mut protocol = protocol(
+            "publish",
+            &["request"],
+            &["published"],
+            TriggerCondition::AnyOf {
+                conditions: vec![
+                    TriggerCondition::OnArtifact {
+                        name: "request".into(),
+                    },
+                    TriggerCondition::OnChange {
+                        name: "request".into(),
+                    },
+                ],
+            },
+        );
+        protocol.scoped = true;
+        let partials = HashSet::new();
+        let projection = ProjectionState::new(&store, &partials);
+
+        store
+            .record_execution(
+                "publish",
+                Some("wu-a"),
+                projection.protocol_execution_record(&protocol, Some("wu-a")),
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "request",
+                "bad",
+                Path::new("bad.json"),
+                &json!({"work_unit":"wu-a"}),
+                3000,
+            )
+            .unwrap();
         let projection = ProjectionState::new(&store, &partials);
 
         let ready = discover_ready_candidates_projection(
@@ -762,9 +866,14 @@ mod tests {
             },
         );
         protocol.scoped = true;
-        let snapshot = crate::protocol_execution_input_snapshot(&protocol, &store, Some("wu-a"));
+        let partials = HashSet::new();
+        let projection = ProjectionState::new(&store, &partials);
         store
-            .record_execution("repair", Some("wu-a"), snapshot)
+            .record_execution(
+                "repair",
+                Some("wu-a"),
+                projection.protocol_execution_record(&protocol, Some("wu-a")),
+            )
             .unwrap();
         store
             .record_with_timestamp(
@@ -775,7 +884,6 @@ mod tests {
                 3000,
             )
             .unwrap();
-        let partials = HashSet::new();
         let projection = ProjectionState::new(&store, &partials);
 
         let ready = discover_ready_candidates_projection(

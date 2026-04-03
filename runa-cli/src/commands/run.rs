@@ -353,7 +353,7 @@ fn execute_and_reconcile(
         .record_execution(
             &execution_entry.protocol,
             execution_entry.work_unit.as_deref(),
-            execution_entry.input_snapshot.clone(),
+            execution_entry.execution_record.clone(),
         )
         .map_err(|source| StepError::PostExecutionRecord {
             protocol: execution_entry.protocol.clone(),

@@ -8,7 +8,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
 
-use libagent::ExecutionInputSnapshot;
+use libagent::ExecutionRecord;
 use libagent::context::{
     ArtifactRelationship, ContextInjection, ContextInjectionView, render_context_prompt,
 };
@@ -207,7 +207,7 @@ pub(crate) struct PlanEntry {
     #[serde(serialize_with = "serialize_context")]
     pub(crate) context: ContextInjection,
     #[serde(skip)]
-    pub(crate) input_snapshot: ExecutionInputSnapshot,
+    pub(crate) execution_record: ExecutionRecord,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -223,7 +223,7 @@ pub(crate) struct PlannedEntry {
     pub(crate) work_unit: Option<String>,
     pub(crate) trigger: String,
     pub(crate) context: ContextInjection,
-    pub(crate) input_snapshot: ExecutionInputSnapshot,
+    pub(crate) execution_record: ExecutionRecord,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -330,10 +330,11 @@ pub(crate) fn build_execution_plan(
                 work_unit: entry.work_unit.clone(),
                 trigger: protocol.trigger.to_string(),
                 context,
-                input_snapshot: libagent::protocol_execution_input_snapshot(
+                execution_record: libagent::protocol_execution_record(
                     protocol,
                     &loaded.store,
                     entry.work_unit.as_deref(),
+                    &scan_findings.affected_types,
                 ),
             }
         })
@@ -514,7 +515,7 @@ fn execute_live_single(
         .record_execution(
             &execution_entry.protocol,
             execution_entry.work_unit.as_deref(),
-            execution_entry.input_snapshot.clone(),
+            execution_entry.execution_record.clone(),
         )
         .map_err(|source| StepError::PostExecutionRecord {
             protocol: execution_entry.protocol.clone(),
@@ -723,7 +724,7 @@ pub(crate) fn build_plan_entries(
                 entry.work_unit.as_deref(),
             ),
             context: entry.context,
-            input_snapshot: entry.input_snapshot,
+            execution_record: entry.execution_record,
         })
         .collect()
 }

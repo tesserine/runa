@@ -64,9 +64,19 @@ pub struct ExecutionInputSnapshot {
     pub artifact_types: BTreeMap<String, Vec<ExecutionInput>>,
 }
 
+/// How a recorded input type participates in execution-record freshness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionInputMode {
+    AnyRecorded,
+    ValidOnly,
+}
+
 /// The persisted execution metadata for one `(protocol, work_unit)` pair.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionRecord {
+    #[serde(default)]
+    pub input_modes: BTreeMap<String, ExecutionInputMode>,
     pub inputs: ExecutionInputSnapshot,
 }
 
@@ -205,6 +215,8 @@ struct PersistedExecutionRecord {
     protocol: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     work_unit: Option<String>,
+    #[serde(default)]
+    input_modes: BTreeMap<String, ExecutionInputMode>,
     inputs: ExecutionInputSnapshot,
 }
 
@@ -347,13 +359,18 @@ fn deserialize_execution_records(
     let records = persisted
         .records
         .into_iter()
-        .map(|record| {
-            (
+        .filter_map(|record| {
+            if !record.inputs.artifact_types.is_empty() && record.input_modes.is_empty() {
+                return None;
+            }
+
+            Some((
                 (record.protocol, record.work_unit),
                 ExecutionRecord {
+                    input_modes: record.input_modes,
                     inputs: record.inputs,
                 },
-            )
+            ))
         })
         .collect();
     Ok((persisted.contract_hash, records))
@@ -368,6 +385,7 @@ fn serialize_execution_records(
         .map(|((protocol, work_unit), record)| PersistedExecutionRecord {
             protocol: protocol.clone(),
             work_unit: work_unit.clone(),
+            input_modes: record.input_modes.clone(),
             inputs: record.inputs.clone(),
         })
         .collect();
@@ -564,12 +582,10 @@ impl ArtifactStore {
         &mut self,
         protocol: &str,
         work_unit: Option<&str>,
-        inputs: ExecutionInputSnapshot,
+        record: ExecutionRecord,
     ) -> Result<(), StoreError> {
-        self.execution_records.insert(
-            (protocol.to_string(), work_unit.map(str::to_owned)),
-            ExecutionRecord { inputs },
-        );
+        self.execution_records
+            .insert((protocol.to_string(), work_unit.map(str::to_owned)), record);
         self.persist_execution_records()
     }
 
@@ -1161,10 +1177,23 @@ mod tests {
                 .unwrap();
             let snapshot = store.execution_input_snapshot(["request"], Some("wu-a"));
             store
-                .record_execution("publish", Some("wu-a"), snapshot.clone())
+                .record_execution(
+                    "publish",
+                    Some("wu-a"),
+                    ExecutionRecord {
+                        input_modes: [("request".to_string(), ExecutionInputMode::ValidOnly)]
+                            .into_iter()
+                            .collect(),
+                        inputs: snapshot.clone(),
+                    },
+                )
                 .unwrap();
 
             let record = store.execution_record("publish", Some("wu-a")).unwrap();
+            assert_eq!(
+                record.input_modes.get("request"),
+                Some(&ExecutionInputMode::ValidOnly)
+            );
             assert_eq!(record.inputs, snapshot);
         }
 
@@ -1205,7 +1234,18 @@ mod tests {
                 .sync_execution_contract_hash(Some("contract-v1".to_string()))
                 .unwrap();
             let snapshot = store.execution_input_snapshot(["request"], None);
-            store.record_execution("publish", None, snapshot).unwrap();
+            store
+                .record_execution(
+                    "publish",
+                    None,
+                    ExecutionRecord {
+                        input_modes: [("request".to_string(), ExecutionInputMode::ValidOnly)]
+                            .into_iter()
+                            .collect(),
+                        inputs: snapshot,
+                    },
+                )
+                .unwrap();
         }
 
         let mut reloaded = make_store(&store_dir, vec!["request"]);
