@@ -7,6 +7,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- `runa run` now exits `4` (`nothing_ready`) for live invocations that
+  dispatch no protocols because none are READY. Exit `0` remains reserved for
+  invocations that execute at least one protocol and then finish fully
+  complete. `runa run --dry-run` is unchanged.
+
 ## [0.1.0] — 2026-04-03
 
 First release. Runa is a runtime that makes multi-step AI agent workflows

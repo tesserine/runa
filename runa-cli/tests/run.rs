@@ -785,6 +785,114 @@ trigger = { type = "on_artifact", name = "constraints" }
 }
 
 #[test]
+fn run_without_dry_run_with_no_ready_protocols_returns_exit_4() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "seed"
+
+[[artifact_types]]
+name = "result"
+
+[[artifact_types]]
+name = "a"
+
+[[artifact_types]]
+name = "b"
+
+[[protocols]]
+name = "publish"
+requires = ["seed"]
+produces = ["result"]
+trigger = { type = "on_artifact", name = "seed" }
+
+[[protocols]]
+name = "first"
+requires = ["b"]
+produces = ["a"]
+scoped = true
+trigger = { type = "on_artifact", name = "b" }
+
+[[protocols]]
+name = "second"
+requires = ["a"]
+produces = ["b"]
+scoped = true
+trigger = { type = "on_artifact", name = "a" }
+"#,
+        &[
+            (
+                "seed",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "result",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+            (
+                "a",
+                r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+            (
+                "b",
+                r#"{"type":"object","required":["title","work_unit"],"properties":{"title":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+        ],
+        &["publish", "first", "second"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("seed")).unwrap();
+    fs::create_dir_all(workspace.join("result")).unwrap();
+    fs::write(workspace.join("seed/input.json"), r#"{"title":"ship"}"#).unwrap();
+    fs::write(workspace.join("result/current.json"), r#"{"done":true}"#).unwrap();
+    let first_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        first_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first_scan.stderr)
+    );
+    fs::create_dir_all(workspace.join("a")).unwrap();
+    fs::create_dir_all(workspace.join("b")).unwrap();
+    fs::write(
+        workspace.join("a/current.json"),
+        r#"{"title":"a","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("b/current.json"),
+        r#"{"title":"b","work_unit":"wu-a"}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Run outcome: nothing_ready"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
 fn run_dry_run_with_cyclic_ready_work_returns_exit_3() {
     let dir = tempfile::tempdir().unwrap();
     let title_schema =
