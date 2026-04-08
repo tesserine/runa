@@ -22,6 +22,7 @@ use crate::commands::step::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
     AllComplete,
+    NothingReady,
     QuiescentFailures,
     QuiescentBlocked,
     Interrupted,
@@ -31,6 +32,7 @@ impl RunOutcome {
     pub fn exit_code(self) -> i32 {
         match self {
             RunOutcome::AllComplete => 0,
+            RunOutcome::NothingReady => 4,
             RunOutcome::QuiescentFailures => 2,
             RunOutcome::QuiescentBlocked => 3,
             RunOutcome::Interrupted => 130,
@@ -40,6 +42,7 @@ impl RunOutcome {
     fn label(self) -> &'static str {
         match self {
             RunOutcome::AllComplete => "all_complete",
+            RunOutcome::NothingReady => "nothing_ready",
             RunOutcome::QuiescentFailures => "quiescent_with_failures",
             RunOutcome::QuiescentBlocked => "quiescent_with_blocked_work",
             RunOutcome::Interrupted => "interrupted",
@@ -199,6 +202,17 @@ fn classify_outcome(
         RunOutcome::QuiescentBlocked
     } else {
         RunOutcome::AllComplete
+    }
+}
+
+fn classify_live_outcome(
+    evaluated: &protocol_eval::EvaluatedProtocols,
+    had_failures: bool,
+    executed_any: bool,
+) -> RunOutcome {
+    match classify_outcome(evaluated, had_failures) {
+        RunOutcome::AllComplete if !executed_any => RunOutcome::NothingReady,
+        outcome => outcome,
     }
 }
 
@@ -482,7 +496,7 @@ pub fn run(
 
     let mut state = initial_state;
     if state.planned_entries.is_empty() {
-        let outcome = classify_outcome(&state.evaluated, false);
+        let outcome = classify_live_outcome(&state.evaluated, false, false);
         println!("Run outcome: {}", outcome.label());
         return Ok(outcome);
     }
@@ -495,6 +509,7 @@ pub fn run(
     let interrupts = InterruptState::install()?;
     let mut exhausted = HashSet::new();
     let mut failed = HashSet::new();
+    let mut executed_any = false;
 
     loop {
         let next_entry = state.planned_entries.clone().into_iter().find(|entry| {
@@ -502,7 +517,7 @@ pub fn run(
             !exhausted.contains(&key) && !failed.contains(&key)
         });
         let Some(next_entry) = next_entry else {
-            let outcome = classify_outcome(&state.evaluated, !failed.is_empty());
+            let outcome = classify_live_outcome(&state.evaluated, !failed.is_empty(), executed_any);
             println!("Run outcome: {}", outcome.label());
             return Ok(outcome);
         };
@@ -529,6 +544,7 @@ pub fn run(
                 scan_result,
                 execution_entry,
             }) => {
+                executed_any = true;
                 exhausted.insert(key);
                 state = refresh_state_after_scan(
                     &loaded,

@@ -155,7 +155,7 @@ Without `--work-unit`, `run` considers only unscoped protocols. With `--work-uni
 
 With `--dry-run`, projects the full optimistic cascade from the same scope-filtered execution order used by evaluation and planning, plus declared `produces` outputs, dependency edges, and the caller-supplied evaluation scope. `may_produce` outputs do not advance the projection unless they already exist on disk. Initially ready entries include MCP config and full context on first emission; downstream projected entries carry only protocol name, optional work unit, trigger, and projection kind. The projection never synthesizes artifact values, forks the store, bypasses schema validation, or discovers sibling work units from artifact state.
 
-Without `--dry-run`, requires a Linux host. On non-Linux platforms, fails explicitly before installing the interrupt handler, resolving `runa-mcp`, or launching an agent. Failed candidates are skipped for the rest of the invocation; any artifacts emitted before failure are still reconciled into workspace state for downstream readiness. Previously exhausted work reopens when a later reconciliation changes relevant inputs.
+Without `--dry-run`, requires a Linux host. On non-Linux platforms, fails explicitly before installing the interrupt handler, resolving `runa-mcp`, or launching an agent. If no READY protocol is ever dispatched, `run` exits `4` (`nothing_ready`) instead of treating that invocation as `all_complete`. Failed candidates are skipped for the rest of the invocation; any artifacts emitted before failure are still reconciled into workspace state for downstream readiness. Previously exhausted work reopens when a later reconciliation changes relevant inputs.
 
 **Interrupt behavior.** The first `Ctrl-C` is boundary-scoped: the current protocol run completes its scan and postcondition reconciliation. After that reconciliation, `run` exits `130` only if the interrupt prevented the next READY candidate from starting. If no further READY work remains, the quiescent topology outcome takes precedence. A second `Ctrl-C` forces immediate exit with status `130`; the isolated child process may continue running after `runa` terminates.
 
@@ -165,14 +165,15 @@ Without `--dry-run`, requires a Linux host. On non-Linux platforms, fails explic
 - `--json` — Dry-run only. Same envelope structure as `runa step --json`, but `execution_plan` may contain multiple entries including projected downstream work.
 - `--work-unit <ID>` — Plan or execute only scoped protocols for the delegated work unit `<ID>`.
 
-**Exit codes** (apply to both live and dry-run — dry-run reflects current topology state, not the projection):
+**Exit codes** (`4` is live-only; dry-run still reflects current topology state, not the projection):
 
 | Code | Meaning |
 |------|---------|
-| 0 | Topology fully satisfied. |
+| 0 | Topology fully satisfied after executing at least one protocol, or dry-run sees fully satisfied topology. |
 | 1 | Fatal error (project-load, config, non-Linux). |
 | 2 | Quiescent with protocol failures or postcondition violations during the invocation. |
 | 3 | Quiescent but work remains blocked, waiting, or trapped in a cycle. |
+| 4 | Nothing ready — live `run` did not dispatch any protocol because none were READY. |
 | 130 | Interrupted — `Ctrl-C` prevented the next candidate from starting. |
 
 ## MCP Server
