@@ -399,11 +399,7 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["version"], 4);
@@ -641,11 +637,7 @@ fn step_dry_run_text_reports_why_when_no_skills_are_ready() {
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Execution plan: none"), "stdout: {stdout}");
@@ -701,11 +693,7 @@ fn step_dry_run_text_shows_preloaded_protocol_instructions_for_ready_protocols()
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -790,6 +778,7 @@ fn step_without_dry_run_fails_when_agent_command_is_not_configured() {
         .output()
         .unwrap();
 
+    assert_eq!(output.status.code(), Some(6), "{output:?}");
     assert!(
         !output.status.success(),
         "step should fail without --dry-run"
@@ -1134,11 +1123,7 @@ trigger = { type = "on_artifact", name = "constraints" }
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let execution_plan = value["execution_plan"].as_array().unwrap();
@@ -1224,11 +1209,7 @@ trigger = { type = "on_artifact", name = "constraints" }
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
 
     let executed = fs::read_to_string(&log_path).unwrap();
     assert_eq!(executed, "prepare:wu-b\n");
@@ -1528,6 +1509,7 @@ fn step_without_dry_run_reports_missing_runa_mcp_after_sibling_and_path_lookup()
         .env("PATH", &empty_path);
     let output = command_output_retry_busy(command);
 
+    assert_eq!(output.status.code(), Some(6), "{output:?}");
     assert!(!output.status.success(), "step should fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("runa-mcp"), "stderr: {stderr}");
@@ -1556,6 +1538,7 @@ fn step_without_dry_run_rejects_json_output() {
         .output()
         .unwrap();
 
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
     assert!(!output.status.success(), "step should reject --json");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--json is only supported with --dry-run"));
@@ -1594,11 +1577,7 @@ fn step_without_dry_run_with_no_ready_protocols_skips_runa_mcp_lookup() {
         .env("PATH", &empty_path);
     let output = command_output_retry_busy(command);
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("No READY protocols."), "stdout: {stdout}");
     assert!(!payload_path.exists(), "agent should not execute");
@@ -1627,6 +1606,7 @@ methodology_path = "/tmp/methodology.toml"
         .output()
         .unwrap();
 
+    assert_eq!(output.status.code(), Some(6), "{output:?}");
     assert!(
         !output.status.success(),
         "step should fail outside an initialized project"
@@ -1704,6 +1684,7 @@ trigger = { type = "on_artifact", name = "doc" }
         .output()
         .unwrap();
 
+    assert_eq!(output.status.code(), Some(5), "{output:?}");
     assert!(
         !output.status.success(),
         "step should fail on non-zero agent exit"
@@ -1781,6 +1762,7 @@ trigger = { type = "on_artifact", name = "constraints" }
         .output()
         .unwrap();
 
+    assert_eq!(output.status.code(), Some(5), "{output:?}");
     assert!(
         !output.status.success(),
         "step should fail when postconditions remain unsatisfied"
@@ -1803,6 +1785,70 @@ trigger = { type = "on_artifact", name = "constraints" }
     let captured = fs::read_to_string(&payload_path).unwrap();
     assert!(captured.contains("# Protocol: implement"), "{captured}");
     assert!(!workspace.join("implementation/impl-1.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn step_without_dry_run_returns_exit_4_when_no_actionable_work_is_ready() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        implement_only_manifest_toml(),
+        &methodology_schemas(),
+        &implement_only_methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("implementation")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.join("implementation/current.json"),
+        r#"{"done":true}"#,
+    )
+    .unwrap();
+
+    let first_scan = runa_bin()
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        first_scan.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first_scan.stderr)
+    );
+
+    let payload_path = dir.path().join("captured-payload.txt");
+    let agent_path = write_no_output_agent(dir.path());
+    append_agent_command_config(
+        &project_dir,
+        &[agent_path.as_path(), payload_path.as_path()],
+    );
+
+    let isolated_runa = copy_isolated_runa(dir.path());
+    let empty_path = dir.path().join("empty-path");
+    fs::create_dir(&empty_path).unwrap();
+
+    let mut command = Command::new(&isolated_runa);
+    command
+        .arg("step")
+        .current_dir(&project_dir)
+        .env("PATH", &empty_path);
+    let output = command_output_retry_busy(command);
+
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No READY protocols."), "stdout: {stdout}");
+    assert!(!payload_path.exists(), "agent should not execute");
 }
 
 #[cfg(unix)]
@@ -1867,11 +1913,7 @@ trigger = { type = "on_artifact", name = "constraints" }
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(fs::read_to_string(&count_file).unwrap(), "1");
 }
 
@@ -1926,11 +1968,7 @@ trigger = { type = "on_artifact", name = "constraints" }
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Execution plan: none"), "stdout: {stdout}");
@@ -1986,11 +2024,7 @@ fn step_dry_run_omits_partially_scanned_accepted_inputs_from_context() {
 
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
@@ -2081,11 +2115,7 @@ trigger = { type = "on_change", name = "b" }
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
@@ -2150,11 +2180,7 @@ trigger = { type = "on_change", name = "b" }
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -2619,13 +2645,8 @@ trigger = { type = "on_change", name = "doc" }
         .output()
         .unwrap();
 
-    for output in [&wu_a_output, &wu_b_output] {
-        assert!(
-            output.status.success(),
-            "stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    assert_eq!(wu_a_output.status.code(), Some(0), "{wu_a_output:?}");
+    assert_eq!(wu_b_output.status.code(), Some(3), "{wu_b_output:?}");
 
     let wu_a_value: serde_json::Value = serde_json::from_slice(&wu_a_output.stdout).unwrap();
     let wu_a_plan = wu_a_value["execution_plan"].as_array().unwrap();

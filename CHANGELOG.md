@@ -9,10 +9,19 @@ Semantic Versioning.
 
 ### Changed
 
-- `runa run` now exits `4` (`nothing_ready`) for live invocations that
-  dispatch no protocols because none are READY. Exit `0` remains reserved for
-  invocations that execute at least one protocol and then finish fully
-  complete. `runa run --dry-run` is unchanged.
+- `runa-cli` now uses the shared commons exit code convention across
+  `init`, `scan`, `list`, `state`, `doctor`, `step`, and `run`.
+- Breaking change for callers parsing runa exit codes:
+  code `2` no longer means `QuiescentFailures`.
+  Code `2` now means `usage_error`, and the old `QuiescentFailures`
+  outcome now exits as code `5` (`work_failed`).
+- Migration for callers such as agentd:
+  update any interpretation that treated exit code `2` as attempted-work
+  failure. The new mapping is `2 => usage_error`, `5 => work_failed`.
+- `runa step` now differentiates quiescent outcomes instead of collapsing
+  them into success: `3` for blocked/waiting/cyclic no-ready states, `4` for
+  no-actionable-work states where outputs are already current, `5` for
+  attempted-work failures, and `6` for infrastructure failures.
 
 ## [0.1.0] — 2026-04-03
 

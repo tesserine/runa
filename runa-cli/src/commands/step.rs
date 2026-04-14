@@ -17,6 +17,7 @@ use tracing::{info, warn};
 
 use super::CommandError;
 use crate::commands::protocol_eval;
+use crate::exit_codes::ExitCode;
 
 #[derive(Debug)]
 pub enum StepError {
@@ -58,6 +59,13 @@ pub enum StepError {
         work_unit: Option<String>,
         source: libagent::StoreError,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepOutcome {
+    Success,
+    Blocked,
+    NothingReady,
 }
 
 impl fmt::Display for StepError {
@@ -186,6 +194,35 @@ impl From<CommandError> for StepError {
     }
 }
 
+impl StepError {
+    pub(crate) fn exit_code(&self) -> ExitCode {
+        match self {
+            StepError::JsonRequiresDryRun => ExitCode::UsageError,
+            StepError::AgentCommandFailed { .. } | StepError::PostExecutionEnforcement { .. } => {
+                ExitCode::WorkFailed
+            }
+            StepError::Command(_)
+            | StepError::Json(_)
+            | StepError::AgentCommandNotConfigured
+            | StepError::UnsupportedPlatform { .. }
+            | StepError::McpBinaryNotFound { .. }
+            | StepError::AgentCommandIo { .. }
+            | StepError::PostExecutionScan { .. }
+            | StepError::PostExecutionRecord { .. } => ExitCode::InfrastructureFailure,
+        }
+    }
+}
+
+impl StepOutcome {
+    pub(crate) const fn exit_code(self) -> ExitCode {
+        match self {
+            StepOutcome::Success => ExitCode::Success,
+            StepOutcome::Blocked => ExitCode::Blocked,
+            StepOutcome::NothingReady => ExitCode::NothingReady,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct StepJson<'a> {
     version: u32,
@@ -272,6 +309,23 @@ where
     S: Serializer,
 {
     ContextInjectionView::from(context).serialize(serializer)
+}
+
+fn has_blocked_work(evaluated: &protocol_eval::EvaluatedProtocols) -> bool {
+    evaluated.cycle.is_some()
+        || !evaluated.blocked.is_empty()
+        || evaluated
+            .waiting
+            .iter()
+            .any(|entry| entry.waiting_reason != Some(libagent::WaitingReason::OutputsCurrent))
+}
+
+fn classify_no_ready_outcome(evaluated: &protocol_eval::EvaluatedProtocols) -> StepOutcome {
+    if has_blocked_work(evaluated) {
+        StepOutcome::Blocked
+    } else {
+        StepOutcome::NothingReady
+    }
 }
 
 pub(crate) fn evaluate_execution_state(
@@ -463,10 +517,23 @@ fn execute_live_single(
     loaded: &mut crate::project::LoadedProject,
     planned_entries: Vec<PlannedEntry>,
     scope: libagent::EvaluationScope<'_>,
-) -> Result<(), StepError> {
+) -> Result<StepOutcome, StepError> {
     let Some(next_entry) = planned_entries.into_iter().next() else {
         println!("No READY protocols.");
-        return Ok(());
+        let work_unit = match scope {
+            libagent::EvaluationScope::Scoped(work_unit) => Some(work_unit.to_owned()),
+            libagent::EvaluationScope::Unscoped => None,
+        };
+        let scan_result =
+            libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(|source| {
+                StepError::PostExecutionScan {
+                    protocol: "<state-evaluation>".to_string(),
+                    work_unit,
+                    source,
+                }
+            })?;
+        let refreshed = evaluate_execution_state(loaded, working_dir, &scan_result, scope);
+        return Ok(classify_no_ready_outcome(&refreshed.evaluated));
     };
 
     let mcp_binary = locate_runa_mcp()?;
@@ -539,7 +606,7 @@ fn execute_live_single(
     println!();
     protocol_eval::print_group("WAITING", &refreshed.evaluated.waiting);
 
-    Ok(())
+    Ok(StepOutcome::Success)
 }
 
 fn run_internal(
@@ -549,7 +616,7 @@ fn run_internal(
     json_output: bool,
     single_dry_run: bool,
     work_unit: Option<&str>,
-) -> Result<(), StepError> {
+) -> Result<StepOutcome, StepError> {
     if !dry_run && json_output {
         return Err(StepError::JsonRequiresDryRun);
     }
@@ -611,6 +678,8 @@ fn run_internal(
         working_dir,
         &config_path,
     );
+
+    let execution_plan_is_empty = execution_plan.is_empty();
 
     if json_output {
         let payload = StepJson {
@@ -684,7 +753,11 @@ fn run_internal(
         protocol_eval::print_group("WAITING", &evaluated.waiting);
     }
 
-    Ok(())
+    if execution_plan_is_empty {
+        Ok(classify_no_ready_outcome(&evaluated))
+    } else {
+        Ok(StepOutcome::Success)
+    }
 }
 
 pub fn run(
@@ -693,7 +766,7 @@ pub fn run(
     dry_run: bool,
     json_output: bool,
     work_unit: Option<&str>,
-) -> Result<(), StepError> {
+) -> Result<StepOutcome, StepError> {
     run_internal(
         working_dir,
         config_override,

@@ -31,6 +31,73 @@ fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) 
 }
 
 #[test]
+fn run_without_dry_run_rejects_json_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[(
+            "constraints",
+            r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+        )],
+        &["implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--json is only supported with --dry-run"));
+}
+
+#[test]
+fn run_without_dry_run_reports_project_load_failure_as_infrastructure_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let external_config = dir.path().join("external-config.toml");
+    fs::write(
+        &external_config,
+        r#"
+methodology_path = "/tmp/methodology.toml"
+"#,
+    )
+    .unwrap();
+
+    let project_dir = dir.path().join("not-a-project");
+    fs::create_dir(&project_dir).unwrap();
+
+    let output = runa_bin()
+        .arg("--config")
+        .arg(&external_config)
+        .arg("run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(6), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not a runa project"), "stderr: {stderr}");
+}
+
+#[test]
 fn run_dry_run_filters_projection_by_declared_scope() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
@@ -527,10 +594,7 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert!(output.status.success(), "{output:?}");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Run outcome: all_complete"),
-        "stdout: {stdout}"
-    );
+    assert!(stdout.contains("Run outcome: success"), "stdout: {stdout}");
     assert!(
         !stdout.contains("Run outcome: interrupted"),
         "stdout: {stdout}"
@@ -1068,10 +1132,7 @@ trigger = { type = "on_artifact", name = "seed-b" }
     assert_eq!(output.status.code(), Some(3), "{output:?}");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Run outcome: quiescent_with_blocked_work"),
-        "stdout: {stdout}"
-    );
+    assert!(stdout.contains("Run outcome: blocked"), "stdout: {stdout}");
 }
 
 #[test]
@@ -1984,7 +2045,7 @@ trigger = { type = "on_artifact", name = "constraints" }
         .output()
         .unwrap();
 
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(output.status.code(), Some(5), "{output:?}");
 
     let executed = fs::read_to_string(&log_path).unwrap();
     assert_eq!(executed, "prepare:wu-b\nrevise:wu-b\nprepare:wu-b\n");
@@ -2076,11 +2137,11 @@ trigger = { type = "on_artifact", name = "constraints" }
         .output()
         .unwrap();
 
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(output.status.code(), Some(5), "{output:?}");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Run outcome: quiescent_with_failures"),
+        stdout.contains("Run outcome: work_failed"),
         "stdout: {stdout}"
     );
 
@@ -2154,7 +2215,7 @@ trigger = { type = "on_artifact", name = "constraints" }
         .output()
         .unwrap();
 
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(output.status.code(), Some(5), "{output:?}");
 
     let executed = fs::read_to_string(&log_path).unwrap();
     assert!(executed.contains("alpha_fail\n"), "{executed}");
@@ -2308,7 +2369,7 @@ trigger = { type = "on_artifact", name = "notes" }
 
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
 
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(output.status.code(), Some(5), "{output:?}");
 
     let executed = fs::read_to_string(&log_path).unwrap();
     assert_eq!(executed, "prepare\n");

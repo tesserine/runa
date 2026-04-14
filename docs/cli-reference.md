@@ -62,7 +62,7 @@ Reports the artifact type and protocol counts on success.
 - `--methodology <PATH>` — Path to the methodology manifest file. Required.
 - `--artifacts-dir <DIR>` — Artifact workspace directory. Defaults to `.runa/workspace/`.
 
-**Exit codes:** 0 on success. 1 on parse, validation, or I/O failure.
+**Exit codes:** 0 on success. 6 on parse, validation, or I/O failure.
 
 ### `runa scan`
 
@@ -74,7 +74,7 @@ Reconciles the artifact workspace into `.runa/store/`. Reads `*.json` files unde
 
 A missing workspace directory is an error unless the store is still empty.
 
-**Exit codes:** 0 on successful reconciliation, even when invalid, malformed, or unreadable findings are present. Non-zero on project-load, store, or I/O failure.
+**Exit codes:** 0 on successful reconciliation, even when invalid, malformed, or unreadable findings are present. 6 on project-load, store, or I/O failure.
 
 ### `runa list`
 
@@ -84,7 +84,7 @@ runa list [--config <PATH>]
 
 Displays protocols in topological (execution) order after an implicit scan. For each protocol, shows non-empty relationship fields (requires, accepts, produces, may_produce), the trigger condition, and a `BLOCKED` indicator when required artifacts have no valid instance or when scan trust is incomplete. Invalid, malformed, or stale siblings still appear in health reporting, but they do not block a protocol that already has a valid required instance. On cycle detection, falls back to manifest order with a warning.
 
-**Exit codes:** 0 on success. 1 on failure.
+**Exit codes:** 0 on success. 6 on failure.
 
 ### `runa state`
 
@@ -105,7 +105,7 @@ When scan reconciliation is partial, `state` surfaces scan warnings and blocks p
 - `--json` — Emits a versioned JSON envelope: `{ "version": 2, "methodology": "...", "scan_warnings": [...], "protocols": [...] }`. The `protocols` array is flat and ordered, with each entry containing `name`, optional `work_unit`, `status`, `trigger`, and the status-specific field `inputs`, `precondition_failures`, or `unsatisfied_conditions`.
 - `--work-unit <ID>` — Evaluate only scoped protocols for the delegated work unit `<ID>`. Unscoped protocols are excluded in this mode.
 
-**Exit codes:** 0 when evaluation succeeds, regardless of whether protocols are ready, blocked, or waiting. Non-zero on project-load, scan, or serialization failure.
+**Exit codes:** 0 when evaluation succeeds, regardless of whether protocols are ready, blocked, or waiting. 6 on project-load, scan, or serialization failure.
 
 ### `runa doctor`
 
@@ -119,7 +119,7 @@ Checks project health after an implicit scan. Three checks:
 2. **Protocol readiness** — checks each protocol's required artifact types and reports missing, invalid, or stale failures when no valid required instance exists.
 3. **Cycle detection** — reports hard dependency cycles in the protocol graph.
 
-**Exit codes:** 0 if no problems found. 1 if any check reports a problem.
+**Exit codes:** 0 if no problems found. 1 if any check reports a problem. 6 on project-load, scan, or serialization failure.
 
 ### `runa step`
 
@@ -133,7 +133,7 @@ Without `--work-unit`, `step` considers only unscoped protocols. With `--work-un
 
 With `--dry-run`, text output prints the next execution plus the grouped READY/BLOCKED/WAITING status view. The execution entry includes the protocol name, optional work unit, the trigger that activated it, an MCP server config, and the serialized agent-facing context payload (protocol name, optional work unit, instruction content, valid required and available accepted inputs with display paths and content hashes, and expected outputs split into `produces` and `may_produce`). Dry-run does not require a discoverable `runa-mcp` binary. If the in-scope graph contains a hard dependency cycle, `step` reports it as a warning, exposes the scope-filtered cycle in JSON, and keeps those participants out of `READY`.
 
-Without `--dry-run`, `step` requires `[agent].command` in the config and a Linux host. On non-Linux platforms, it fails explicitly before resolving `runa-mcp` or launching an agent. If no READY work exists, it prints `No READY protocols.` and exits without requiring `runa-mcp`. Otherwise, it resolves `runa-mcp` (preferring a sibling binary next to the running `runa` executable, falling back to `PATH`), executes the candidate, re-scans the workspace, enforces postconditions, and prints the refreshed status view.
+Without `--dry-run`, `step` requires `[agent].command` in the config and a Linux host. On non-Linux platforms, it fails explicitly before resolving `runa-mcp` or launching an agent. If no READY work exists, it prints `No READY protocols.` and exits without requiring `runa-mcp`: exit `3` when work remains blocked, waiting, or trapped in a cycle, and exit `4` when no actionable work remains because outputs are already current. Otherwise, it resolves `runa-mcp` (preferring a sibling binary next to the running `runa` executable, falling back to `PATH`), executes the candidate, re-scans the workspace, enforces postconditions, and prints the refreshed status view.
 
 **Flags:**
 
@@ -141,7 +141,16 @@ Without `--dry-run`, `step` requires `[agent].command` in the config and a Linux
 - `--json` — Dry-run only. Emits a versioned JSON envelope: `{ "version": 4, "methodology": "...", "scan_warnings": [...], "cycle": [...] | null, "execution_plan": [...], "protocols": [...] }`. The `execution_plan` array contains at most one entry. The `protocols` array reuses the same status entries as `runa state --json`.
 - `--work-unit <ID>` — Plan or execute only scoped protocols for the delegated work unit `<ID>`.
 
-**Exit codes:** 0 on success. 1 on failure (non-Linux for live execution, agent error, postcondition violation, project-load error).
+**Exit codes** (the same `3` / `4` distinction applies to `--dry-run` when no execution plan is available):
+
+| Code | Meaning |
+|------|---------|
+| 0 | `step` found a READY candidate and either previewed it or executed it successfully. |
+| 2 | Usage error, currently `--json` without `--dry-run`. |
+| 3 | No READY candidate and work remains blocked, waiting on prerequisites, or trapped in a cycle. |
+| 4 | No READY candidate and no actionable work remains because the in-scope outputs are already current. |
+| 5 | Work was attempted, but the agent failed or postconditions were not satisfied. |
+| 6 | Infrastructure failure: project/config/load/scan/serialization/bootstrap/platform/MCP lookup/runtime I/O failure prevented completion from being established. |
 
 ### `runa run`
 
@@ -155,7 +164,7 @@ Without `--work-unit`, `run` considers only unscoped protocols. With `--work-uni
 
 With `--dry-run`, projects the full optimistic cascade from the same scope-filtered execution order used by evaluation and planning, plus declared `produces` outputs, dependency edges, and the caller-supplied evaluation scope. `may_produce` outputs do not advance the projection unless they already exist on disk. Initially ready entries include MCP config and full context on first emission; downstream projected entries carry only protocol name, optional work unit, trigger, and projection kind. The projection never synthesizes artifact values, forks the store, bypasses schema validation, or discovers sibling work units from artifact state.
 
-Without `--dry-run`, requires a Linux host. On non-Linux platforms, fails explicitly before installing the interrupt handler, resolving `runa-mcp`, or launching an agent. If no READY protocol is ever dispatched, `run` exits `4` (`nothing_ready`) instead of treating that invocation as `all_complete`. Failed candidates are skipped for the rest of the invocation; any artifacts emitted before failure are still reconciled into workspace state for downstream readiness. Previously exhausted work reopens when a later reconciliation changes relevant inputs.
+Without `--dry-run`, requires a Linux host. On non-Linux platforms, fails explicitly before installing the interrupt handler, resolving `runa-mcp`, or launching an agent. If no READY protocol is ever dispatched, `run` exits `4` (`nothing_ready`) instead of treating that invocation as `success`. Failed candidates are skipped for the rest of the invocation; any artifacts emitted before failure are still reconciled into workspace state for downstream readiness. Previously exhausted work reopens when a later reconciliation changes relevant inputs.
 
 **Interrupt behavior.** The first `Ctrl-C` is boundary-scoped: the current protocol run completes its scan and postcondition reconciliation. After that reconciliation, `run` exits `130` only if the interrupt prevented the next READY candidate from starting. If no further READY work remains, the quiescent topology outcome takes precedence. A second `Ctrl-C` forces immediate exit with status `130`; the isolated child process may continue running after `runa` terminates.
 
@@ -170,10 +179,11 @@ Without `--dry-run`, requires a Linux host. On non-Linux platforms, fails explic
 | Code | Meaning |
 |------|---------|
 | 0 | Topology fully satisfied after executing at least one protocol, or dry-run sees fully satisfied topology. |
-| 1 | Fatal error (project-load, config, non-Linux). |
-| 2 | Quiescent with protocol failures or postcondition violations during the invocation. |
+| 2 | Usage error, currently `--json` without `--dry-run`. |
 | 3 | Quiescent but work remains blocked, waiting, or trapped in a cycle. |
 | 4 | Nothing ready — live `run` did not dispatch any protocol because none were READY. |
+| 5 | Work was attempted, but one or more protocols failed or violated postconditions during the invocation. |
+| 6 | Infrastructure failure: project/config/load/scan/serialization/bootstrap/platform/runtime failure prevented completion from being established. |
 | 130 | Interrupted — `Ctrl-C` prevented the next candidate from starting. |
 
 ## MCP Server
