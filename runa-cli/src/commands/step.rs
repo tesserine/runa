@@ -254,7 +254,7 @@ pub(crate) struct McpServerConfig {
     pub(crate) env: BTreeMap<String, String>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PlannedEntry {
     pub(crate) protocol: String,
     pub(crate) work_unit: Option<String>,
@@ -325,6 +325,15 @@ fn classify_no_ready_outcome(evaluated: &protocol_eval::EvaluatedProtocols) -> S
         StepOutcome::Blocked
     } else {
         StepOutcome::NothingReady
+    }
+}
+
+fn decide_live_fallback_after_refresh(
+    refreshed: ExecutionState,
+) -> Result<PlannedEntry, StepOutcome> {
+    match refreshed.planned_entries.into_iter().next() {
+        Some(entry) => Ok(entry),
+        None => Err(classify_no_ready_outcome(&refreshed.evaluated)),
     }
 }
 
@@ -518,23 +527,30 @@ fn execute_live_single(
     planned_entries: Vec<PlannedEntry>,
     scope: libagent::EvaluationScope<'_>,
 ) -> Result<StepOutcome, StepError> {
-    let Some(next_entry) = planned_entries.into_iter().next() else {
-        println!("No READY protocols.");
-        let work_unit = match scope {
-            libagent::EvaluationScope::Scoped(work_unit) => Some(work_unit.to_owned()),
-            libagent::EvaluationScope::Unscoped => None,
-        };
-        let scan_result =
-            libagent::scan(&loaded.workspace_dir, &mut loaded.store).map_err(|source| {
-                StepError::PostExecutionScan {
-                    protocol: "<state-evaluation>".to_string(),
-                    work_unit,
-                    source,
+    let next_entry =
+        match planned_entries.into_iter().next() {
+            Some(entry) => entry,
+            None => {
+                let work_unit = match scope {
+                    libagent::EvaluationScope::Scoped(work_unit) => Some(work_unit.to_owned()),
+                    libagent::EvaluationScope::Unscoped => None,
+                };
+                let scan_result = libagent::scan(&loaded.workspace_dir, &mut loaded.store)
+                    .map_err(|source| StepError::PostExecutionScan {
+                        protocol: "<state-evaluation>".to_string(),
+                        work_unit,
+                        source,
+                    })?;
+                let refreshed = evaluate_execution_state(loaded, working_dir, &scan_result, scope);
+                match decide_live_fallback_after_refresh(refreshed) {
+                    Ok(entry) => entry,
+                    Err(outcome) => {
+                        println!("No READY protocols.");
+                        return Ok(outcome);
+                    }
                 }
-            })?;
-        let refreshed = evaluate_execution_state(loaded, working_dir, &scan_result, scope);
-        return Ok(classify_no_ready_outcome(&refreshed.evaluated));
-    };
+            }
+        };
 
     let mcp_binary = locate_runa_mcp()?;
     let mcp_command = mcp_binary.to_string_lossy().into_owned();
@@ -955,6 +971,49 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn waiting_entry(
+        unsatisfied_conditions: &[&str],
+        waiting_reason: libagent::WaitingReason,
+    ) -> protocol_eval::ProtocolEntry {
+        protocol_eval::ProtocolEntry {
+            name: "implement".to_string(),
+            work_unit: None,
+            status: protocol_eval::ProtocolStatus::Waiting,
+            trigger: protocol_eval::TriggerState::NotSatisfied,
+            inputs: Vec::new(),
+            precondition_failures: Vec::new(),
+            unsatisfied_conditions: unsatisfied_conditions
+                .iter()
+                .map(|condition| (*condition).to_string())
+                .collect(),
+            waiting_reason: Some(waiting_reason),
+        }
+    }
+
+    fn empty_execution_state(
+        waiting: Vec<protocol_eval::ProtocolEntry>,
+        blocked: Vec<protocol_eval::ProtocolEntry>,
+    ) -> ExecutionState {
+        ExecutionState {
+            scan_findings: protocol_eval::ScanFindings {
+                affected_types: std::collections::HashSet::new(),
+                warnings: Vec::new(),
+            },
+            evaluated: protocol_eval::EvaluatedProtocols {
+                topology: libagent::EvaluationTopology {
+                    status_order: Vec::new(),
+                    execution_order: Vec::new(),
+                    cycle: None,
+                },
+                cycle: None,
+                ready: Vec::new(),
+                blocked,
+                waiting,
+            },
+            planned_entries: Vec::new(),
+        }
+    }
+
     #[cfg(unix)]
     fn write_executable_file(path: &Path) {
         use std::os::unix::fs::PermissionsExt;
@@ -1186,5 +1245,80 @@ mod tests {
             run_error.to_string(),
             "live command 'run' is unsupported on windows; runa targets Linux"
         );
+    }
+
+    #[test]
+    fn live_fallback_reselects_ready_entry_after_refresh() {
+        let planned = PlannedEntry {
+            protocol: "implement".to_string(),
+            work_unit: None,
+            trigger: "on_artifact(constraints)".to_string(),
+            context: libagent::context::ContextInjection {
+                protocol: "implement".to_string(),
+                work_unit: None,
+                instructions: String::new(),
+                inputs: Vec::new(),
+                expected_outputs: libagent::context::ExpectedOutputs {
+                    produces: vec!["implementation".to_string()],
+                    may_produce: Vec::new(),
+                },
+            },
+            execution_record: ExecutionRecord {
+                input_modes: std::collections::BTreeMap::new(),
+                inputs: Default::default(),
+            },
+        };
+        let refreshed = ExecutionState {
+            scan_findings: protocol_eval::ScanFindings {
+                affected_types: std::collections::HashSet::new(),
+                warnings: Vec::new(),
+            },
+            evaluated: protocol_eval::EvaluatedProtocols {
+                topology: libagent::EvaluationTopology {
+                    status_order: Vec::new(),
+                    execution_order: Vec::new(),
+                    cycle: None,
+                },
+                cycle: None,
+                ready: Vec::new(),
+                blocked: Vec::new(),
+                waiting: Vec::new(),
+            },
+            planned_entries: vec![planned.clone()],
+        };
+
+        let decision = decide_live_fallback_after_refresh(refreshed);
+
+        assert_eq!(decision, Ok(planned));
+    }
+
+    #[test]
+    fn live_fallback_reports_blocked_when_refresh_still_has_no_ready_work() {
+        let refreshed = empty_execution_state(
+            vec![waiting_entry(
+                &["constraints missing"],
+                libagent::WaitingReason::TriggerUnsatisfied,
+            )],
+            Vec::new(),
+        );
+
+        let decision = decide_live_fallback_after_refresh(refreshed);
+
+        assert_eq!(decision, Err(StepOutcome::Blocked));
+    }
+
+    #[test]
+    fn live_fallback_reports_nothing_ready_when_refresh_only_has_current_outputs() {
+        let refreshed = empty_execution_state(
+            vec![waiting_entry(
+                &["outputs already current"],
+                libagent::WaitingReason::OutputsCurrent,
+            )],
+            Vec::new(),
+        );
+
+        let decision = decide_live_fallback_after_refresh(refreshed);
+
+        assert_eq!(decision, Err(StepOutcome::NothingReady));
     }
 }

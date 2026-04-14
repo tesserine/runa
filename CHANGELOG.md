@@ -22,6 +22,10 @@ Semantic Versioning.
   them into success: `3` for blocked/waiting/cyclic no-ready states, `4` for
   no-actionable-work states where outputs are already current, `5` for
   attempted-work failures, and `6` for infrastructure failures.
+- `runa step` now treats its final no-ready re-scan as authoritative: if new
+  artifacts make a protocol READY during that refresh, the same invocation
+  executes that protocol instead of incorrectly reporting `No READY protocols.`
+  with exit `3` or `4`.
 
 ## [0.1.0] — 2026-04-03
 
