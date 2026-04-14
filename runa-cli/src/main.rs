@@ -1,4 +1,5 @@
 mod commands;
+mod exit_codes;
 mod project;
 
 use std::path::PathBuf;
@@ -7,6 +8,8 @@ use std::{io, io::Write};
 
 use clap::{Parser, Subcommand};
 use tracing::error;
+
+use crate::exit_codes::ExitCode;
 
 #[derive(Parser)]
 #[command(name = "runa", version)]
@@ -91,7 +94,7 @@ fn main() {
 
     if let Err(err) = libagent::configure_tracing(None) {
         let _ = writeln!(io::stderr(), "error: {err}");
-        process::exit(1);
+        process::exit(ExitCode::InfrastructureFailure.code());
     }
 
     let working_dir = match std::env::current_dir() {
@@ -104,7 +107,7 @@ fn main() {
                 "failed to resolve working directory"
             );
             eprintln!("error: {err}");
-            process::exit(1);
+            process::exit(ExitCode::InfrastructureFailure.code());
         }
     };
 
@@ -119,7 +122,7 @@ fn main() {
             "failed to apply configured logging"
         );
         eprintln!("error: {err}");
-        process::exit(1);
+        process::exit(ExitCode::InfrastructureFailure.code());
     }
 
     match cli.command {
@@ -143,25 +146,25 @@ fn main() {
                         summary.artifact_type_count, summary.protocol_count
                     );
                 }
-                Err(err) => fatal_command_error("init", &err),
+                Err(err) => fatal_command_error("init", &err, ExitCode::InfrastructureFailure),
             }
         }
         Commands::List => {
             if let Err(err) = commands::list::run(&working_dir, config_override_ref) {
-                fatal_command_error("list", &err);
+                fatal_command_error("list", &err, ExitCode::InfrastructureFailure);
             }
         }
         Commands::Doctor => match commands::doctor::run(&working_dir, config_override_ref) {
             Ok(healthy) => {
                 if !healthy {
-                    process::exit(1);
+                    process::exit(ExitCode::GenericFailure.code());
                 }
             }
-            Err(err) => fatal_command_error("doctor", &err),
+            Err(err) => fatal_command_error("doctor", &err, ExitCode::InfrastructureFailure),
         },
         Commands::Scan => {
             if let Err(err) = commands::scan::run(&working_dir, config_override_ref) {
-                fatal_command_error("scan", &err);
+                fatal_command_error("scan", &err, ExitCode::InfrastructureFailure);
             }
         }
         Commands::State { json, work_unit } => {
@@ -171,7 +174,7 @@ fn main() {
                 json,
                 work_unit.as_deref(),
             ) {
-                fatal_command_error("state", &err);
+                fatal_command_error("state", &err, ExitCode::InfrastructureFailure);
             }
         }
         Commands::Step {
@@ -179,14 +182,20 @@ fn main() {
             json,
             work_unit,
         } => {
-            if let Err(err) = commands::step::run(
+            match commands::step::run(
                 &working_dir,
                 config_override_ref,
                 dry_run,
                 json,
                 work_unit.as_deref(),
             ) {
-                fatal_command_error("step", &err);
+                Ok(outcome) => {
+                    let exit_code = outcome.exit_code().code();
+                    if exit_code != 0 {
+                        process::exit(exit_code);
+                    }
+                }
+                Err(err) => fatal_command_error("step", &err, err.exit_code()),
             }
         }
         Commands::Run {
@@ -207,13 +216,13 @@ fn main() {
                         process::exit(exit_code);
                     }
                 }
-                Err(err) => fatal_command_error("run", &err),
+                Err(err) => fatal_command_error("run", &err, err.exit_code()),
             }
         }
     }
 }
 
-fn fatal_command_error(command: &str, err: &dyn std::fmt::Display) -> ! {
+fn fatal_command_error(command: &str, err: &dyn std::fmt::Display, exit_code: ExitCode) -> ! {
     error!(
         operation = "command",
         command = command,
@@ -222,5 +231,5 @@ fn fatal_command_error(command: &str, err: &dyn std::fmt::Display) -> ! {
         "command failed"
     );
     eprintln!("error: {err}");
-    process::exit(1)
+    process::exit(exit_code.code())
 }

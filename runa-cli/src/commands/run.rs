@@ -18,6 +18,7 @@ use crate::commands::step::{
     build_plan_entries, evaluate_execution_state, execute_entry, locate_runa_mcp,
     preview_runa_mcp_command,
 };
+use crate::exit_codes::ExitCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
@@ -31,20 +32,27 @@ pub enum RunOutcome {
 impl RunOutcome {
     pub fn exit_code(self) -> i32 {
         match self {
-            RunOutcome::AllComplete => 0,
-            RunOutcome::NothingReady => 4,
-            RunOutcome::QuiescentFailures => 2,
-            RunOutcome::QuiescentBlocked => 3,
             RunOutcome::Interrupted => 130,
+            _ => self.as_exit_code().code(),
+        }
+    }
+
+    pub const fn as_exit_code(self) -> ExitCode {
+        match self {
+            RunOutcome::AllComplete => ExitCode::Success,
+            RunOutcome::NothingReady => ExitCode::NothingReady,
+            RunOutcome::QuiescentFailures => ExitCode::WorkFailed,
+            RunOutcome::QuiescentBlocked => ExitCode::Blocked,
+            RunOutcome::Interrupted => ExitCode::Success,
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            RunOutcome::AllComplete => "all_complete",
+            RunOutcome::AllComplete => "success",
             RunOutcome::NothingReady => "nothing_ready",
-            RunOutcome::QuiescentFailures => "quiescent_with_failures",
-            RunOutcome::QuiescentBlocked => "quiescent_with_blocked_work",
+            RunOutcome::QuiescentFailures => "work_failed",
+            RunOutcome::QuiescentBlocked => "blocked",
             RunOutcome::Interrupted => "interrupted",
         }
     }
@@ -80,6 +88,15 @@ impl std::error::Error for RunError {
 impl From<StepError> for RunError {
     fn from(err: StepError) -> Self {
         RunError::Step(err)
+    }
+}
+
+impl RunError {
+    pub(crate) fn exit_code(&self) -> ExitCode {
+        match self {
+            RunError::Step(err) => err.exit_code(),
+            RunError::Json(_) | RunError::InterruptHandler(_) => ExitCode::InfrastructureFailure,
+        }
     }
 }
 

@@ -17,6 +17,7 @@ use tracing::{info, warn};
 
 use super::CommandError;
 use crate::commands::protocol_eval;
+use crate::exit_codes::ExitCode;
 
 #[derive(Debug)]
 pub enum StepError {
@@ -58,6 +59,13 @@ pub enum StepError {
         work_unit: Option<String>,
         source: libagent::StoreError,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepOutcome {
+    Success,
+    Blocked,
+    NothingReady,
 }
 
 impl fmt::Display for StepError {
@@ -186,6 +194,35 @@ impl From<CommandError> for StepError {
     }
 }
 
+impl StepError {
+    pub(crate) fn exit_code(&self) -> ExitCode {
+        match self {
+            StepError::JsonRequiresDryRun => ExitCode::UsageError,
+            StepError::AgentCommandFailed { .. } | StepError::PostExecutionEnforcement { .. } => {
+                ExitCode::WorkFailed
+            }
+            StepError::Command(_)
+            | StepError::Json(_)
+            | StepError::AgentCommandNotConfigured
+            | StepError::UnsupportedPlatform { .. }
+            | StepError::McpBinaryNotFound { .. }
+            | StepError::AgentCommandIo { .. }
+            | StepError::PostExecutionScan { .. }
+            | StepError::PostExecutionRecord { .. } => ExitCode::InfrastructureFailure,
+        }
+    }
+}
+
+impl StepOutcome {
+    pub(crate) const fn exit_code(self) -> ExitCode {
+        match self {
+            StepOutcome::Success => ExitCode::Success,
+            StepOutcome::Blocked => ExitCode::Blocked,
+            StepOutcome::NothingReady => ExitCode::NothingReady,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct StepJson<'a> {
     version: u32,
@@ -217,7 +254,7 @@ pub(crate) struct McpServerConfig {
     pub(crate) env: BTreeMap<String, String>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PlannedEntry {
     pub(crate) protocol: String,
     pub(crate) work_unit: Option<String>,
@@ -272,6 +309,32 @@ where
     S: Serializer,
 {
     ContextInjectionView::from(context).serialize(serializer)
+}
+
+fn has_blocked_work(evaluated: &protocol_eval::EvaluatedProtocols) -> bool {
+    evaluated.cycle.is_some()
+        || !evaluated.blocked.is_empty()
+        || evaluated
+            .waiting
+            .iter()
+            .any(|entry| entry.waiting_reason != Some(libagent::WaitingReason::OutputsCurrent))
+}
+
+fn classify_no_ready_outcome(evaluated: &protocol_eval::EvaluatedProtocols) -> StepOutcome {
+    if has_blocked_work(evaluated) {
+        StepOutcome::Blocked
+    } else {
+        StepOutcome::NothingReady
+    }
+}
+
+fn decide_live_fallback_after_refresh(
+    refreshed: ExecutionState,
+) -> Result<PlannedEntry, StepOutcome> {
+    match refreshed.planned_entries.into_iter().next() {
+        Some(entry) => Ok(entry),
+        None => Err(classify_no_ready_outcome(&refreshed.evaluated)),
+    }
 }
 
 pub(crate) fn evaluate_execution_state(
@@ -463,11 +526,31 @@ fn execute_live_single(
     loaded: &mut crate::project::LoadedProject,
     planned_entries: Vec<PlannedEntry>,
     scope: libagent::EvaluationScope<'_>,
-) -> Result<(), StepError> {
-    let Some(next_entry) = planned_entries.into_iter().next() else {
-        println!("No READY protocols.");
-        return Ok(());
-    };
+) -> Result<StepOutcome, StepError> {
+    let next_entry =
+        match planned_entries.into_iter().next() {
+            Some(entry) => entry,
+            None => {
+                let work_unit = match scope {
+                    libagent::EvaluationScope::Scoped(work_unit) => Some(work_unit.to_owned()),
+                    libagent::EvaluationScope::Unscoped => None,
+                };
+                let scan_result = libagent::scan(&loaded.workspace_dir, &mut loaded.store)
+                    .map_err(|source| StepError::PostExecutionScan {
+                        protocol: "<state-evaluation>".to_string(),
+                        work_unit,
+                        source,
+                    })?;
+                let refreshed = evaluate_execution_state(loaded, working_dir, &scan_result, scope);
+                match decide_live_fallback_after_refresh(refreshed) {
+                    Ok(entry) => entry,
+                    Err(outcome) => {
+                        println!("No READY protocols.");
+                        return Ok(outcome);
+                    }
+                }
+            }
+        };
 
     let mcp_binary = locate_runa_mcp()?;
     let mcp_command = mcp_binary.to_string_lossy().into_owned();
@@ -539,7 +622,7 @@ fn execute_live_single(
     println!();
     protocol_eval::print_group("WAITING", &refreshed.evaluated.waiting);
 
-    Ok(())
+    Ok(StepOutcome::Success)
 }
 
 fn run_internal(
@@ -549,7 +632,7 @@ fn run_internal(
     json_output: bool,
     single_dry_run: bool,
     work_unit: Option<&str>,
-) -> Result<(), StepError> {
+) -> Result<StepOutcome, StepError> {
     if !dry_run && json_output {
         return Err(StepError::JsonRequiresDryRun);
     }
@@ -611,6 +694,8 @@ fn run_internal(
         working_dir,
         &config_path,
     );
+
+    let execution_plan_is_empty = execution_plan.is_empty();
 
     if json_output {
         let payload = StepJson {
@@ -684,7 +769,11 @@ fn run_internal(
         protocol_eval::print_group("WAITING", &evaluated.waiting);
     }
 
-    Ok(())
+    if execution_plan_is_empty {
+        Ok(classify_no_ready_outcome(&evaluated))
+    } else {
+        Ok(StepOutcome::Success)
+    }
 }
 
 pub fn run(
@@ -693,7 +782,7 @@ pub fn run(
     dry_run: bool,
     json_output: bool,
     work_unit: Option<&str>,
-) -> Result<(), StepError> {
+) -> Result<StepOutcome, StepError> {
     run_internal(
         working_dir,
         config_override,
@@ -881,6 +970,49 @@ fn absolutize_path(path: &Path, base_dir: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use std::fs;
+
+    fn waiting_entry(
+        unsatisfied_conditions: &[&str],
+        waiting_reason: libagent::WaitingReason,
+    ) -> protocol_eval::ProtocolEntry {
+        protocol_eval::ProtocolEntry {
+            name: "implement".to_string(),
+            work_unit: None,
+            status: protocol_eval::ProtocolStatus::Waiting,
+            trigger: protocol_eval::TriggerState::NotSatisfied,
+            inputs: Vec::new(),
+            precondition_failures: Vec::new(),
+            unsatisfied_conditions: unsatisfied_conditions
+                .iter()
+                .map(|condition| (*condition).to_string())
+                .collect(),
+            waiting_reason: Some(waiting_reason),
+        }
+    }
+
+    fn empty_execution_state(
+        waiting: Vec<protocol_eval::ProtocolEntry>,
+        blocked: Vec<protocol_eval::ProtocolEntry>,
+    ) -> ExecutionState {
+        ExecutionState {
+            scan_findings: protocol_eval::ScanFindings {
+                affected_types: std::collections::HashSet::new(),
+                warnings: Vec::new(),
+            },
+            evaluated: protocol_eval::EvaluatedProtocols {
+                topology: libagent::EvaluationTopology {
+                    status_order: Vec::new(),
+                    execution_order: Vec::new(),
+                    cycle: None,
+                },
+                cycle: None,
+                ready: Vec::new(),
+                blocked,
+                waiting,
+            },
+            planned_entries: Vec::new(),
+        }
+    }
 
     #[cfg(unix)]
     fn write_executable_file(path: &Path) {
@@ -1113,5 +1245,80 @@ mod tests {
             run_error.to_string(),
             "live command 'run' is unsupported on windows; runa targets Linux"
         );
+    }
+
+    #[test]
+    fn live_fallback_reselects_ready_entry_after_refresh() {
+        let planned = PlannedEntry {
+            protocol: "implement".to_string(),
+            work_unit: None,
+            trigger: "on_artifact(constraints)".to_string(),
+            context: libagent::context::ContextInjection {
+                protocol: "implement".to_string(),
+                work_unit: None,
+                instructions: String::new(),
+                inputs: Vec::new(),
+                expected_outputs: libagent::context::ExpectedOutputs {
+                    produces: vec!["implementation".to_string()],
+                    may_produce: Vec::new(),
+                },
+            },
+            execution_record: ExecutionRecord {
+                input_modes: std::collections::BTreeMap::new(),
+                inputs: Default::default(),
+            },
+        };
+        let refreshed = ExecutionState {
+            scan_findings: protocol_eval::ScanFindings {
+                affected_types: std::collections::HashSet::new(),
+                warnings: Vec::new(),
+            },
+            evaluated: protocol_eval::EvaluatedProtocols {
+                topology: libagent::EvaluationTopology {
+                    status_order: Vec::new(),
+                    execution_order: Vec::new(),
+                    cycle: None,
+                },
+                cycle: None,
+                ready: Vec::new(),
+                blocked: Vec::new(),
+                waiting: Vec::new(),
+            },
+            planned_entries: vec![planned.clone()],
+        };
+
+        let decision = decide_live_fallback_after_refresh(refreshed);
+
+        assert_eq!(decision, Ok(planned));
+    }
+
+    #[test]
+    fn live_fallback_reports_blocked_when_refresh_still_has_no_ready_work() {
+        let refreshed = empty_execution_state(
+            vec![waiting_entry(
+                &["constraints missing"],
+                libagent::WaitingReason::TriggerUnsatisfied,
+            )],
+            Vec::new(),
+        );
+
+        let decision = decide_live_fallback_after_refresh(refreshed);
+
+        assert_eq!(decision, Err(StepOutcome::Blocked));
+    }
+
+    #[test]
+    fn live_fallback_reports_nothing_ready_when_refresh_only_has_current_outputs() {
+        let refreshed = empty_execution_state(
+            vec![waiting_entry(
+                &["outputs already current"],
+                libagent::WaitingReason::OutputsCurrent,
+            )],
+            Vec::new(),
+        );
+
+        let decision = decide_live_fallback_after_refresh(refreshed);
+
+        assert_eq!(decision, Err(StepOutcome::NothingReady));
     }
 }
