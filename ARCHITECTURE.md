@@ -106,9 +106,9 @@ Runtime loop: parses `--protocol` and optional `--work-unit`, loads the project,
 
 ```
 .runa/
-  config.toml                   # Created by `runa init`: methodology_path, optional artifacts_dir, optional logging, optional agent.command
+  config.toml                   # Created by `runa init`: methodology_path, optional logging, optional agent.command
   state.toml                    # Created by `runa init`: initialized_at, runa_version
-  workspace/                    # Default artifact workspace (configurable via artifacts_dir)
+  workspace/                    # Artifact workspace (non-configurable)
     {type_name}/
       {instance_id}.json        # Agent-produced artifact file
   store/                        # Internal runtime state store (not configurable)
@@ -123,9 +123,9 @@ Commands that operate on a loaded methodology share `project::load`, which resol
 
 Config resolution is whole-file (first found wins, no per-field merging): `--config` CLI flag → `RUNA_CONFIG` env var → `.runa/config.toml` → `$XDG_CONFIG_HOME/runa/config.toml` → error.
 
-### `runa init --methodology <PATH> [--artifacts-dir <DIR>] [--config <PATH>]`
+### `runa init --methodology <PATH> [--config <PATH>]`
 
-Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes the path, creates `.runa/config.toml` (or writes to the `--config` path) containing the canonical methodology path, optional artifact workspace directory, optional logging settings, and optional agent execution settings. Creates `.runa/state.toml`, `.runa/store/`, and the resolved artifact workspace directory. Reports the artifact type and protocol counts on success.
+Parses the manifest at `<PATH>` via `libagent::manifest::parse`, canonicalizes the path, creates `.runa/config.toml` (or writes to the `--config` path) containing the canonical methodology path plus optional logging settings and optional agent execution settings. Creates `.runa/state.toml`, `.runa/store/`, and the fixed artifact workspace directory at `.runa/workspace/`. Reports the artifact type and protocol counts on success.
 
 ### `runa list`
 

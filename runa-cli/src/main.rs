@@ -29,10 +29,6 @@ enum Commands {
         /// Path to the methodology manifest file
         #[arg(long)]
         methodology: PathBuf,
-
-        /// Directory for artifact workspace files (default: .runa/workspace/)
-        #[arg(long)]
-        artifacts_dir: Option<String>,
     },
     /// Display protocols, dependencies, and execution order
     List,
@@ -126,16 +122,8 @@ fn main() {
     }
 
     match cli.command {
-        Commands::Init {
-            methodology,
-            artifacts_dir,
-        } => {
-            match commands::init::run(
-                &working_dir,
-                &methodology,
-                artifacts_dir.as_deref(),
-                config_override_ref,
-            ) {
+        Commands::Init { methodology } => {
+            match commands::init::run(&working_dir, &methodology, config_override_ref) {
                 Ok(summary) => {
                     println!(
                         "Initialized runa project with methodology '{}'",

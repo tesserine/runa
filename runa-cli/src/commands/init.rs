@@ -49,7 +49,6 @@ impl std::error::Error for InitError {
 pub fn run(
     working_dir: &Path,
     methodology: &Path,
-    artifacts_dir: Option<&str>,
     config_path: Option<&Path>,
 ) -> Result<InitSummary, InitError> {
     if !methodology.exists() {
@@ -66,15 +65,12 @@ pub fn run(
     fs::create_dir_all(&runa_dir).map_err(InitError::Io)?;
     fs::create_dir_all(runa_dir.join(STORE_DIRNAME)).map_err(InitError::Io)?;
 
-    let workspace_dir = artifacts_dir
-        .map(|dir| working_dir.join(dir))
-        .unwrap_or_else(|| runa_dir.join(DEFAULT_WORKSPACE_DIR));
+    let workspace_dir = runa_dir.join(DEFAULT_WORKSPACE_DIR);
     fs::create_dir_all(&workspace_dir).map_err(InitError::Io)?;
 
     // Write config.
     let config = Config {
         methodology_path: canonical_path.display().to_string(),
-        artifacts_dir: artifacts_dir.map(String::from),
         logging: crate::project::LoggingConfig::default(),
         agent: crate::project::AgentConfig::default(),
     };
@@ -200,7 +196,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
 
-        let summary = run(&working, &manifest_path, None, None).unwrap();
+        let summary = run(&working, &manifest_path, None).unwrap();
 
         assert_eq!(summary.methodology_name, "groundwork");
         assert_eq!(summary.artifact_type_count, 2);
@@ -220,30 +216,13 @@ trigger = { type = "on_artifact", name = "design-doc" }
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
 
-        run(&working, &manifest_path, None, None).unwrap();
+        run(&working, &manifest_path, None).unwrap();
 
         let config_content = fs::read_to_string(working.join(".runa").join("config.toml")).unwrap();
         let canonical = fs::canonicalize(&manifest_path).unwrap();
         assert!(
             config_content.contains(&canonical.display().to_string()),
             "config file should contain canonical methodology path"
-        );
-    }
-
-    #[test]
-    fn config_file_records_artifacts_dir_when_provided() {
-        let dir = tempfile::tempdir().unwrap();
-        let manifest_path = write_methodology_layout(dir.path());
-
-        let working = dir.path().join("project");
-        fs::create_dir(&working).unwrap();
-
-        run(&working, &manifest_path, Some("my-artifacts"), None).unwrap();
-
-        let config_content = fs::read_to_string(working.join(".runa").join("config.toml")).unwrap();
-        assert!(
-            config_content.contains("my-artifacts"),
-            "config file should contain custom artifacts_dir"
         );
     }
 
@@ -255,7 +234,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
 
-        run(&working, &manifest_path, None, None).unwrap();
+        run(&working, &manifest_path, None).unwrap();
 
         let config_content = fs::read_to_string(working.join(".runa").join("config.toml")).unwrap();
         assert!(
@@ -272,7 +251,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
 
-        run(&working, &manifest_path, None, None).unwrap();
+        run(&working, &manifest_path, None).unwrap();
 
         let state_content = fs::read_to_string(working.join(".runa").join("state.toml")).unwrap();
         let state: State = toml::from_str(&state_content).unwrap();
@@ -291,7 +270,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
 
-        run(&working, &manifest_path, None, None).unwrap();
+        run(&working, &manifest_path, None).unwrap();
 
         let state_content = fs::read_to_string(working.join(".runa").join("state.toml")).unwrap();
         assert!(
@@ -309,7 +288,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
         fs::create_dir(&working).unwrap();
 
         let custom_config = dir.path().join("custom").join("config.toml");
-        run(&working, &manifest_path, None, Some(&custom_config)).unwrap();
+        run(&working, &manifest_path, Some(&custom_config)).unwrap();
 
         assert!(custom_config.is_file(), "config should be at custom path");
         // Default location should not exist.
@@ -326,7 +305,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
         let dir = tempfile::tempdir().unwrap();
         let bogus = dir.path().join("no-such-file.toml");
 
-        let err = run(dir.path(), &bogus, None, None).unwrap_err();
+        let err = run(dir.path(), &bogus, None).unwrap_err();
         assert!(
             matches!(err, InitError::MethodologyNotFound { .. }),
             "expected MethodologyNotFound, got: {err}"
@@ -339,7 +318,7 @@ trigger = { type = "on_artifact", name = "design-doc" }
         let manifest_path = dir.path().join("bad.toml");
         fs::write(&manifest_path, "not valid manifest").unwrap();
 
-        let err = run(dir.path(), &manifest_path, None, None).unwrap_err();
+        let err = run(dir.path(), &manifest_path, None).unwrap_err();
         assert!(
             matches!(err, InitError::ManifestInvalid(_)),
             "expected ManifestInvalid, got: {err}"
@@ -366,8 +345,8 @@ trigger = { type = "on_artifact", name = "design-doc" }
         let working = dir.path().join("project");
         fs::create_dir(&working).unwrap();
 
-        let summary1 = run(&working, &manifest_path, None, None).unwrap();
-        let summary2 = run(&working, &manifest_path, None, None).unwrap();
+        let summary1 = run(&working, &manifest_path, None).unwrap();
+        let summary2 = run(&working, &manifest_path, None).unwrap();
 
         assert_eq!(summary1.methodology_name, summary2.methodology_name);
         assert_eq!(summary1.artifact_type_count, summary2.artifact_type_count);
