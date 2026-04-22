@@ -86,20 +86,16 @@ pub fn project_cascade(
     let mut emitted = HashSet::new();
     let mut plan = Vec::new();
 
-    loop {
-        let Some(next) =
-            discover_ready_candidates_projection(protocols, &projection, topological_order, scope)
-                .into_iter()
-                .find(|candidate| {
-                    !exhausted.contains(&candidate_key(
-                        &candidate.protocol_name,
-                        candidate.work_unit.as_deref(),
-                    ))
-                })
-        else {
-            break;
-        };
-
+    while let Some(next) =
+        discover_ready_candidates_projection(protocols, &projection, topological_order, scope)
+            .into_iter()
+            .find(|candidate| {
+                !exhausted.contains(&candidate_key(
+                    &candidate.protocol_name,
+                    candidate.work_unit.as_deref(),
+                ))
+            })
+    {
         let key = candidate_key(&next.protocol_name, next.work_unit.as_deref());
         let first_emission = emitted.insert(key.clone());
         let projection_class = if initial_ready.contains(&key) && first_emission {

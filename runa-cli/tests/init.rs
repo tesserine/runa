@@ -124,3 +124,32 @@ fn init_is_idempotent() {
     let stdout = String::from_utf8_lossy(&output2.stdout);
     assert!(stdout.contains("groundwork"));
 }
+
+#[test]
+fn init_rejects_removed_artifacts_dir_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path =
+        common::write_methodology(dir.path(), valid_manifest_toml(), SCHEMAS, PROTOCOLS);
+
+    let project_dir = dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+
+    let output = runa_bin()
+        .arg("init")
+        .arg("--methodology")
+        .arg(&manifest_path)
+        .arg("--artifacts-dir")
+        .arg("custom-artifacts")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--artifacts-dir"), "stderr: {stderr}");
+}

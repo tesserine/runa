@@ -45,22 +45,21 @@ All commands accept a global `--config <PATH>` flag to override the config file 
 ### `runa init`
 
 ```bash
-runa init --methodology <PATH> [--artifacts-dir <DIR>] [--config <PATH>]
+runa init --methodology <PATH> [--config <PATH>]
 ```
 
 Initializes a runa project. Parses the methodology manifest at `<PATH>`, validates its structure and layout convention (schemas and instruction files at their conventional paths), canonicalizes the methodology path, and creates the `.runa/` project directory containing:
 
-- `config.toml` — methodology path, optional artifact workspace directory, optional logging and agent settings
+- `config.toml` — methodology path, optional logging and agent settings
 - `state.toml` — initialization timestamp, runa version
 - `store/` — internal artifact state store
-- the artifact workspace directory (default `.runa/workspace/`)
+- the fixed artifact workspace directory `.runa/workspace/`
 
 Reports the artifact type and protocol counts on success.
 
 **Flags:**
 
 - `--methodology <PATH>` — Path to the methodology manifest file. Required.
-- `--artifacts-dir <DIR>` — Artifact workspace directory. Defaults to `.runa/workspace/`.
 
 **Exit codes:** 0 on success. 6 on parse, validation, or I/O failure.
 

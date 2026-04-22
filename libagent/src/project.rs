@@ -58,8 +58,6 @@ impl AgentConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     pub methodology_path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub artifacts_dir: Option<String>,
     #[serde(default, skip_serializing_if = "LoggingConfig::is_default")]
     pub logging: LoggingConfig,
     #[serde(default, skip_serializing_if = "AgentConfig::is_default")]
@@ -200,7 +198,17 @@ pub fn read_config(
 ) -> Result<Config, ProjectError> {
     let config_path = resolve_config(working_dir, config_override)?;
     let config_content = std::fs::read_to_string(&config_path).map_err(ProjectError::Io)?;
-    toml::from_str(&config_content).map_err(|e| ProjectError::ConfigParseFailed(e.to_string()))
+    let config_value: toml::Value = toml::from_str(&config_content)
+        .map_err(|e| ProjectError::ConfigParseFailed(e.to_string()))?;
+    if config_value.get("artifacts_dir").is_some() {
+        return Err(ProjectError::ConfigParseFailed(
+            "'artifacts_dir' has been removed; artifacts always live under '.runa/workspace/' and are no longer configurable"
+                .to_string(),
+        ));
+    }
+    config_value
+        .try_into()
+        .map_err(|e| ProjectError::ConfigParseFailed(e.to_string()))
 }
 
 /// Load a runa project from `working_dir`.
@@ -231,12 +239,7 @@ pub fn load(
 
     let graph = DependencyGraph::build(&manifest.protocols).map_err(ProjectError::GraphInvalid)?;
 
-    // Resolve artifact workspace dir: explicit config value or default,
-    // relative to the project `.runa/` directory.
-    let workspace_dir = match &config.artifacts_dir {
-        Some(dir) => working_dir.join(dir),
-        None => runa_dir.join(DEFAULT_WORKSPACE_DIR),
-    };
+    let workspace_dir = runa_dir.join(DEFAULT_WORKSPACE_DIR);
     let store_dir = runa_dir.join(STORE_DIRNAME);
     let mut store = ArtifactStore::new(manifest.artifact_types.clone(), store_dir)
         .map_err(ProjectError::StoreError)?;
@@ -296,7 +299,6 @@ trigger = { type = "on_change", name = "constraints" }
         let canonical = fs::canonicalize(manifest_path).unwrap();
         let config = Config {
             methodology_path: canonical.display().to_string(),
-            artifacts_dir: None,
             logging: LoggingConfig::default(),
             agent: AgentConfig::default(),
         };
@@ -358,7 +360,6 @@ trigger = { type = "on_change", name = "constraints" }
         let external_config_path = dir.path().join("external-config.toml");
         let config = Config {
             methodology_path: canonical.display().to_string(),
-            artifacts_dir: None,
             logging: LoggingConfig::default(),
             agent: AgentConfig::default(),
         };
@@ -369,7 +370,7 @@ trigger = { type = "on_change", name = "constraints" }
     }
 
     #[test]
-    fn load_with_custom_artifacts_dir() {
+    fn load_rejects_removed_artifacts_dir_field() {
         let dir = tempfile::tempdir().unwrap();
         write_methodology_layout(dir.path());
         let manifest_path = dir.path().join("manifest.toml");
@@ -381,15 +382,15 @@ trigger = { type = "on_change", name = "constraints" }
         fs::create_dir_all(&runa_dir).unwrap();
 
         let canonical = fs::canonicalize(&manifest_path).unwrap();
-        let config = Config {
-            methodology_path: canonical.display().to_string(),
-            artifacts_dir: Some("custom-artifacts".to_string()),
-            logging: LoggingConfig::default(),
-            agent: AgentConfig::default(),
-        };
         fs::write(
             runa_dir.join("config.toml"),
-            toml::to_string(&config).unwrap(),
+            format!(
+                r#"
+methodology_path = "{}"
+artifacts_dir = "custom-artifacts"
+"#,
+                canonical.display()
+            ),
         )
         .unwrap();
 
@@ -403,9 +404,16 @@ trigger = { type = "on_change", name = "constraints" }
         )
         .unwrap();
 
-        // load succeeds — artifacts_dir is resolved but doesn't need to exist yet
-        let loaded = load(&working, None).unwrap();
-        assert_eq!(loaded.workspace_dir, working.join("custom-artifacts"));
+        let err = load(&working, None).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("artifacts_dir"),
+            "error should name removed field: {message}"
+        );
+        assert!(
+            message.contains(".runa/workspace"),
+            "error should name invariant workspace path: {message}"
+        );
     }
 
     #[test]
@@ -433,7 +441,6 @@ trigger = { type = "on_change", name = "constraints" }
         let canonical = fs::canonicalize(&manifest_path).unwrap();
         let config = Config {
             methodology_path: canonical.display().to_string(),
-            artifacts_dir: None,
             logging: LoggingConfig::default(),
             agent: AgentConfig::default(),
         };
@@ -502,6 +509,34 @@ trigger = { type = "on_change", name = "constraints" }
         assert!(
             err.to_string().contains("nonexistent.toml"),
             "error should include the path"
+        );
+    }
+
+    #[test]
+    fn read_config_rejects_removed_artifacts_dir_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            r#"
+methodology_path = "/tmp/methodology.toml"
+artifacts_dir = "custom-artifacts"
+"#,
+        )
+        .unwrap();
+
+        let err = read_config(&working, None).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("artifacts_dir"),
+            "error should name removed field: {message}"
+        );
+        assert!(
+            message.contains(".runa/workspace"),
+            "error should name invariant workspace path: {message}"
         );
     }
 

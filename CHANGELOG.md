@@ -11,6 +11,9 @@ Semantic Versioning.
 
 - `runa-cli` now uses the shared commons exit code convention across
   `init`, `scan`, `list`, `state`, `doctor`, `step`, and `run`.
+- Breaking change: `.runa/config.toml` no longer accepts `artifacts_dir`.
+  Artifact files now always live under `.runa/workspace/`, and configs that
+  still declare `artifacts_dir` fail to load with an actionable error.
 - Breaking change for callers parsing runa exit codes:
   code `2` no longer means `QuiescentFailures`.
   Code `2` now means `usage_error`, and the old `QuiescentFailures`
