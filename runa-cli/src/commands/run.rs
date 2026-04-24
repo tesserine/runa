@@ -525,6 +525,12 @@ pub fn run(
         return Ok(classify_outcome(&initial_state.evaluated, false));
     }
 
+    let agent_command = resolve_agent_command(
+        working_dir,
+        config_override,
+        cli_agent_command_present,
+        cli_agent_command_argv,
+    )?;
     let mut state = initial_state;
     if state.planned_entries.is_empty() {
         let outcome = classify_live_outcome(&state.evaluated, false, false);
@@ -532,12 +538,6 @@ pub fn run(
         return Ok(outcome);
     }
 
-    let agent_command = resolve_agent_command(
-        working_dir,
-        config_override,
-        cli_agent_command_present,
-        cli_agent_command_argv,
-    )?;
     let mcp_command = locate_runa_mcp()
         .map_err(RunError::from)?
         .to_string_lossy()
