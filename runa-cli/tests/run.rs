@@ -906,10 +906,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("unexpected argument"),
-        "stderr: {stderr}"
-    );
+    assert!(stderr.contains("unexpected argument"), "stderr: {stderr}");
     assert!(
         stderr.contains(agent_path.to_string_lossy().as_ref()),
         "stderr: {stderr}"
@@ -979,10 +976,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("unexpected argument"),
-        "stderr: {stderr}"
-    );
+    assert!(stderr.contains("unexpected argument"), "stderr: {stderr}");
     assert!(
         stderr.contains(agent_path.to_string_lossy().as_ref()),
         "stderr: {stderr}"
