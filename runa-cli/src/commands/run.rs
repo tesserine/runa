@@ -186,7 +186,17 @@ fn candidate_key(protocol: &str, work_unit: Option<&str>) -> CandidateKey {
 fn resolve_agent_command(
     working_dir: &Path,
     config_override: Option<&Path>,
+    cli_override_present: bool,
+    cli_override: &[String],
 ) -> Result<Vec<String>, RunError> {
+    if cli_override_present {
+        return if is_usable_agent_command(cli_override) {
+            Ok(cli_override.to_vec())
+        } else {
+            Err(RunError::from(StepError::AgentCommandNotConfigured))
+        };
+    }
+
     let config = crate::project::read_config(working_dir, config_override)
         .map_err(CommandError::from)
         .map_err(StepError::from)
@@ -194,10 +204,12 @@ fn resolve_agent_command(
     config
         .agent
         .command
-        .filter(|command| {
-            !command.is_empty() && !command.first().is_some_and(|part| part.is_empty())
-        })
+        .filter(|command| is_usable_agent_command(command))
         .ok_or(RunError::from(StepError::AgentCommandNotConfigured))
+}
+
+fn is_usable_agent_command(command: &[String]) -> bool {
+    !command.is_empty() && !command.first().is_some_and(|part| part.is_empty())
 }
 
 fn classify_outcome(
@@ -428,6 +440,8 @@ pub fn run(
     dry_run: bool,
     json_output: bool,
     work_unit: Option<&str>,
+    cli_agent_command_present: bool,
+    cli_agent_command_argv: &[String],
 ) -> Result<RunOutcome, RunError> {
     if !dry_run && json_output {
         return Err(RunError::from(StepError::JsonRequiresDryRun));
@@ -511,6 +525,12 @@ pub fn run(
         return Ok(classify_outcome(&initial_state.evaluated, false));
     }
 
+    let agent_command = resolve_agent_command(
+        working_dir,
+        config_override,
+        cli_agent_command_present,
+        cli_agent_command_argv,
+    )?;
     let mut state = initial_state;
     if state.planned_entries.is_empty() {
         let outcome = classify_live_outcome(&state.evaluated, false, false);
@@ -518,7 +538,6 @@ pub fn run(
         return Ok(outcome);
     }
 
-    let agent_command = resolve_agent_command(working_dir, config_override)?;
     let mcp_command = locate_runa_mcp()
         .map_err(RunError::from)?
         .to_string_lossy()
@@ -677,5 +696,12 @@ mod tests {
             classify_outcome(&evaluated, false),
             RunOutcome::QuiescentBlocked
         );
+    }
+
+    #[test]
+    fn usable_agent_command_requires_non_empty_argv() {
+        assert!(!is_usable_agent_command(&[]));
+        assert!(!is_usable_agent_command(&[String::new()]));
+        assert!(is_usable_agent_command(&["agent".to_string()]));
     }
 }

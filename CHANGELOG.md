@@ -29,6 +29,13 @@ Semantic Versioning.
   artifacts make a protocol READY during that refresh, the same invocation
   executes that protocol instead of incorrectly reporting `No READY protocols.`
   with exit `3` or `4`.
+- `runa run` now accepts `--agent-command -- <argv tokens>` as a per-invocation
+  override for `[agent].command`. When the override flag is present but no
+  usable argv follows `--`, `run` keeps the existing
+  `AgentCommandNotConfigured` failure instead of falling back to config.
+- `runa run` now validates its effective agent command before reporting a
+  quiescent `nothing_ready` outcome, so malformed or missing live command
+  input is no longer masked when no protocols are READY.
 
 ## [0.1.0] — 2026-04-03
 
