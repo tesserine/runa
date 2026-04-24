@@ -82,10 +82,10 @@ struct RunArgs {
     #[arg(long = "agent-command")]
     agent_command: bool,
 
-    /// Agent argv passed through when `--agent-command` is set
+    /// Agent argv passed through after `--` when `--agent-command` is set
     #[arg(
         num_args = 0..,
-        trailing_var_arg = true,
+        last = true,
         allow_hyphen_values = true,
         requires = "agent_command",
         value_name = "ARGV"
