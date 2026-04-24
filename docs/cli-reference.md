@@ -29,11 +29,15 @@ filter = "info"   # any tracing env-filter directive
 
 ### Agent Execution
 
-Live `runa step` and `runa run` (without `--dry-run`) require an `[agent].command` entry in the config:
+Live `runa step` (without `--dry-run`) requires an `[agent].command` entry in the config. Live `runa run` uses the same config entry by default, but a single invocation may override it with `--agent-command -- <argv tokens>`:
 
 ```toml
 [agent]
 command = ["./examples/agent-claude-code.sh"]
+```
+
+```bash
+runa run --agent-command -- ./examples/agent-claude-code.sh --dangerously-skip-permissions
 ```
 
 Runa executes that command in the project root with stdout and stderr attached to the terminal, renders a natural-language execution prompt from the planned protocol context, and writes the prompt on stdin. Before each invocation, runa exports `RUNA_MCP_CONFIG` — a JSON payload containing the resolved `runa-mcp` command, arguments, and environment — so the agent wrapper can launch the MCP server as its own child process. The payload is runtime-agnostic (`{command, args, env}`); agent wrappers adapt it to their runtime's schema. The config path above is resolved from the project root at execution time. To inspect the sample wrapper in this repository, see [`examples/agent-claude-code.sh`](../examples/agent-claude-code.sh), which converts the payload to Claude's `mcpServers` format.
@@ -154,7 +158,7 @@ Without `--dry-run`, `step` requires `[agent].command` in the config and a Linux
 ### `runa run`
 
 ```bash
-runa run [--dry-run] [--json] [--work-unit <ID>] [--config <PATH>]
+runa run [--dry-run] [--json] [--work-unit <ID>] [--agent-command -- <argv tokens>] [--config <PATH>]
 ```
 
 The cascade command. Walks the READY frontier repeatedly until quiescence instead of stopping after one execution.
@@ -163,7 +167,7 @@ Without `--work-unit`, `run` considers only unscoped protocols. With `--work-uni
 
 With `--dry-run`, projects the full optimistic cascade from the same scope-filtered execution order used by evaluation and planning, plus declared `produces` outputs, dependency edges, and the caller-supplied evaluation scope. `may_produce` outputs do not advance the projection unless they already exist on disk. Initially ready entries include MCP config and full context on first emission; downstream projected entries carry only protocol name, optional work unit, trigger, and projection kind. The projection never synthesizes artifact values, forks the store, bypasses schema validation, or discovers sibling work units from artifact state.
 
-Without `--dry-run`, requires a Linux host. On non-Linux platforms, fails explicitly before installing the interrupt handler, resolving `runa-mcp`, or launching an agent. If no READY protocol is ever dispatched, `run` exits `4` (`nothing_ready`) instead of treating that invocation as `success`. Failed candidates are skipped for the rest of the invocation; any artifacts emitted before failure are still reconciled into workspace state for downstream readiness. Previously exhausted work reopens when a later reconciliation changes relevant inputs.
+Without `--dry-run`, requires a Linux host plus an effective agent command. `run` resolves that command in this order: `--agent-command -- <argv tokens>` when supplied, otherwise `[agent].command` from config, otherwise the existing `AgentCommandNotConfigured` error. If `--agent-command` is present but no usable argv tokens follow the `--`, `run` fails with `AgentCommandNotConfigured` and does not fall back to config. On non-Linux platforms, `run` fails explicitly before installing the interrupt handler, resolving `runa-mcp`, or launching an agent. If no READY protocol is ever dispatched, `run` exits `4` (`nothing_ready`) instead of treating that invocation as `success`. Failed candidates are skipped for the rest of the invocation; any artifacts emitted before failure are still reconciled into workspace state for downstream readiness. Previously exhausted work reopens when a later reconciliation changes relevant inputs.
 
 **Interrupt behavior.** The first `Ctrl-C` is boundary-scoped: the current protocol run completes its scan and postcondition reconciliation. After that reconciliation, `run` exits `130` only if the interrupt prevented the next READY candidate from starting. If no further READY work remains, the quiescent topology outcome takes precedence. A second `Ctrl-C` forces immediate exit with status `130`; the isolated child process may continue running after `runa` terminates.
 
@@ -172,6 +176,7 @@ Without `--dry-run`, requires a Linux host. On non-Linux platforms, fails explic
 - `--dry-run` — Preview the projected cascade. Does not execute agents.
 - `--json` — Dry-run only. Same envelope structure as `runa step --json`, but `execution_plan` may contain multiple entries including projected downstream work.
 - `--work-unit <ID>` — Plan or execute only scoped protocols for the delegated work unit `<ID>`.
+- `--agent-command -- <argv tokens>` — Override `[agent].command` for this live `run` invocation. Pass the agent argv after `--` so hyphen-prefixed tokens are forwarded unchanged.
 
 **Exit codes** (`4` is live-only; dry-run still reflects current topology state, not the projection):
 

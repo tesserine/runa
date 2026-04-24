@@ -228,6 +228,30 @@ fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
 }
 
 #[cfg(unix)]
+fn write_single_protocol_agent(dir: &Path) -> PathBuf {
+    let script_path = dir.join("single-protocol-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nlog_file=\"$1\"\npayload=$(cat)\ncase \"$payload\" in\n  *\"# Protocol: implement\"*)\n    printf 'implement\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/implementation\n    printf '%s\\n' '{\"done\":true}' > .runa/workspace/implementation/impl-1.json\n    ;;\n  *)\n    printf '%s\\n' \"$payload\" > \"$log_file.unexpected\"\n    exit 19\n    ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+#[cfg(unix)]
+fn write_arg_logging_single_protocol_agent(dir: &Path) -> PathBuf {
+    let script_path = dir.join("arg-logging-single-protocol-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nlog_file=\"$1\"\nargs_file=\"$2\"\nshift 2\nprintf '%s\\n' \"$@\" > \"$args_file\"\npayload=$(cat)\ncase \"$payload\" in\n  *\"# Protocol: implement\"*)\n    printf 'implement\\n' >> \"$log_file\"\n    mkdir -p .runa/workspace/implementation\n    printf '%s\\n' '{\"done\":true}' > .runa/workspace/implementation/impl-1.json\n    ;;\n  *)\n    printf '%s\\n' \"$payload\" > \"$log_file.unexpected\"\n    exit 19\n    ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+#[cfg(unix)]
 fn write_reconciling_agent(dir: &Path) -> PathBuf {
     let script_path = dir.join("reconciling-agent.sh");
     fs::write(
@@ -361,6 +385,362 @@ fn send_sigint_to_process_group(pid: u32) {
         rc, 0,
         "failed to send SIGINT to process group {process_group}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_without_dry_run_uses_configured_agent_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            ("implementation", bool_schema),
+        ],
+        &["implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship run"}"#,
+    )
+    .unwrap();
+
+    let log_path = dir.path().join("configured.log");
+    let agent_path = write_single_protocol_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = runa_bin()
+        .arg("run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let executed = fs::read_to_string(&log_path).unwrap();
+    assert_eq!(executed, "implement\n");
+    assert!(workspace.join("implementation/impl-1.json").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn run_without_dry_run_cli_agent_command_overrides_configured_agent_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            ("implementation", bool_schema),
+        ],
+        &["implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship run"}"#,
+    )
+    .unwrap();
+
+    let config_log_path = dir.path().join("configured.log");
+    let cli_log_path = dir.path().join("cli.log");
+    let configured_agent = write_single_protocol_agent(dir.path());
+    let cli_agent = write_single_protocol_agent(dir.path());
+    append_agent_command_config(
+        &project_dir,
+        &[configured_agent.as_path(), config_log_path.as_path()],
+    );
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--agent-command")
+        .arg("--")
+        .arg(&cli_agent)
+        .arg(&cli_log_path)
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let cli_executed = fs::read_to_string(&cli_log_path).unwrap();
+    assert_eq!(cli_executed, "implement\n");
+    assert!(!config_log_path.exists(), "configured agent should not run");
+    assert!(workspace.join("implementation/impl-1.json").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn run_without_dry_run_cli_agent_command_preserves_hyphenated_tokens() {
+    let dir = tempfile::tempdir().unwrap();
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            ("implementation", bool_schema),
+        ],
+        &["implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship run"}"#,
+    )
+    .unwrap();
+
+    let log_path = dir.path().join("executed.log");
+    let args_path = dir.path().join("argv.log");
+    let agent_path = write_arg_logging_single_protocol_agent(dir.path());
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--agent-command")
+        .arg("--")
+        .arg(&agent_path)
+        .arg(&log_path)
+        .arg(&args_path)
+        .arg("--dangerously-skip-permissions")
+        .arg("-p")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let argv = fs::read_to_string(&args_path).unwrap();
+    assert_eq!(argv, "--dangerously-skip-permissions\n-p\n");
+    let executed = fs::read_to_string(&log_path).unwrap();
+    assert_eq!(executed, "implement\n");
+    assert!(workspace.join("implementation/impl-1.json").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn run_without_dry_run_rejects_empty_cli_agent_command_even_when_configured() {
+    let dir = tempfile::tempdir().unwrap();
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            ("implementation", bool_schema),
+        ],
+        &["implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship run"}"#,
+    )
+    .unwrap();
+
+    let config_log_path = dir.path().join("configured.log");
+    let agent_path = write_single_protocol_agent(dir.path());
+    append_agent_command_config(
+        &project_dir,
+        &[agent_path.as_path(), config_log_path.as_path()],
+    );
+
+    let output = runa_bin()
+        .arg("run")
+        .arg("--agent-command")
+        .arg("--")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(6), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no agent command configured"),
+        "stderr: {stderr}"
+    );
+    assert!(!config_log_path.exists(), "configured agent should not run");
+    assert!(!workspace.join("implementation/impl-1.json").exists());
+}
+
+#[test]
+fn run_without_dry_run_fails_when_agent_command_is_not_configured() {
+    let dir = tempfile::tempdir().unwrap();
+    let bool_schema =
+        r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            ("implementation", bool_schema),
+        ],
+        &["implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship run"}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(6), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no agent command configured"),
+        "stderr: {stderr}"
+    );
+    assert!(!workspace.join("implementation/impl-1.json").exists());
+}
+
+#[test]
+fn run_help_describes_agent_command_passthrough() {
+    let output = runa_bin().arg("run").arg("--help").output().unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--agent-command"), "stdout: {stdout}");
+    assert!(stdout.contains("-- <argv"), "stdout: {stdout}");
 }
 
 #[cfg(unix)]

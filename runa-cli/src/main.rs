@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process;
 use std::{io, io::Write};
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use tracing::error;
 
 use crate::exit_codes::ExitCode;
@@ -61,19 +61,36 @@ enum Commands {
         work_unit: Option<String>,
     },
     /// Cascade through ready protocols until quiescence
-    Run {
-        /// Show the projected cascade without attempting agent execution
-        #[arg(long)]
-        dry_run: bool,
+    Run(RunArgs),
+}
 
-        /// Emit machine-readable JSON instead of text output
-        #[arg(long)]
-        json: bool,
+#[derive(Args)]
+struct RunArgs {
+    /// Show the projected cascade without attempting agent execution
+    #[arg(long)]
+    dry_run: bool,
 
-        /// Evaluate only the specified delegated work unit
-        #[arg(long)]
-        work_unit: Option<String>,
-    },
+    /// Emit machine-readable JSON instead of text output
+    #[arg(long)]
+    json: bool,
+
+    /// Evaluate only the specified delegated work unit
+    #[arg(long)]
+    work_unit: Option<String>,
+
+    /// Override the live agent command; pass argv after `--`, for example `--agent-command -- <argv tokens>`
+    #[arg(long = "agent-command")]
+    agent_command: bool,
+
+    /// Agent argv passed through when `--agent-command` is set
+    #[arg(
+        num_args = 0..,
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        requires = "agent_command",
+        value_name = "ARGV"
+    )]
+    agent_command_argv: Vec<String>,
 }
 
 fn main() {
@@ -186,17 +203,15 @@ fn main() {
                 Err(err) => fatal_command_error("step", &err, err.exit_code()),
             }
         }
-        Commands::Run {
-            dry_run,
-            json,
-            work_unit,
-        } => {
+        Commands::Run(args) => {
             match commands::run::run(
                 &working_dir,
                 config_override_ref,
-                dry_run,
-                json,
-                work_unit.as_deref(),
+                args.dry_run,
+                args.json,
+                args.work_unit.as_deref(),
+                args.agent_command,
+                &args.agent_command_argv,
             ) {
                 Ok(outcome) => {
                     let exit_code = outcome.exit_code();
