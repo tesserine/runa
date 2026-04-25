@@ -1,5 +1,7 @@
 mod common;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 fn runa_bin() -> Command {
@@ -152,4 +154,42 @@ fn init_rejects_removed_artifacts_dir_flag() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--artifacts-dir"), "stderr: {stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn init_reports_actionable_error_for_unwritable_existing_runa_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path =
+        common::write_methodology(dir.path(), valid_manifest_toml(), SCHEMAS, PROTOCOLS);
+
+    let project_dir = dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let runa_dir = project_dir.join(".runa");
+    std::fs::create_dir(&runa_dir).unwrap();
+    std::fs::set_permissions(&runa_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let output = runa_bin()
+        .arg("init")
+        .arg("--methodology")
+        .arg(&manifest_path)
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    std::fs::set_permissions(&runa_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(".runa"), "stderr: {stderr}");
+    assert!(stderr.contains("owned by uid"), "stderr: {stderr}");
+    assert!(stderr.contains("current uid"), "stderr: {stderr}");
+    assert!(stderr.contains("not writable"), "stderr: {stderr}");
+    assert!(stderr.contains("agentd"), "stderr: {stderr}");
+    assert!(stderr.contains("remove"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("Permission denied (os error 13)"),
+        "stderr: {stderr}"
+    );
 }
