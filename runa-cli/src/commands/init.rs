@@ -17,7 +17,22 @@ pub struct InitSummary {
 pub enum InitError {
     MethodologyNotFound { path: PathBuf },
     ManifestInvalid(libagent::ManifestError),
+    ExistingRunaPathUnusable(ExistingRunaPathDiagnostic),
     Io(std::io::Error),
+}
+
+#[derive(Debug)]
+pub struct ExistingRunaPathDiagnostic {
+    path: PathBuf,
+    owner_uid: u32,
+    current_uid: u32,
+    reason: ExistingRunaPathReason,
+}
+
+#[derive(Debug)]
+enum ExistingRunaPathReason {
+    OwnerMismatch,
+    NotWritable,
 }
 
 impl fmt::Display for InitError {
@@ -27,8 +42,30 @@ impl fmt::Display for InitError {
                 write!(f, "methodology not found: {}", path.display())
             }
             InitError::ManifestInvalid(e) => write!(f, "{e}"),
+            InitError::ExistingRunaPathUnusable(diagnostic) => write!(f, "{diagnostic}"),
             InitError::Io(e) => write!(f, "{e}"),
         }
+    }
+}
+
+impl fmt::Display for ExistingRunaPathDiagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let reason = match self.reason {
+            ExistingRunaPathReason::OwnerMismatch => "is owned by a different user",
+            ExistingRunaPathReason::NotWritable => "is not writable by the current user",
+        };
+        write!(
+            f,
+            "pre-existing runa state is not usable: {} {reason} \
+             (owned by uid {}, current uid {}). \
+             This usually means the directory is managed by another tool such as agentd, \
+             was left behind by a sudo-created init, or this command is running in the wrong directory. \
+             If another tool manages this directory, do not run `runa init` here. \
+             If this is leftover state, remove it and retry, or run `runa init` in the intended project directory.",
+            self.path.display(),
+            self.owner_uid,
+            self.current_uid
+        )
     }
 }
 
@@ -37,7 +74,7 @@ impl std::error::Error for InitError {
         match self {
             InitError::ManifestInvalid(e) => Some(e),
             InitError::Io(e) => Some(e),
-            InitError::MethodologyNotFound { .. } => None,
+            InitError::MethodologyNotFound { .. } | InitError::ExistingRunaPathUnusable(_) => None,
         }
     }
 }
@@ -62,6 +99,17 @@ pub fn run(
     let canonical_path = fs::canonicalize(methodology).map_err(InitError::Io)?;
 
     let runa_dir = working_dir.join(RUNA_DIR);
+    let config_dest = match config_path {
+        Some(p) => p.to_path_buf(),
+        None => runa_dir.join(CONFIG_FILENAME),
+    };
+    let config_dest_for_preflight = if config_dest.is_absolute() {
+        config_dest.clone()
+    } else {
+        working_dir.join(&config_dest)
+    };
+    preflight_existing_runa_paths(&runa_dir, &config_dest_for_preflight)?;
+
     fs::create_dir_all(&runa_dir).map_err(InitError::Io)?;
     fs::create_dir_all(runa_dir.join(STORE_DIRNAME)).map_err(InitError::Io)?;
 
@@ -76,10 +124,6 @@ pub fn run(
     };
     let config_toml = toml::to_string(&config).expect("Config serialization should not fail");
 
-    let config_dest = match config_path {
-        Some(p) => p.to_path_buf(),
-        None => runa_dir.join(CONFIG_FILENAME),
-    };
     if let Some(parent) = config_dest.parent() {
         fs::create_dir_all(parent).map_err(InitError::Io)?;
     }
@@ -98,6 +142,93 @@ pub fn run(
         artifact_type_count: manifest.artifact_types.len(),
         protocol_count: manifest.protocols.len(),
     })
+}
+
+fn preflight_existing_runa_paths(runa_dir: &Path, config_dest: &Path) -> Result<(), InitError> {
+    let mut paths = vec![
+        runa_dir.to_path_buf(),
+        runa_dir.join(STORE_DIRNAME),
+        runa_dir.join(DEFAULT_WORKSPACE_DIR),
+        runa_dir.join(STATE_FILENAME),
+    ];
+    if config_dest.starts_with(runa_dir)
+        && let Some(parent) = config_dest.parent()
+    {
+        paths.push(parent.to_path_buf());
+    }
+
+    for path in paths {
+        preflight_existing_runa_path(&path)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn preflight_existing_runa_path(path: &Path) -> Result<(), InitError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(InitError::Io(error)),
+    };
+
+    if let Some(diagnostic) = diagnose_existing_runa_path(
+        path,
+        metadata.uid(),
+        current_uid(),
+        owner_can_write(&metadata),
+    ) {
+        return Err(InitError::ExistingRunaPathUnusable(diagnostic));
+    }
+
+    Ok(())
+}
+
+fn diagnose_existing_runa_path(
+    path: &Path,
+    owner_uid: u32,
+    current_uid: u32,
+    current_user_can_write: bool,
+) -> Option<ExistingRunaPathDiagnostic> {
+    let reason = if owner_uid != current_uid {
+        Some(ExistingRunaPathReason::OwnerMismatch)
+    } else if !current_user_can_write {
+        Some(ExistingRunaPathReason::NotWritable)
+    } else {
+        None
+    };
+
+    reason.map(|reason| ExistingRunaPathDiagnostic {
+        path: path.to_path_buf(),
+        owner_uid,
+        current_uid,
+        reason,
+    })
+}
+
+#[cfg(not(unix))]
+fn preflight_existing_runa_path(_path: &Path) -> Result<(), InitError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn current_uid() -> u32 {
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
+#[cfg(unix)]
+fn owner_can_write(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let mode = metadata.mode();
+    if metadata.file_type().is_dir() {
+        mode & 0o300 == 0o300
+    } else {
+        mode & 0o200 == 0o200
+    }
 }
 
 fn now_iso8601() -> String {
@@ -135,7 +266,6 @@ fn days_to_date(days: u64) -> (u64, u64, u64) {
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,6 +453,19 @@ trigger = { type = "on_artifact", name = "design-doc" }
             matches!(err, InitError::ManifestInvalid(_)),
             "expected ManifestInvalid, got: {err}"
         );
+    }
+
+    #[test]
+    fn existing_runa_path_diagnostic_reports_owner_mismatch() {
+        let diagnostic = diagnose_existing_runa_path(Path::new(".runa"), 0, 1000, true).unwrap();
+
+        let message = diagnostic.to_string();
+        assert!(message.contains(".runa"), "message: {message}");
+        assert!(message.contains("owned by uid 0"), "message: {message}");
+        assert!(message.contains("current uid 1000"), "message: {message}");
+        assert!(message.contains("different user"), "message: {message}");
+        assert!(message.contains("agentd"), "message: {message}");
+        assert!(message.contains("remove"), "message: {message}");
     }
 
     #[test]

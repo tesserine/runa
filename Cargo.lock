@@ -1256,6 +1256,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "libagent",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
