@@ -153,14 +153,38 @@ fn preflight_existing_runa_paths(runa_dir: &Path, config_dest: &Path) -> Result<
         runa_dir.join(STATE_FILENAME),
     ];
     paths.push(config_dest.to_path_buf());
-    if let Some(parent) = config_dest.parent() {
-        paths.push(parent.to_path_buf());
-    }
 
     for path in paths {
         preflight_existing_runa_path(&path)?;
     }
 
+    preflight_config_parent_creation(config_dest)?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn preflight_config_parent_creation(config_dest: &Path) -> Result<(), InitError> {
+    let Some(parent) = config_dest.parent() else {
+        return Ok(());
+    };
+
+    let mut candidate = Some(parent);
+    while let Some(path) = candidate {
+        match fs::metadata(path) {
+            Ok(_) => return preflight_existing_runa_path(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                candidate = path.parent();
+            }
+            Err(error) => return Err(InitError::Io(error)),
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn preflight_config_parent_creation(_config_dest: &Path) -> Result<(), InitError> {
     Ok(())
 }
 

@@ -295,3 +295,59 @@ fn init_reports_actionable_error_for_unwritable_custom_config_file_before_creati
         ".runa should not be created before the diagnostic"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn init_reports_actionable_error_for_unwritable_custom_config_ancestor_before_creating_runa_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path =
+        common::write_methodology(dir.path(), valid_manifest_toml(), SCHEMAS, PROTOCOLS);
+
+    let project_dir = dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let locked_config_ancestor = dir.path().join("locked");
+    std::fs::create_dir(&locked_config_ancestor).unwrap();
+    let custom_config_path = locked_config_ancestor.join("new").join("config.toml");
+    std::fs::set_permissions(
+        &locked_config_ancestor,
+        std::fs::Permissions::from_mode(0o500),
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("--config")
+        .arg(&custom_config_path)
+        .arg("init")
+        .arg("--methodology")
+        .arg(&manifest_path)
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    std::fs::set_permissions(
+        &locked_config_ancestor,
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(locked_config_ancestor.to_string_lossy().as_ref()),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("not writable"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("managed by another tool"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Permission denied (os error 13)"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !project_dir.join(".runa").exists(),
+        ".runa should not be created before the diagnostic"
+    );
+}
