@@ -1,5 +1,6 @@
 use std::fmt;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::project::{
@@ -58,7 +59,7 @@ impl fmt::Display for ExistingRunaPathDiagnostic {
             f,
             "pre-existing runa state is not usable: {} {reason} \
              (owned by uid {}, current uid {}). \
-             This usually means the directory is managed by another tool such as agentd, \
+             This usually means the directory is managed by another tool, \
              was left behind by a sudo-created init, or this command is running in the wrong directory. \
              If another tool manages this directory, do not run `runa init` here. \
              If this is leftover state, remove it and retry, or run `runa init` in the intended project directory.",
@@ -151,9 +152,8 @@ fn preflight_existing_runa_paths(runa_dir: &Path, config_dest: &Path) -> Result<
         runa_dir.join(DEFAULT_WORKSPACE_DIR),
         runa_dir.join(STATE_FILENAME),
     ];
-    if config_dest.starts_with(runa_dir)
-        && let Some(parent) = config_dest.parent()
-    {
+    paths.push(config_dest.to_path_buf());
+    if let Some(parent) = config_dest.parent() {
         paths.push(parent.to_path_buf());
     }
 
@@ -178,7 +178,7 @@ fn preflight_existing_runa_path(path: &Path) -> Result<(), InitError> {
         path,
         metadata.uid(),
         current_uid(),
-        owner_can_write(&metadata),
+        current_process_can_write(path, &metadata).map_err(InitError::Io)?,
     ) {
         return Err(InitError::ExistingRunaPathUnusable(diagnostic));
     }
@@ -192,12 +192,14 @@ fn diagnose_existing_runa_path(
     current_uid: u32,
     current_user_can_write: bool,
 ) -> Option<ExistingRunaPathDiagnostic> {
+    if current_user_can_write {
+        return None;
+    }
+
     let reason = if owner_uid != current_uid {
         Some(ExistingRunaPathReason::OwnerMismatch)
-    } else if !current_user_can_write {
-        Some(ExistingRunaPathReason::NotWritable)
     } else {
-        None
+        Some(ExistingRunaPathReason::NotWritable)
     };
 
     reason.map(|reason| ExistingRunaPathDiagnostic {
@@ -220,14 +222,34 @@ fn current_uid() -> u32 {
 }
 
 #[cfg(unix)]
-fn owner_can_write(metadata: &fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
+fn current_process_can_write(path: &Path, metadata: &fs::Metadata) -> io::Result<bool> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
 
-    let mode = metadata.mode();
-    if metadata.file_type().is_dir() {
-        mode & 0o300 == 0o300
+    let access_mode = if metadata.file_type().is_dir() {
+        libc::W_OK | libc::X_OK
     } else {
-        mode & 0o200 == 0o200
+        libc::W_OK
+    };
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+
+    // `AT_EACCESS` checks effective process credentials, matching whether
+    // `init` will be able to create or overwrite this path.
+    let result =
+        unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), access_mode, libc::AT_EACCESS) };
+    if result == 0 {
+        Ok(true)
+    } else {
+        let error = io::Error::last_os_error();
+        if matches!(
+            error.kind(),
+            io::ErrorKind::PermissionDenied | io::ErrorKind::NotFound
+        ) {
+            Ok(false)
+        } else {
+            Err(error)
+        }
     }
 }
 
@@ -456,15 +478,29 @@ trigger = { type = "on_artifact", name = "design-doc" }
     }
 
     #[test]
-    fn existing_runa_path_diagnostic_reports_owner_mismatch() {
-        let diagnostic = diagnose_existing_runa_path(Path::new(".runa"), 0, 1000, true).unwrap();
+    fn existing_runa_path_diagnostic_ignores_owner_mismatch_when_writable() {
+        let diagnostic = diagnose_existing_runa_path(Path::new(".runa"), 0, 1000, true);
+
+        assert!(
+            diagnostic.is_none(),
+            "owner mismatch alone should not fail writable state"
+        );
+    }
+
+    #[test]
+    fn existing_runa_path_diagnostic_reports_owner_mismatch_when_unwritable() {
+        let diagnostic = diagnose_existing_runa_path(Path::new(".runa"), 0, 1000, false).unwrap();
 
         let message = diagnostic.to_string();
         assert!(message.contains(".runa"), "message: {message}");
         assert!(message.contains("owned by uid 0"), "message: {message}");
         assert!(message.contains("current uid 1000"), "message: {message}");
         assert!(message.contains("different user"), "message: {message}");
-        assert!(message.contains("agentd"), "message: {message}");
+        assert!(
+            message.contains("managed by another tool"),
+            "message: {message}"
+        );
+        assert!(!message.contains("agentd"), "message: {message}");
         assert!(message.contains("remove"), "message: {message}");
     }
 
