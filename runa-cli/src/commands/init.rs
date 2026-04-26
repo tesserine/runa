@@ -155,25 +155,45 @@ fn preflight_existing_runa_paths(runa_dir: &Path, config_dest: &Path) -> Result<
     paths.push(config_dest.to_path_buf());
 
     for path in paths {
-        preflight_existing_runa_path(&path)?;
+        preflight_init_output_path(&path)?;
     }
-
-    preflight_config_parent_creation(config_dest)?;
 
     Ok(())
 }
 
 #[cfg(unix)]
-fn preflight_config_parent_creation(config_dest: &Path) -> Result<(), InitError> {
-    let Some(parent) = config_dest.parent() else {
-        return Ok(());
-    };
+fn preflight_init_output_path(path: &Path) -> Result<(), InitError> {
+    match fs::metadata(path) {
+        Ok(metadata) => preflight_existing_runa_path_metadata(path, metadata),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            preflight_existing_parent_for_creation(path)
+        }
+        Err(error) => Err(InitError::Io(error)),
+    }
+}
 
-    let mut candidate = Some(parent);
+#[cfg(not(unix))]
+fn preflight_init_output_path(_path: &Path) -> Result<(), InitError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn preflight_existing_parent_for_creation(path: &Path) -> Result<(), InitError> {
+    let mut candidate = path.parent();
     while let Some(path) = candidate {
         match fs::metadata(path) {
-            Ok(_) => return preflight_existing_runa_path(path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(metadata) => return preflight_existing_runa_path_metadata(path, metadata),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                ) =>
+            {
                 candidate = path.parent();
             }
             Err(error) => return Err(InitError::Io(error)),
@@ -183,20 +203,12 @@ fn preflight_config_parent_creation(config_dest: &Path) -> Result<(), InitError>
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn preflight_config_parent_creation(_config_dest: &Path) -> Result<(), InitError> {
-    Ok(())
-}
-
 #[cfg(unix)]
-fn preflight_existing_runa_path(path: &Path) -> Result<(), InitError> {
+fn preflight_existing_runa_path_metadata(
+    path: &Path,
+    metadata: fs::Metadata,
+) -> Result<(), InitError> {
     use std::os::unix::fs::MetadataExt;
-
-    let metadata = match fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(InitError::Io(error)),
-    };
 
     if let Some(diagnostic) = diagnose_existing_runa_path(
         path,
@@ -232,11 +244,6 @@ fn diagnose_existing_runa_path(
         current_uid,
         reason,
     })
-}
-
-#[cfg(not(unix))]
-fn preflight_existing_runa_path(_path: &Path) -> Result<(), InitError> {
-    Ok(())
 }
 
 #[cfg(unix)]
