@@ -101,15 +101,11 @@ pub fn run(
 
     let runa_dir = working_dir.join(RUNA_DIR);
     let config_dest = match config_path {
-        Some(p) => p.to_path_buf(),
+        Some(p) if p.is_absolute() => p.to_path_buf(),
+        Some(p) => working_dir.join(p),
         None => runa_dir.join(CONFIG_FILENAME),
     };
-    let config_dest_for_preflight = if config_dest.is_absolute() {
-        config_dest.clone()
-    } else {
-        working_dir.join(&config_dest)
-    };
-    preflight_existing_runa_paths(&runa_dir, &config_dest_for_preflight)?;
+    preflight_existing_runa_paths(&runa_dir, &config_dest)?;
 
     fs::create_dir_all(&runa_dir).map_err(InitError::Io)?;
     fs::create_dir_all(runa_dir.join(STORE_DIRNAME)).map_err(InitError::Io)?;
@@ -506,6 +502,65 @@ trigger = { type = "on_artifact", name = "design-doc" }
             matches!(err, InitError::ManifestInvalid(_)),
             "expected ManifestInvalid, got: {err}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_working_dir_reports_default_config_preflight_before_writing_state() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = format!(
+            "target/init-relative-preflight-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = PathBuf::from(unique);
+        let methodology_dir = root.join("methodology");
+        fs::create_dir_all(&methodology_dir).unwrap();
+        let manifest_path = write_methodology_layout(&methodology_dir);
+
+        let working = root.join("project");
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        let config_path = runa_dir.join("config.toml");
+        fs::write(&config_path, "old config").unwrap();
+        fs::set_permissions(&config_path, fs::Permissions::from_mode(0o400)).unwrap();
+
+        let err = run(&working, &manifest_path, None).unwrap_err();
+
+        fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        assert!(
+            matches!(err, InitError::ExistingRunaPathUnusable(_)),
+            "expected preflight diagnostic, got: {err}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains(config_path.to_string_lossy().as_ref()),
+            "message should name the default config path: {message}"
+        );
+        assert!(message.contains("not writable"), "message: {message}");
+        assert!(
+            !message.contains("Permission denied"),
+            "message should not expose raw EACCES: {message}"
+        );
+        assert!(
+            !runa_dir.join("store").exists(),
+            "store should not be created before the diagnostic"
+        );
+        assert!(
+            !runa_dir.join("workspace").exists(),
+            "workspace should not be created before the diagnostic"
+        );
+        assert!(
+            !runa_dir.join("state.toml").exists(),
+            "state should not be created before the diagnostic"
+        );
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
