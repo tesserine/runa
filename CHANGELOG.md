@@ -39,6 +39,10 @@ Semantic Versioning.
 - `runa init` now reports an actionable diagnostic when pre-existing `.runa/`
   state or the selected config destination is not writable, including likely
   causes and remediation instead of a raw permission error.
+- Breaking change: `runa-cli` no longer carries Unix/non-Unix alternate code
+  paths. Live `runa step` and `runa run` no longer provide the previous
+  contract-defined non-Linux `UnsupportedPlatform` runtime rejection; non-Linux
+  build and runtime outcomes are unsupported and unspecified.
 
 ## [0.1.0] — 2026-04-03
 
