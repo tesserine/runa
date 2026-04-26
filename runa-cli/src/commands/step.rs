@@ -3,7 +3,6 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::io;
 use std::io::Write;
-#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
@@ -25,10 +24,6 @@ pub enum StepError {
     Json(serde_json::Error),
     AgentCommandNotConfigured,
     JsonRequiresDryRun,
-    UnsupportedPlatform {
-        command: &'static str,
-        current_os: &'static str,
-    },
     McpBinaryNotFound {
         binary_name: String,
         sibling_path: Option<PathBuf>,
@@ -80,13 +75,6 @@ impl fmt::Display for StepError {
             StepError::JsonRequiresDryRun => {
                 write!(f, "--json is only supported with --dry-run")
             }
-            StepError::UnsupportedPlatform {
-                command,
-                current_os,
-            } => write!(
-                f,
-                "live command '{command}' is unsupported on {current_os}; runa targets Linux"
-            ),
             StepError::McpBinaryNotFound {
                 binary_name,
                 sibling_path,
@@ -177,7 +165,6 @@ impl std::error::Error for StepError {
             StepError::Json(err) => Some(err),
             StepError::AgentCommandNotConfigured => None,
             StepError::JsonRequiresDryRun => None,
-            StepError::UnsupportedPlatform { .. } => None,
             StepError::McpBinaryNotFound { .. } => None,
             StepError::AgentCommandIo { source, .. } => Some(source),
             StepError::AgentCommandFailed { .. } => None,
@@ -204,7 +191,6 @@ impl StepError {
             StepError::Command(_)
             | StepError::Json(_)
             | StepError::AgentCommandNotConfigured
-            | StepError::UnsupportedPlatform { .. }
             | StepError::McpBinaryNotFound { .. }
             | StepError::AgentCommandIo { .. }
             | StepError::PostExecutionScan { .. }
@@ -284,24 +270,6 @@ pub(crate) struct ExecutionState {
     pub(crate) scan_findings: protocol_eval::ScanFindings,
     pub(crate) evaluated: protocol_eval::EvaluatedProtocols,
     pub(crate) planned_entries: Vec<PlannedEntry>,
-}
-
-pub(crate) fn ensure_live_execution_supported(command: &'static str) -> Result<(), StepError> {
-    ensure_live_execution_supported_for(command, std::env::consts::OS)
-}
-
-fn ensure_live_execution_supported_for(
-    command: &'static str,
-    current_os: &'static str,
-) -> Result<(), StepError> {
-    if current_os == "linux" {
-        Ok(())
-    } else {
-        Err(StepError::UnsupportedPlatform {
-            command,
-            current_os,
-        })
-    }
 }
 
 fn serialize_context<S>(context: &ContextInjection, serializer: S) -> Result<S::Ok, S::Error>
@@ -440,7 +408,6 @@ pub(crate) fn execute_entry(
     );
 
     let mut child = ProcessCommand::new(&agent_command[0]);
-    #[cfg(unix)]
     if options.isolate_process_group {
         child.process_group(0);
     }
@@ -454,8 +421,6 @@ pub(crate) fn execute_entry(
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    #[cfg(not(unix))]
-    let _ = options;
 
     let mut child = child.spawn().map_err(|source| StepError::AgentCommandIo {
         command: command_display.clone(),
@@ -635,9 +600,6 @@ fn run_internal(
 ) -> Result<StepOutcome, StepError> {
     if !dry_run && json_output {
         return Err(StepError::JsonRequiresDryRun);
-    }
-    if !dry_run {
-        ensure_live_execution_supported("step")?;
     }
 
     let (mut loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
@@ -885,7 +847,6 @@ fn find_binary_on_path(path_env: Option<&OsStr>, binary_name: &str) -> Option<Pa
     None
 }
 
-#[cfg(unix)]
 fn is_executable_binary(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
 
@@ -893,11 +854,6 @@ fn is_executable_binary(path: &Path) -> bool {
         && std::fs::metadata(path)
             .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
             .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable_binary(path: &Path) -> bool {
-    path.is_file()
 }
 
 fn binary_executable_name(binary_name: &str) -> String {
@@ -1014,7 +970,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     fn write_executable_file(path: &Path) {
         use std::os::unix::fs::PermissionsExt;
 
@@ -1022,11 +977,6 @@ mod tests {
         let mut permissions = fs::metadata(path).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).unwrap();
-    }
-
-    #[cfg(not(unix))]
-    fn write_executable_file(path: &Path) {
-        fs::write(path, b"").unwrap();
     }
 
     #[test]
@@ -1179,7 +1129,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn discover_binary_skips_non_executable_sibling_and_uses_path() {
         let temp = tempfile::tempdir().unwrap();
         let sibling_dir = temp.path().join("sibling");
@@ -1201,7 +1150,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn discover_binary_skips_non_executable_path_entries() {
         let temp = tempfile::tempdir().unwrap();
         let first_path_dir = temp.path().join("path-1");
@@ -1224,27 +1172,6 @@ mod tests {
 
         assert_eq!(lookup.sibling_path, None);
         assert_eq!(lookup.resolved_path, Some(second_candidate));
-    }
-
-    #[test]
-    fn live_execution_platform_policy_accepts_linux() {
-        assert!(ensure_live_execution_supported_for("step", "linux").is_ok());
-        assert!(ensure_live_execution_supported_for("run", "linux").is_ok());
-    }
-
-    #[test]
-    fn live_execution_platform_policy_rejects_non_linux_platforms() {
-        let step_error = ensure_live_execution_supported_for("step", "macos").unwrap_err();
-        assert_eq!(
-            step_error.to_string(),
-            "live command 'step' is unsupported on macos; runa targets Linux"
-        );
-
-        let run_error = ensure_live_execution_supported_for("run", "windows").unwrap_err();
-        assert_eq!(
-            run_error.to_string(),
-            "live command 'run' is unsupported on windows; runa targets Linux"
-        );
     }
 
     #[test]

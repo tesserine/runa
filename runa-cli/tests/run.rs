@@ -1,15 +1,12 @@
 mod common;
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 
 fn runa_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_runa"))
@@ -321,8 +318,6 @@ fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
     )
     .unwrap();
 }
-
-#[cfg(unix)]
 fn write_single_protocol_agent(dir: &Path) -> PathBuf {
     let script_path = dir.join("single-protocol-agent.sh");
     fs::write(
@@ -333,8 +328,6 @@ fn write_single_protocol_agent(dir: &Path) -> PathBuf {
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
-
-#[cfg(unix)]
 fn write_arg_logging_single_protocol_agent(dir: &Path) -> PathBuf {
     let script_path = dir.join("arg-logging-single-protocol-agent.sh");
     fs::write(
@@ -345,8 +338,6 @@ fn write_arg_logging_single_protocol_agent(dir: &Path) -> PathBuf {
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
-
-#[cfg(unix)]
 fn write_reconciling_agent(dir: &Path) -> PathBuf {
     let script_path = dir.join("reconciling-agent.sh");
     fs::write(
@@ -357,8 +348,6 @@ fn write_reconciling_agent(dir: &Path) -> PathBuf {
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
-
-#[cfg(unix)]
 fn write_prepare_then_implement_agent(dir: &Path) -> PathBuf {
     let script_path = dir.join("prepare-then-implement-agent.sh");
     fs::write(
@@ -369,8 +358,6 @@ fn write_prepare_then_implement_agent(dir: &Path) -> PathBuf {
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
-
-#[cfg(unix)]
 fn write_scoped_prepare_then_revise_agent(dir: &Path) -> PathBuf {
     let script_path = dir.join("scoped-prepare-then-revise-agent.sh");
     fs::write(
@@ -381,8 +368,6 @@ fn write_scoped_prepare_then_revise_agent(dir: &Path) -> PathBuf {
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
-
-#[cfg(unix)]
 fn write_scoped_prepare_then_failed_revise_agent(dir: &Path) -> PathBuf {
     let script_path = dir.join("scoped-prepare-then-failed-revise-agent.sh");
     fs::write(
@@ -393,8 +378,6 @@ fn write_scoped_prepare_then_failed_revise_agent(dir: &Path) -> PathBuf {
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
-
-#[cfg(unix)]
 fn write_scoped_prepare_then_agent_failed_revise_agent(dir: &Path) -> PathBuf {
     let script_path = dir.join("scoped-prepare-then-agent-failed-revise-agent.sh");
     fs::write(
@@ -405,8 +388,6 @@ fn write_scoped_prepare_then_agent_failed_revise_agent(dir: &Path) -> PathBuf {
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
-
-#[cfg(unix)]
 fn write_fail_first_then_continue_agent(dir: &Path) -> PathBuf {
     let script_path = dir.join("fail-first-then-continue-agent.sh");
     fs::write(
@@ -417,8 +398,6 @@ fn write_fail_first_then_continue_agent(dir: &Path) -> PathBuf {
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
-
-#[cfg(unix)]
 fn write_prepare_notes_only_agent(dir: &Path) -> PathBuf {
     let script_path = dir.join("prepare-notes-only-agent.sh");
     fs::write(
@@ -429,8 +408,6 @@ fn write_prepare_notes_only_agent(dir: &Path) -> PathBuf {
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
-
-#[cfg(unix)]
 fn write_interruptible_prepare_agent(dir: &Path) -> PathBuf {
     let script_path = dir.join("interruptible-prepare-agent.sh");
     fs::write(
@@ -441,8 +418,6 @@ fn write_interruptible_prepare_agent(dir: &Path) -> PathBuf {
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
-
-#[cfg(unix)]
 fn write_parent_interrupting_agent(dir: &Path) -> PathBuf {
     let script_path = dir.join("parent-interrupting-agent.sh");
     fs::write(
@@ -453,8 +428,6 @@ fn write_parent_interrupting_agent(dir: &Path) -> PathBuf {
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
-
-#[cfg(unix)]
 fn wait_for_path(path: &Path, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -466,8 +439,6 @@ fn wait_for_path(path: &Path, timeout: Duration) {
 
     panic!("timed out waiting for {}", path.display());
 }
-
-#[cfg(unix)]
 fn send_sigint_to_process_group(pid: u32) {
     unsafe extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
@@ -481,8 +452,6 @@ fn send_sigint_to_process_group(pid: u32) {
         "failed to send SIGINT to process group {process_group}"
     );
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_dry_run_uses_configured_agent_command() {
     let dir = tempfile::tempdir().unwrap();
@@ -547,8 +516,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert_eq!(executed, "implement\n");
     assert!(workspace.join("implementation/impl-1.json").is_file());
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_dry_run_cli_agent_command_overrides_configured_agent_command() {
     let dir = tempfile::tempdir().unwrap();
@@ -623,8 +590,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert!(!config_log_path.exists(), "configured agent should not run");
     assert!(workspace.join("implementation/impl-1.json").is_file());
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_dry_run_cli_agent_command_preserves_hyphenated_tokens() {
     let dir = tempfile::tempdir().unwrap();
@@ -698,8 +663,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert_eq!(executed, "implement\n");
     assert!(workspace.join("implementation/impl-1.json").is_file());
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_dry_run_rejects_empty_cli_agent_command_even_when_configured() {
     let dir = tempfile::tempdir().unwrap();
@@ -845,8 +808,6 @@ fn run_help_describes_agent_command_passthrough() {
         "stdout: {stdout}"
     );
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_separator_rejects_agent_command_before_dry_run_flag() {
     let dir = tempfile::tempdir().unwrap();
@@ -914,8 +875,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert!(!log_path.exists(), "agent should not run");
     assert!(!workspace.join("implementation/impl-1.json").exists());
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_separator_rejects_agent_command_before_work_unit_flag() {
     let dir = tempfile::tempdir().unwrap();
@@ -984,8 +943,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert!(!log_path.exists(), "agent should not run");
     assert!(!workspace.join("implementation/impl-1.json").exists());
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_dry_run_cascades_through_ready_protocols() {
     let dir = tempfile::tempdir().unwrap();
@@ -1061,8 +1018,6 @@ trigger = { type = "on_artifact", name = "implementation" }
     assert!(workspace.join("implementation/impl-1.json").is_file());
     assert!(workspace.join("verified/check-1.json").is_file());
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_dry_run_stops_after_current_cycle_when_sigint_arrives_mid_execution() {
     let dir = tempfile::tempdir().unwrap();
@@ -1157,8 +1112,6 @@ trigger = { type = "on_artifact", name = "implementation" }
     assert!(workspace.join("implementation/impl-1.json").is_file());
     assert!(!workspace.join("verified/check-1.json").exists());
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_dry_run_prefers_quiescent_completion_when_sigint_arrives_in_final_cycle() {
     let dir = tempfile::tempdir().unwrap();
@@ -1510,8 +1463,6 @@ fn run_without_dry_run_with_no_ready_protocols_still_requires_agent_command() {
         "stderr: {stderr}"
     );
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_dry_run_rejects_empty_cli_agent_command_when_no_protocols_are_ready() {
     let (dir, project_dir) = setup_quiescent_run_project();
@@ -2146,8 +2097,6 @@ trigger = { type = "on_artifact", name = "constrained" }
     let plan_text = serde_json::to_string(execution_plan).unwrap();
     assert!(!plan_text.contains("wu-b"), "{plan_text}");
 }
-
-#[cfg(unix)]
 #[test]
 fn run_dry_run_preserves_partial_scan_blocking_in_projection() {
     use std::os::unix::fs::PermissionsExt;
@@ -2307,8 +2256,6 @@ trigger = { type = "on_artifact", name = "published" }
     assert_eq!(execution_plan[1]["protocol"], "notify");
     assert_eq!(execution_plan[1]["projection"], "projected");
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_dry_run_does_not_rerun_outputless_protocols_after_unrelated_transitions() {
     let dir = tempfile::tempdir().unwrap();
@@ -2378,8 +2325,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert_eq!(executed, "alpha_prepare\nbeta_implement\n");
     assert!(workspace.join("implementation/impl-1.json").is_file());
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_dry_run_only_reopens_scoped_outputless_work_for_matching_work_unit() {
     let dir = tempfile::tempdir().unwrap();
@@ -2551,8 +2496,6 @@ trigger = { type = "on_artifact", name = "notes" }
     assert!(execution_plan[3]["context"].is_null(), "{value:#}");
     assert!(execution_plan[3]["mcp_config"].is_null(), "{value:#}");
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_dry_run_reopens_exhausted_work_after_postcondition_failure() {
     let dir = tempfile::tempdir().unwrap();
@@ -2643,8 +2586,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert_eq!(executed, "prepare:wu-b\nrevise:wu-b\nprepare:wu-b\n");
     assert!(!workspace.join("implementation/out.json").exists());
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_dry_run_reopens_exhausted_work_after_agent_failure() {
     let dir = tempfile::tempdir().unwrap();
@@ -2741,8 +2682,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert_eq!(executed, "prepare:wu-b\nrevise:wu-b\nprepare:wu-b\n");
     assert!(!workspace.join("implementation/out.json").exists());
 }
-
-#[cfg(unix)]
 #[test]
 fn run_without_dry_run_continues_after_a_protocol_failure_and_returns_exit_2() {
     let dir = tempfile::tempdir().unwrap();
@@ -2871,8 +2810,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     assert!(!log_path.exists(), "agent should not run");
 }
-
-#[cfg(unix)]
 #[test]
 fn run_preserves_scan_gap_blocking_after_postcondition_failure() {
     use std::os::unix::fs::PermissionsExt;

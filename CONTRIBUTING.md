@@ -12,7 +12,8 @@ cargo fmt --check
 cargo clippy
 ```
 
-Runa targets Linux. Live `runa step` and live `runa run` are Linux-only.
+Use a Linux environment for development and verification. Runa targets Linux,
+and live `runa step` and live `runa run` are Linux-only.
 
 ## Architecture constraint
 

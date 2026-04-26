@@ -1,6 +1,4 @@
 mod common;
-
-#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
@@ -155,8 +153,6 @@ fn init_rejects_removed_artifacts_dir_flag() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--artifacts-dir"), "stderr: {stderr}");
 }
-
-#[cfg(unix)]
 #[test]
 fn init_reports_actionable_error_for_unwritable_existing_runa_directory() {
     let dir = tempfile::tempdir().unwrap();
@@ -197,8 +193,6 @@ fn init_reports_actionable_error_for_unwritable_existing_runa_directory() {
         "stderr: {stderr}"
     );
 }
-
-#[cfg(unix)]
 #[test]
 fn init_reports_actionable_error_for_unwritable_existing_config_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -250,8 +244,6 @@ fn init_reports_actionable_error_for_unwritable_existing_config_file() {
         "state should not be created before the diagnostic"
     );
 }
-
-#[cfg(unix)]
 #[test]
 fn init_reports_actionable_error_for_unwritable_custom_config_file_before_creating_runa_dir() {
     let dir = tempfile::tempdir().unwrap();
@@ -295,8 +287,6 @@ fn init_reports_actionable_error_for_unwritable_custom_config_file_before_creati
         ".runa should not be created before the diagnostic"
     );
 }
-
-#[cfg(unix)]
 #[test]
 fn init_reports_actionable_error_for_unwritable_custom_config_ancestor_before_creating_runa_dir() {
     let dir = tempfile::tempdir().unwrap();
@@ -351,8 +341,6 @@ fn init_reports_actionable_error_for_unwritable_custom_config_ancestor_before_cr
         ".runa should not be created before the diagnostic"
     );
 }
-
-#[cfg(unix)]
 #[test]
 fn init_reports_actionable_error_for_unsearchable_custom_config_ancestor_before_creating_runa_dir()
 {
@@ -413,8 +401,6 @@ fn init_reports_actionable_error_for_unsearchable_custom_config_ancestor_before_
         ".runa should not be created before the diagnostic"
     );
 }
-
-#[cfg(unix)]
 #[test]
 fn init_reports_actionable_error_for_unwritable_project_directory_before_writing_custom_config() {
     let dir = tempfile::tempdir().unwrap();
