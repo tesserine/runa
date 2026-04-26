@@ -446,9 +446,6 @@ pub fn run(
     if !dry_run && json_output {
         return Err(RunError::from(StepError::JsonRequiresDryRun));
     }
-    if !dry_run {
-        crate::commands::step::ensure_live_execution_supported("run").map_err(RunError::from)?;
-    }
 
     let (mut loaded, scan_result) = super::load_and_scan(working_dir, config_override)
         .map_err(StepError::from)

@@ -1,3 +1,8 @@
+#[cfg(not(target_os = "linux"))]
+compile_error!(
+    "runa-cli targets Linux only; build with a Linux target such as x86_64-unknown-linux-gnu or use a Linux host/container"
+);
+
 mod commands;
 mod exit_codes;
 mod project;

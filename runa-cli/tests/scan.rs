@@ -222,7 +222,6 @@ fn scan_returns_non_zero_when_workspace_is_missing_and_store_has_state() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn scan_reports_partially_scanned_types_and_suppresses_removals() {
     use std::os::unix::fs::PermissionsExt;

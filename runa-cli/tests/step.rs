@@ -251,7 +251,6 @@ fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
     .unwrap();
 }
 
-#[cfg(unix)]
 fn write_capture_agent(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -265,7 +264,6 @@ fn write_capture_agent(dir: &Path) -> std::path::PathBuf {
     script_path
 }
 
-#[cfg(unix)]
 fn write_no_output_agent(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -279,7 +277,6 @@ fn write_no_output_agent(dir: &Path) -> std::path::PathBuf {
     script_path
 }
 
-#[cfg(unix)]
 fn write_second_run_fails_agent(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -293,7 +290,6 @@ fn write_second_run_fails_agent(dir: &Path) -> std::path::PathBuf {
     script_path
 }
 
-#[cfg(unix)]
 fn write_failing_agent(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -307,7 +303,6 @@ fn write_failing_agent(dir: &Path) -> std::path::PathBuf {
     script_path
 }
 
-#[cfg(unix)]
 fn write_reconciling_agent(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -321,7 +316,6 @@ fn write_reconciling_agent(dir: &Path) -> std::path::PathBuf {
     script_path
 }
 
-#[cfg(unix)]
 fn write_prepare_then_implement_agent(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -335,7 +329,6 @@ fn write_prepare_then_implement_agent(dir: &Path) -> std::path::PathBuf {
     script_path
 }
 
-#[cfg(unix)]
 fn write_scoped_prepare_then_revise_agent(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -795,7 +788,6 @@ fn step_without_dry_run_fails_when_agent_command_is_not_configured() {
     assert!(stderr.contains("config.toml"), "stderr: {stderr}");
 }
 
-#[cfg(unix)]
 #[test]
 fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     let dir = tempfile::tempdir().unwrap();
@@ -898,7 +890,6 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn step_without_dry_run_executes_one_protocol_and_leaves_downstream_work_ready() {
     let dir = tempfile::tempdir().unwrap();
@@ -995,7 +986,6 @@ trigger = { type = "on_artifact", name = "implementation" }
     assert_eq!(verify["status"], "ready");
 }
 
-#[cfg(unix)]
 #[test]
 fn step_without_dry_run_stops_after_the_first_ready_protocol_when_multiple_are_ready() {
     let dir = tempfile::tempdir().unwrap();
@@ -1132,7 +1122,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert!(matches!(planned, "alpha_prepare" | "beta_implement"));
 }
 
-#[cfg(unix)]
 #[test]
 fn step_without_dry_run_stops_after_the_first_scoped_ready_protocol() {
     let dir = tempfile::tempdir().unwrap();
@@ -1267,7 +1256,6 @@ fn step_without_dry_run_reads_non_utf8_artifact_paths_into_prompt() {
     assert!(!captured.contains("Could not read artifact"), "{captured}");
 }
 
-#[cfg(unix)]
 #[test]
 fn step_without_dry_run_uses_path_runa_mcp_when_sibling_is_missing() {
     let dir = tempfile::tempdir().unwrap();
@@ -1330,7 +1318,6 @@ fn step_without_dry_run_uses_path_runa_mcp_when_sibling_is_missing() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn step_without_dry_run_absolutizes_relative_config_override_and_path_entry() {
     let dir = tempfile::tempdir().unwrap();
@@ -1411,7 +1398,6 @@ fn step_without_dry_run_absolutizes_relative_config_override_and_path_entry() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn claude_wrapper_wraps_runa_mcp_config_under_mcp_servers() {
     let dir = tempfile::tempdir().unwrap();
@@ -1463,7 +1449,6 @@ fn claude_wrapper_wraps_runa_mcp_config_under_mcp_servers() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn step_without_dry_run_reports_missing_runa_mcp_after_sibling_and_path_lookup() {
     let dir = tempfile::tempdir().unwrap();
@@ -1544,7 +1529,6 @@ fn step_without_dry_run_rejects_json_output() {
     assert!(stderr.contains("--json is only supported with --dry-run"));
 }
 
-#[cfg(unix)]
 #[test]
 fn step_without_dry_run_with_no_ready_protocols_skips_runa_mcp_lookup() {
     let dir = tempfile::tempdir().unwrap();
@@ -1619,7 +1603,6 @@ methodology_path = "/tmp/methodology.toml"
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn step_without_dry_run_stops_after_first_non_zero_agent_exit() {
     let dir = tempfile::tempdir().unwrap();
@@ -1703,7 +1686,6 @@ trigger = { type = "on_artifact", name = "doc" }
     assert!(!payload_dir.join("2.json").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn step_without_dry_run_reports_postcondition_failure_after_successful_agent_exit() {
     let dir = tempfile::tempdir().unwrap();
@@ -1787,7 +1769,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert!(!workspace.join("implementation/impl-1.json").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn step_without_dry_run_returns_exit_4_when_no_actionable_work_is_ready() {
     let dir = tempfile::tempdir().unwrap();
@@ -1851,7 +1832,6 @@ fn step_without_dry_run_returns_exit_4_when_no_actionable_work_is_ready() {
     assert!(!payload_path.exists(), "agent should not execute");
 }
 
-#[cfg(unix)]
 #[test]
 fn step_without_dry_run_does_not_rerun_ready_protocols_for_persistent_scan_warnings() {
     let dir = tempfile::tempdir().unwrap();
@@ -1980,7 +1960,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn step_dry_run_omits_partially_scanned_accepted_inputs_from_context() {
     use std::os::unix::fs::PermissionsExt;

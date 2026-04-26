@@ -9,6 +9,10 @@ Semantic Versioning.
 
 ### Changed
 
+- Breaking change: `runa-cli` now fails at compile time on non-Linux targets
+  with an explicit Linux-only platform message. Consumers running
+  `cargo install runa-cli` or `cargo build -p runa-cli` from non-Linux
+  targets must build from a Linux host or Linux Rust target.
 - `runa-cli` now uses the shared commons exit code convention across
   `init`, `scan`, `list`, `state`, `doctor`, `step`, and `run`.
 - Breaking change: `.runa/config.toml` no longer accepts `artifacts_dir`.

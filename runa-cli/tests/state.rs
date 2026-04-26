@@ -750,7 +750,6 @@ fn state_errors_on_uninitialized_project() {
     assert!(stderr.contains("no config found"), "stderr: {stderr}");
 }
 
-#[cfg(unix)]
 #[test]
 fn state_keeps_skills_ready_when_only_accepted_types_are_partially_scanned() {
     use std::os::unix::fs::PermissionsExt;
@@ -818,7 +817,6 @@ fn state_keeps_skills_ready_when_only_accepted_types_are_partially_scanned() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn state_blocks_skills_with_partial_required_types_and_reports_scan_warnings() {
     use std::os::unix::fs::PermissionsExt;
@@ -915,7 +913,6 @@ fn state_blocks_skills_with_partial_required_types_and_reports_scan_warnings() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn state_blocks_skills_when_partial_scan_affects_requires_even_if_trigger_is_unsatisfied() {
     use std::os::unix::fs::PermissionsExt;
@@ -988,7 +985,6 @@ trigger = { type = "on_invalid", name = "constraints" }
     assert!(protocols[0].get("unsatisfied_conditions").is_none());
 }
 
-#[cfg(unix)]
 #[test]
 fn state_reports_all_partial_required_types_as_scan_incomplete_failures() {
     use std::os::unix::fs::PermissionsExt;
@@ -1086,7 +1082,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn state_blocks_skills_when_partial_scan_affects_trigger_only_artifact_types() {
     use std::os::unix::fs::PermissionsExt;
@@ -1220,7 +1215,6 @@ trigger = { type = "any_of", conditions = [] }
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn state_blocks_on_invalid_when_candidate_discovery_scan_trust_is_missing() {
     use std::os::unix::fs::PermissionsExt;
@@ -1287,7 +1281,6 @@ trigger = { type = "on_invalid", name = "report" }
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn state_blocks_any_of_when_candidate_discovery_scan_trust_is_missing() {
     use std::os::unix::fs::PermissionsExt;
@@ -1367,7 +1360,6 @@ trigger = { type = "any_of", conditions = [
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn state_blocks_on_artifact_when_only_unreadable_instances_exist() {
     use std::os::unix::fs::PermissionsExt;
@@ -1433,7 +1425,6 @@ trigger = { type = "on_artifact", name = "report" }
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn state_blocks_untrustworthy_not_satisfied_on_invalid_and_on_change_triggers() {
     use std::os::unix::fs::PermissionsExt;
@@ -1537,7 +1528,6 @@ trigger = { type = "on_change", name = "doc" }
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn state_blocks_on_change_when_output_freshness_is_untrustworthy() {
     use std::os::unix::fs::PermissionsExt;
@@ -1612,7 +1602,6 @@ trigger = { type = "on_change", name = "doc" }
     assert!(review.get("precondition_failures").is_none());
 }
 
-#[cfg(unix)]
 #[test]
 fn state_scoped_partial_outputs_reopen_each_delegated_work_unit() {
     use std::os::unix::fs::PermissionsExt;
@@ -1881,7 +1870,6 @@ trigger = { type = "on_change", name = "doc" }
     assert_eq!(wu_b_reviews[0]["trigger"], "not_satisfied");
 }
 
-#[cfg(unix)]
 #[test]
 fn state_does_not_block_on_change_for_partial_optional_outputs() {
     use std::os::unix::fs::PermissionsExt;
@@ -1971,7 +1959,6 @@ trigger = { type = "on_change", name = "doc" }
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn state_scoped_reruns_reopen_when_output_scan_gaps_exist() {
     use std::os::unix::fs::PermissionsExt;
@@ -2101,7 +2088,6 @@ trigger = { type = "on_change", name = "doc" }
     assert_eq!(wu_b_reviews[0]["status"], "ready");
 }
 
-#[cfg(unix)]
 #[test]
 fn state_scoped_outputs_ignore_unverifiable_stored_work_unit_labels() {
     use std::os::unix::fs::PermissionsExt;
@@ -2236,7 +2222,6 @@ trigger = { type = "on_change", name = "doc" }
     assert_eq!(wu_b_reviews[0]["status"], "ready");
 }
 
-#[cfg(unix)]
 #[test]
 fn state_preserves_invalid_preconditions_alongside_scan_incomplete() {
     use std::os::unix::fs::PermissionsExt;
@@ -2308,7 +2293,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn state_blocks_on_artifact_when_partial_scan_could_hide_a_valid_instance() {
     use std::os::unix::fs::PermissionsExt;

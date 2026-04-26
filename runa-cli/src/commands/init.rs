@@ -157,7 +157,6 @@ fn preflight_existing_runa_paths(runa_dir: &Path, config_dest: &Path) -> Result<
     Ok(())
 }
 
-#[cfg(unix)]
 fn preflight_init_output_path(path: &Path) -> Result<(), InitError> {
     match fs::metadata(path) {
         Ok(metadata) => preflight_existing_runa_path_metadata(path, metadata),
@@ -173,12 +172,6 @@ fn preflight_init_output_path(path: &Path) -> Result<(), InitError> {
     }
 }
 
-#[cfg(not(unix))]
-fn preflight_init_output_path(_path: &Path) -> Result<(), InitError> {
-    Ok(())
-}
-
-#[cfg(unix)]
 fn preflight_existing_parent_for_creation(path: &Path) -> Result<(), InitError> {
     let mut candidate = path.parent();
     while let Some(path) = candidate {
@@ -199,7 +192,6 @@ fn preflight_existing_parent_for_creation(path: &Path) -> Result<(), InitError> 
     Ok(())
 }
 
-#[cfg(unix)]
 fn preflight_existing_runa_path_metadata(
     path: &Path,
     metadata: fs::Metadata,
@@ -242,13 +234,11 @@ fn diagnose_existing_runa_path(
     })
 }
 
-#[cfg(unix)]
 fn current_uid() -> u32 {
     // SAFETY: `geteuid` has no preconditions and cannot fail.
     unsafe { libc::geteuid() }
 }
 
-#[cfg(unix)]
 fn current_process_can_write(path: &Path, metadata: &fs::Metadata) -> io::Result<bool> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
@@ -531,8 +521,6 @@ trigger = { type = "on_artifact", name = "design-doc" }
             "expected ManifestInvalid, got: {err}"
         );
     }
-
-    #[cfg(unix)]
     #[test]
     fn relative_working_dir_reports_default_config_preflight_before_writing_state() {
         use std::os::unix::fs::PermissionsExt;

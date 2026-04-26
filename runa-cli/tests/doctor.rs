@@ -288,7 +288,6 @@ fn doctor_with_malformed_artifacts_exit_one() {
     assert!(stdout.contains("malformed"), "stdout: {stdout}");
 }
 
-#[cfg(unix)]
 #[test]
 fn doctor_reports_unreadable_workspace_entries_as_problems() {
     use std::os::unix::fs::PermissionsExt;
