@@ -61,6 +61,12 @@ Initializes a runa project. Parses the methodology manifest at `<PATH>`, validat
 
 Reports the artifact type and protocol counts on success.
 
+If pre-existing `.runa/` state or the selected config destination cannot be
+written by the current user, `init` fails before writing project state and
+reports the path, owner UID, current UID, likely causes, and remediation. This
+usually means the path is managed by another tool, was left by a sudo-created
+init, or the command is running in the wrong directory.
+
 **Flags:**
 
 - `--methodology <PATH>` — Path to the methodology manifest file. Required.

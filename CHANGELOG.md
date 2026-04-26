@@ -36,6 +36,9 @@ Semantic Versioning.
 - `runa run` now validates its effective agent command before reporting a
   quiescent `nothing_ready` outcome, so malformed or missing live command
   input is no longer masked when no protocols are READY.
+- `runa init` now reports an actionable diagnostic when pre-existing `.runa/`
+  state or the selected config destination is not writable, including likely
+  causes and remediation instead of a raw permission error.
 
 ## [0.1.0] — 2026-04-03
 

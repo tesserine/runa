@@ -1,5 +1,6 @@
 use std::fmt;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::project::{
@@ -17,7 +18,22 @@ pub struct InitSummary {
 pub enum InitError {
     MethodologyNotFound { path: PathBuf },
     ManifestInvalid(libagent::ManifestError),
+    ExistingRunaPathUnusable(ExistingRunaPathDiagnostic),
     Io(std::io::Error),
+}
+
+#[derive(Debug)]
+pub struct ExistingRunaPathDiagnostic {
+    path: PathBuf,
+    owner_uid: u32,
+    current_uid: u32,
+    reason: ExistingRunaPathReason,
+}
+
+#[derive(Debug)]
+enum ExistingRunaPathReason {
+    OwnerMismatch,
+    NotWritable,
 }
 
 impl fmt::Display for InitError {
@@ -27,8 +43,30 @@ impl fmt::Display for InitError {
                 write!(f, "methodology not found: {}", path.display())
             }
             InitError::ManifestInvalid(e) => write!(f, "{e}"),
+            InitError::ExistingRunaPathUnusable(diagnostic) => write!(f, "{diagnostic}"),
             InitError::Io(e) => write!(f, "{e}"),
         }
+    }
+}
+
+impl fmt::Display for ExistingRunaPathDiagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let reason = match self.reason {
+            ExistingRunaPathReason::OwnerMismatch => "is owned by a different user",
+            ExistingRunaPathReason::NotWritable => "is not writable by the current user",
+        };
+        write!(
+            f,
+            "pre-existing runa state is not usable: {} {reason} \
+             (owned by uid {}, current uid {}). \
+             This usually means the directory is managed by another tool, \
+             was left behind by a sudo-created init, or this command is running in the wrong directory. \
+             If another tool manages this directory, do not run `runa init` here. \
+             If this is leftover state, remove it and retry, or run `runa init` in the intended project directory.",
+            self.path.display(),
+            self.owner_uid,
+            self.current_uid
+        )
     }
 }
 
@@ -37,7 +75,7 @@ impl std::error::Error for InitError {
         match self {
             InitError::ManifestInvalid(e) => Some(e),
             InitError::Io(e) => Some(e),
-            InitError::MethodologyNotFound { .. } => None,
+            InitError::MethodologyNotFound { .. } | InitError::ExistingRunaPathUnusable(_) => None,
         }
     }
 }
@@ -62,6 +100,13 @@ pub fn run(
     let canonical_path = fs::canonicalize(methodology).map_err(InitError::Io)?;
 
     let runa_dir = working_dir.join(RUNA_DIR);
+    let config_dest = match config_path {
+        Some(p) if p.is_absolute() => p.to_path_buf(),
+        Some(p) => working_dir.join(p),
+        None => runa_dir.join(CONFIG_FILENAME),
+    };
+    preflight_existing_runa_paths(&runa_dir, &config_dest)?;
+
     fs::create_dir_all(&runa_dir).map_err(InitError::Io)?;
     fs::create_dir_all(runa_dir.join(STORE_DIRNAME)).map_err(InitError::Io)?;
 
@@ -76,10 +121,6 @@ pub fn run(
     };
     let config_toml = toml::to_string(&config).expect("Config serialization should not fail");
 
-    let config_dest = match config_path {
-        Some(p) => p.to_path_buf(),
-        None => runa_dir.join(CONFIG_FILENAME),
-    };
     if let Some(parent) = config_dest.parent() {
         fs::create_dir_all(parent).map_err(InitError::Io)?;
     }
@@ -98,6 +139,145 @@ pub fn run(
         artifact_type_count: manifest.artifact_types.len(),
         protocol_count: manifest.protocols.len(),
     })
+}
+
+fn preflight_existing_runa_paths(runa_dir: &Path, config_dest: &Path) -> Result<(), InitError> {
+    let mut paths = vec![
+        runa_dir.to_path_buf(),
+        runa_dir.join(STORE_DIRNAME),
+        runa_dir.join(DEFAULT_WORKSPACE_DIR),
+        runa_dir.join(STATE_FILENAME),
+    ];
+    paths.push(config_dest.to_path_buf());
+
+    for path in paths {
+        preflight_init_output_path(&path)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn preflight_init_output_path(path: &Path) -> Result<(), InitError> {
+    match fs::metadata(path) {
+        Ok(metadata) => preflight_existing_runa_path_metadata(path, metadata),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            preflight_existing_parent_for_creation(path)
+        }
+        Err(error) => Err(InitError::Io(error)),
+    }
+}
+
+#[cfg(not(unix))]
+fn preflight_init_output_path(_path: &Path) -> Result<(), InitError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn preflight_existing_parent_for_creation(path: &Path) -> Result<(), InitError> {
+    let mut candidate = path.parent();
+    while let Some(path) = candidate {
+        match fs::metadata(path) {
+            Ok(metadata) => return preflight_existing_runa_path_metadata(path, metadata),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                candidate = path.parent();
+            }
+            Err(error) => return Err(InitError::Io(error)),
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn preflight_existing_runa_path_metadata(
+    path: &Path,
+    metadata: fs::Metadata,
+) -> Result<(), InitError> {
+    use std::os::unix::fs::MetadataExt;
+
+    if let Some(diagnostic) = diagnose_existing_runa_path(
+        path,
+        metadata.uid(),
+        current_uid(),
+        current_process_can_write(path, &metadata).map_err(InitError::Io)?,
+    ) {
+        return Err(InitError::ExistingRunaPathUnusable(diagnostic));
+    }
+
+    Ok(())
+}
+
+fn diagnose_existing_runa_path(
+    path: &Path,
+    owner_uid: u32,
+    current_uid: u32,
+    current_user_can_write: bool,
+) -> Option<ExistingRunaPathDiagnostic> {
+    if current_user_can_write {
+        return None;
+    }
+
+    let reason = if owner_uid != current_uid {
+        Some(ExistingRunaPathReason::OwnerMismatch)
+    } else {
+        Some(ExistingRunaPathReason::NotWritable)
+    };
+
+    reason.map(|reason| ExistingRunaPathDiagnostic {
+        path: path.to_path_buf(),
+        owner_uid,
+        current_uid,
+        reason,
+    })
+}
+
+#[cfg(unix)]
+fn current_uid() -> u32 {
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
+#[cfg(unix)]
+fn current_process_can_write(path: &Path, metadata: &fs::Metadata) -> io::Result<bool> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let access_mode = if metadata.file_type().is_dir() {
+        libc::W_OK | libc::X_OK
+    } else {
+        libc::W_OK
+    };
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+
+    // `AT_EACCESS` checks effective process credentials, matching whether
+    // `init` will be able to create or overwrite this path.
+    let result =
+        unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), access_mode, libc::AT_EACCESS) };
+    if result == 0 {
+        Ok(true)
+    } else {
+        let error = io::Error::last_os_error();
+        if matches!(
+            error.kind(),
+            io::ErrorKind::PermissionDenied | io::ErrorKind::NotFound
+        ) {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
 }
 
 fn now_iso8601() -> String {
@@ -135,7 +315,6 @@ fn days_to_date(days: u64) -> (u64, u64, u64) {
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +480,34 @@ trigger = { type = "on_artifact", name = "design-doc" }
     }
 
     #[test]
+    fn relative_working_dir_writes_default_config_to_resolved_runa_path() {
+        let unique = format!(
+            "target/init-relative-success-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = PathBuf::from(unique);
+        let methodology_dir = root.join("methodology");
+        fs::create_dir_all(&methodology_dir).unwrap();
+        let manifest_path = write_methodology_layout(&methodology_dir);
+
+        let working = root.join("project");
+        fs::create_dir(&working).unwrap();
+
+        run(&working, &manifest_path, None).unwrap();
+
+        assert!(
+            working.join(".runa").join("config.toml").is_file(),
+            "default config should be written under the resolved relative working directory"
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn nonexistent_methodology_returns_error() {
         let dir = tempfile::tempdir().unwrap();
         let bogus = dir.path().join("no-such-file.toml");
@@ -323,6 +530,92 @@ trigger = { type = "on_artifact", name = "design-doc" }
             matches!(err, InitError::ManifestInvalid(_)),
             "expected ManifestInvalid, got: {err}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_working_dir_reports_default_config_preflight_before_writing_state() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = format!(
+            "target/init-relative-preflight-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = PathBuf::from(unique);
+        let methodology_dir = root.join("methodology");
+        fs::create_dir_all(&methodology_dir).unwrap();
+        let manifest_path = write_methodology_layout(&methodology_dir);
+
+        let working = root.join("project");
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        let config_path = runa_dir.join("config.toml");
+        fs::write(&config_path, "old config").unwrap();
+        fs::set_permissions(&config_path, fs::Permissions::from_mode(0o400)).unwrap();
+
+        let err = run(&working, &manifest_path, None).unwrap_err();
+
+        fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        assert!(
+            matches!(err, InitError::ExistingRunaPathUnusable(_)),
+            "expected preflight diagnostic, got: {err}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains(config_path.to_string_lossy().as_ref()),
+            "message should name the default config path: {message}"
+        );
+        assert!(message.contains("not writable"), "message: {message}");
+        assert!(
+            !message.contains("Permission denied"),
+            "message should not expose raw EACCES: {message}"
+        );
+        assert!(
+            !runa_dir.join("store").exists(),
+            "store should not be created before the diagnostic"
+        );
+        assert!(
+            !runa_dir.join("workspace").exists(),
+            "workspace should not be created before the diagnostic"
+        );
+        assert!(
+            !runa_dir.join("state.toml").exists(),
+            "state should not be created before the diagnostic"
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn existing_runa_path_diagnostic_ignores_owner_mismatch_when_writable() {
+        let diagnostic = diagnose_existing_runa_path(Path::new(".runa"), 0, 1000, true);
+
+        assert!(
+            diagnostic.is_none(),
+            "owner mismatch alone should not fail writable state"
+        );
+    }
+
+    #[test]
+    fn existing_runa_path_diagnostic_reports_owner_mismatch_when_unwritable() {
+        let diagnostic = diagnose_existing_runa_path(Path::new(".runa"), 0, 1000, false).unwrap();
+
+        let message = diagnostic.to_string();
+        assert!(message.contains(".runa"), "message: {message}");
+        assert!(message.contains("owned by uid 0"), "message: {message}");
+        assert!(message.contains("current uid 1000"), "message: {message}");
+        assert!(message.contains("different user"), "message: {message}");
+        assert!(
+            message.contains("managed by another tool"),
+            "message: {message}"
+        );
+        assert!(!message.contains("agentd"), "message: {message}");
+        assert!(message.contains("remove"), "message: {message}");
     }
 
     #[test]
