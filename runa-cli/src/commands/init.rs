@@ -480,6 +480,34 @@ trigger = { type = "on_artifact", name = "design-doc" }
     }
 
     #[test]
+    fn relative_working_dir_writes_default_config_to_resolved_runa_path() {
+        let unique = format!(
+            "target/init-relative-success-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = PathBuf::from(unique);
+        let methodology_dir = root.join("methodology");
+        fs::create_dir_all(&methodology_dir).unwrap();
+        let manifest_path = write_methodology_layout(&methodology_dir);
+
+        let working = root.join("project");
+        fs::create_dir(&working).unwrap();
+
+        run(&working, &manifest_path, None).unwrap();
+
+        assert!(
+            working.join(".runa").join("config.toml").is_file(),
+            "default config should be written under the resolved relative working directory"
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn nonexistent_methodology_returns_error() {
         let dir = tempfile::tempdir().unwrap();
         let bogus = dir.path().join("no-such-file.toml");
