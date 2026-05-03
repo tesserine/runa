@@ -21,6 +21,13 @@ fn read_workspace_toml(path: &str) -> toml::Value {
         .unwrap_or_else(|error| panic!("{path} should be valid TOML: {error}"))
 }
 
+fn string_array(values: &[&str]) -> Vec<toml::Value> {
+    values
+        .iter()
+        .map(|value| toml::Value::String((*value).to_string()))
+        .collect()
+}
+
 #[test]
 fn cargo_release_configuration_lives_at_the_workspace_root() {
     assert!(
@@ -35,17 +42,51 @@ fn cargo_release_configuration_matches_the_shared_release_convention() {
 
     assert_eq!(
         config.get("allow-branch").and_then(toml::Value::as_array),
-        Some(&vec![toml::Value::String("main".to_string())]),
+        Some(&string_array(&["main"])),
         "release should be allowed only from main"
     );
+    assert_eq!(config["release"].as_bool(), Some(true));
     assert_eq!(config["shared-version"].as_bool(), Some(true));
     assert_eq!(config["dependent-version"].as_str(), Some("fix"));
     assert_eq!(config["consolidate-commits"].as_bool(), Some(true));
+    assert_eq!(
+        config["pre-release-replacements"]
+            .as_array()
+            .map(Vec::as_slice),
+        Some(&[][..])
+    );
+    assert_eq!(
+        config["pre-release-hook"].as_array(),
+        Some(&string_array(&["/usr/bin/true"]))
+    );
+    assert_eq!(
+        config["pre-release-commit-message"].as_str(),
+        Some("chore(release): bump workspace version to {{version}}")
+    );
+    assert_eq!(config["tag"].as_bool(), Some(true));
     assert_eq!(config["tag-name"].as_str(), Some("v{{version}}"));
     assert_eq!(config["tag-message"].as_str(), Some("Release {{tag_name}}"));
+    assert_eq!(config["sign-commit"].as_bool(), Some(false));
+    assert_eq!(config["sign-tag"].as_bool(), Some(false));
     assert_eq!(config["push"].as_bool(), Some(true));
     assert_eq!(config["push-remote"].as_str(), Some("origin"));
+    assert_eq!(
+        config["push-options"].as_array().map(Vec::as_slice),
+        Some(&[][..])
+    );
     assert_eq!(config["publish"].as_bool(), Some(false));
+    assert_eq!(
+        config["owners"].as_array().map(Vec::as_slice),
+        Some(&[][..])
+    );
+    assert_eq!(config["verify"].as_bool(), Some(true));
+    assert_eq!(
+        config["enable-features"].as_array().map(Vec::as_slice),
+        Some(&[][..])
+    );
+    assert_eq!(config["enable-all-features"].as_bool(), Some(false));
+    assert_eq!(config["metadata"].as_str(), Some("optional"));
+    assert_eq!(config["certs-source"].as_str(), Some("webpki"));
 }
 
 #[test]
