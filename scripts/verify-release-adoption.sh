@@ -2,6 +2,9 @@
 set -euo pipefail
 
 workspace_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+real_home="${HOME:?}"
+cargo_home="${CARGO_HOME:-$real_home/.cargo}"
+rustup_home="${RUSTUP_HOME:-$real_home/.rustup}"
 
 if ! cargo release --version >/dev/null 2>&1; then
     echo "cargo-release is required: install the cargo-release cargo subcommand" >&2
@@ -16,6 +19,8 @@ remote_repo="$scratch/origin.git"
 fresh_checkout="$scratch/fresh-checkout"
 release_log="$scratch/cargo-release.log"
 dirty_release_log="$scratch/dirty-release.log"
+hostile_home="$scratch/hostile-home"
+resolved_config_log="$scratch/cargo-release-config.log"
 
 mkdir "$source_repo"
 tar \
@@ -59,6 +64,49 @@ if ! grep -Fq "uncommitted changes detected" "$dirty_release_log"; then
 fi
 
 git -C "$source_repo" checkout -q -- README.md
+
+mkdir -p "$hostile_home/.config/cargo-release"
+cat >"$hostile_home/.config/cargo-release/release.toml" <<'EOF'
+release = false
+tag = false
+verify = false
+pre-release-hook = ["/bin/false"]
+push-options = ["--repo", "unexpected"]
+owners = ["unexpected"]
+enable-features = ["unexpected"]
+enable-all-features = true
+metadata = "required"
+certs-source = "native"
+EOF
+
+(
+    cd "$source_repo"
+    HOME="$hostile_home" \
+        XDG_CONFIG_HOME="$hostile_home/.config" \
+        CARGO_HOME="$cargo_home" \
+        RUSTUP_HOME="$rustup_home" \
+        cargo release config >"$resolved_config_log"
+)
+
+assert_resolved_config() {
+    local expected="$1"
+
+    if ! grep -Fq "$expected" "$resolved_config_log"; then
+        echo "cargo-release config did not preserve workspace pin: $expected" >&2
+        exit 1
+    fi
+}
+
+assert_resolved_config 'release = true'
+assert_resolved_config 'tag = true'
+assert_resolved_config 'verify = true'
+assert_resolved_config 'pre-release-hook = ["true"]'
+assert_resolved_config 'push-options = []'
+assert_resolved_config 'owners = []'
+assert_resolved_config 'enable-features = []'
+assert_resolved_config 'enable-all-features = false'
+assert_resolved_config 'metadata = "optional"'
+assert_resolved_config 'certs-source = "webpki"'
 
 (
     cd "$source_repo"

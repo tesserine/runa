@@ -57,7 +57,7 @@ fn cargo_release_configuration_matches_the_shared_release_convention() {
     );
     assert_eq!(
         config["pre-release-hook"].as_array(),
-        Some(&string_array(&["/usr/bin/true"]))
+        Some(&string_array(&["true"]))
     );
     assert_eq!(
         config["pre-release-commit-message"].as_str(),
@@ -158,6 +158,22 @@ fn release_adoption_verification_script_is_repo_tracked_operational_substrate() 
     assert!(
         script.contains("uncommitted changes detected"),
         "release verification should assert dirty-tree refusal"
+    );
+    assert!(
+        script.contains("hostile_home=\"$scratch/hostile-home\""),
+        "release verification should create an isolated hostile cargo-release home"
+    );
+    assert!(
+        script.contains("pre-release-hook = [\"/bin/false\"]"),
+        "release verification should model hostile hook inheritance"
+    );
+    assert!(
+        script.contains("cargo release config"),
+        "release verification should inspect resolved cargo-release config"
+    );
+    assert!(
+        script.contains("pre-release-hook = [\"true\"]"),
+        "release verification should assert the workspace-pinned no-op hook"
     );
     assert!(
         script.contains("target/release/runa\" --version"),
