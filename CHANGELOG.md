@@ -9,6 +9,9 @@ Semantic Versioning.
 
 ### Changed
 
+- Adopted the shared commons cargo-release discipline for workspace releases,
+  including a root release configuration and repeatable release-adoption
+  verification.
 - `runa-cli` now uses the shared commons exit code convention across
   `init`, `scan`, `list`, `state`, `doctor`, `step`, and `run`.
 - Breaking change: `.runa/config.toml` no longer accepts `artifacts_dir`.

@@ -1,0 +1,10 @@
+allow-branch = ["main"]
+shared-version = true
+dependent-version = "fix"
+consolidate-commits = true
+pre-release-commit-message = "chore(release): bump workspace version to {{version}}"
+tag-name = "v{{version}}"
+tag-message = "Release {{tag_name}}"
+push = true
+push-remote = "origin"
+publish = false
