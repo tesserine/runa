@@ -401,7 +401,8 @@ fn is_direct_claude_command(command: &str) -> bool {
 }
 
 fn command_has_mcp_config_arg(args: &[String]) -> bool {
-    args.iter().any(|arg| arg == "--mcp-config")
+    args.iter()
+        .any(|arg| arg == "--mcp-config" || arg.starts_with("--mcp-config="))
 }
 
 fn write_claude_mcp_config(
@@ -1309,6 +1310,31 @@ cat >/dev/null
     }
 
     #[test]
+    fn command_has_mcp_config_arg_matches_claude_mcp_config_spellings() {
+        for args in [
+            vec!["--mcp-config".to_string()],
+            vec!["--mcp-config=operator-config.json".to_string()],
+        ] {
+            assert!(
+                command_has_mcp_config_arg(&args),
+                "runa should reject Claude MCP config args: {args:?}"
+            );
+        }
+
+        for args in [
+            vec!["--strict-mcp-config".to_string()],
+            vec!["--mcp-configured".to_string()],
+            vec!["--mcpConfig=operator-config.json".to_string()],
+            vec!["-m".to_string(), "operator-config.json".to_string()],
+        ] {
+            assert!(
+                !command_has_mcp_config_arg(&args),
+                "runa should not reject non-Claude-MCP-config args: {args:?}"
+            );
+        }
+    }
+
+    #[test]
     fn execute_entry_wires_direct_claude_command_to_mcp_config() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -1422,6 +1448,61 @@ cat >/dev/null
                 .contains("direct Claude command already supplies --mcp-config"),
             "{err}"
         );
+        assert!(
+            !argv_capture.exists(),
+            "runa should fail before launching Claude"
+        );
+    }
+
+    #[test]
+    fn execute_entry_rejects_direct_claude_command_with_equals_mcp_config() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = transcript_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let bin_dir = temp.path().join("bin");
+        fs::create_dir(&bin_dir).unwrap();
+        let claude = bin_dir.join("claude");
+        write_fake_claude(&claude);
+        let mut permissions = fs::metadata(&claude).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&claude, permissions).unwrap();
+        let argv_capture = temp.path().join("argv.txt");
+        let config_capture = temp.path().join("config.json");
+        let path = format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let _env = EnvGuard::set(&[
+            ("PATH", &path),
+            ("FAKE_CLAUDE_ARGV_CAPTURE", &argv_capture.to_string_lossy()),
+            (
+                "FAKE_CLAUDE_CONFIG_CAPTURE",
+                &config_capture.to_string_lossy(),
+            ),
+        ]);
+
+        let err = execute_entry(
+            temp.path(),
+            &[
+                "claude".to_string(),
+                "--mcp-config=operator-config.json".to_string(),
+                "-p".to_string(),
+            ],
+            &minimal_plan_entry("implement", Some("issue-148")),
+            ExecutionOptions::default(),
+        )
+        .expect_err("direct Claude execution should reject an existing MCP config");
+
+        assert!(
+            err.to_string()
+                .contains("direct Claude command already supplies --mcp-config"),
+            "{err}"
+        );
+        assert_eq!(err.exit_code(), ExitCode::UsageError);
         assert!(
             !argv_capture.exists(),
             "runa should fail before launching Claude"
