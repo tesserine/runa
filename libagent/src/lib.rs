@@ -28,6 +28,7 @@ pub mod selection;
 pub mod store;
 #[cfg(test)]
 pub(crate) mod test_helpers;
+pub mod transcript;
 pub mod trigger;
 pub(crate) mod util;
 pub mod validation;

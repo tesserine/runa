@@ -301,6 +301,17 @@ impl ServerHandler for RunaHandler {
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let tool_name = request.name.as_ref();
+        append_tool_event(
+            "tool_call",
+            &self.protocol.name,
+            self.work_unit.as_deref(),
+            tool_name,
+            request
+                .arguments
+                .as_ref()
+                .map(|arguments| Value::Object(arguments.clone())),
+            None,
+        )?;
 
         // Look up the full schema for this artifact type.
         let full_schema = self
@@ -358,6 +369,14 @@ impl ServerHandler for RunaHandler {
                     format!("schema error: {detail}")
                 }
             };
+            append_tool_event(
+                "tool_result",
+                &self.protocol.name,
+                self.work_unit.as_deref(),
+                tool_name,
+                None,
+                Some(&msg),
+            )?;
             return Ok(CallToolResult::error(vec![Content::text(msg)]));
         }
 
@@ -389,10 +408,41 @@ impl ServerHandler for RunaHandler {
             "artifact written to workspace"
         );
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Produced {tool_name}/{instance_id}.json"
-        ))]))
+        let message = format!("Produced {tool_name}/{instance_id}.json");
+        append_tool_event(
+            "tool_result",
+            &self.protocol.name,
+            self.work_unit.as_deref(),
+            tool_name,
+            None,
+            Some(&message),
+        )?;
+
+        Ok(CallToolResult::success(vec![Content::text(message)]))
     }
+}
+
+fn append_tool_event(
+    kind: &'static str,
+    protocol: &str,
+    work_unit: Option<&str>,
+    tool_name: &str,
+    payload: Option<Value>,
+    content: Option<&str>,
+) -> Result<(), McpError> {
+    libagent::transcript::append_event(libagent::transcript::TranscriptEvent {
+        source: "runa-mcp",
+        kind,
+        protocol: Some(protocol),
+        work_unit,
+        tool_name: Some(tool_name),
+        payload,
+        content,
+        ..Default::default()
+    })
+    .map_err(|error| {
+        McpError::internal_error(format!("failed to write transcript event: {error}"), None)
+    })
 }
 
 #[cfg(test)]

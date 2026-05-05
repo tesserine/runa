@@ -216,6 +216,52 @@ async fn scoped_protocol_writes_artifact_with_injected_work_unit() {
 }
 
 #[tokio::test]
+async fn tool_calls_append_transcript_events_when_enabled() {
+    let dir = setup_project();
+    let project_dir = dir.path().join("project");
+    let transcript_dir = dir.path().join("transcript");
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("implement")
+                        .arg("--work-unit")
+                        .arg("wu-1")
+                        .env("RUNA_TRANSCRIPT_DIR", &transcript_dir)
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    service
+        .call_tool(CallToolRequestParam {
+            name: "implementation".into(),
+            arguments: serde_json::json!({
+                "instance_id": "impl-1",
+                "title": "ship it"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+
+    let events = fs::read_to_string(transcript_dir.join("events.jsonl"))
+        .expect("tool transcript events should be written");
+    assert!(events.contains("\"source\":\"runa-mcp\""));
+    assert!(events.contains("\"kind\":\"tool_call\""));
+    assert!(events.contains("\"kind\":\"tool_result\""));
+    assert!(events.contains("\"tool_name\":\"implementation\""));
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn scoped_protocol_injects_required_work_unit_without_declared_property() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = write_methodology(

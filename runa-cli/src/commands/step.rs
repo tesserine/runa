@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
-use std::io;
-use std::io::Write;
+use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
+use std::thread;
 
 use libagent::ExecutionRecord;
 use libagent::context::{
@@ -419,14 +419,35 @@ pub(crate) fn execute_entry(
         )
         .current_dir(working_dir)
         .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     let mut child = child.spawn().map_err(|source| StepError::AgentCommandIo {
         command: command_display.clone(),
         stage: "spawn",
         source,
     })?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .expect("agent stdout should be piped for transcript capture");
+    let stderr = child
+        .stderr
+        .take()
+        .expect("agent stderr should be piped for transcript capture");
+    let stdout_forwarder = spawn_stream_forwarder(
+        stdout,
+        "stdout",
+        entry.protocol.clone(),
+        entry.work_unit.clone(),
+    );
+    let stderr_forwarder = spawn_stream_forwarder(
+        stderr,
+        "stderr",
+        entry.protocol.clone(),
+        entry.work_unit.clone(),
+    );
 
     {
         let stdin = child
@@ -438,6 +459,19 @@ pub(crate) fn execute_entry(
                 source: io::Error::new(io::ErrorKind::BrokenPipe, "child stdin was not available"),
             })?;
         let prompt = render_context_prompt(&entry.context);
+        libagent::transcript::append_event(libagent::transcript::TranscriptEvent {
+            source: "runa",
+            kind: "agent_input",
+            protocol: Some(&entry.protocol),
+            work_unit: entry.work_unit.as_deref(),
+            content: Some(&prompt),
+            ..Default::default()
+        })
+        .map_err(|source| StepError::AgentCommandIo {
+            command: command_display.clone(),
+            stage: "transcript_write",
+            source,
+        })?;
         stdin
             .write_all(prompt.as_bytes())
             .and_then(|_| stdin.write_all(b"\n"))
@@ -451,6 +485,23 @@ pub(crate) fn execute_entry(
     let status = child.wait().map_err(|source| StepError::AgentCommandIo {
         command: command_display.clone(),
         stage: "wait",
+        source,
+    })?;
+    finish_stream_forwarder(stdout_forwarder, &command_display)?;
+    finish_stream_forwarder(stderr_forwarder, &command_display)?;
+
+    libagent::transcript::append_event(libagent::transcript::TranscriptEvent {
+        source: "runa",
+        kind: "agent_exit",
+        protocol: Some(&entry.protocol),
+        work_unit: entry.work_unit.as_deref(),
+        exit_code: status.code(),
+        success: Some(status.success()),
+        ..Default::default()
+    })
+    .map_err(|source| StepError::AgentCommandIo {
+        command: command_display.clone(),
+        stage: "transcript_write",
         source,
     })?;
 
@@ -482,6 +533,87 @@ pub(crate) fn execute_entry(
     );
 
     Ok(())
+}
+
+fn spawn_stream_forwarder(
+    stream: impl Read + Send + 'static,
+    stream_name: &'static str,
+    protocol: String,
+    work_unit: Option<String>,
+) -> thread::JoinHandle<io::Result<()>> {
+    thread::spawn(move || {
+        forward_stream_to_host_and_transcript(stream, stream_name, protocol, work_unit)
+    })
+}
+
+fn finish_stream_forwarder(
+    forwarder: thread::JoinHandle<io::Result<()>>,
+    command_display: &str,
+) -> Result<(), StepError> {
+    forwarder
+        .join()
+        .map_err(|panic_payload| StepError::AgentCommandIo {
+            command: command_display.to_string(),
+            stage: "stream_forward",
+            source: io::Error::other(thread_panic_message(panic_payload)),
+        })?
+        .map_err(|source| StepError::AgentCommandIo {
+            command: command_display.to_string(),
+            stage: "stream_forward",
+            source,
+        })
+}
+
+fn thread_panic_message(payload: Box<dyn std::any::Any + Send + 'static>) -> String {
+    match payload.downcast::<String>() {
+        Ok(message) => *message,
+        Err(payload) => match payload.downcast::<&'static str>() {
+            Ok(message) => (*message).to_string(),
+            Err(_) => "unknown panic".to_string(),
+        },
+    }
+}
+
+fn forward_stream_to_host_and_transcript(
+    mut stream: impl Read,
+    stream_name: &'static str,
+    protocol: String,
+    work_unit: Option<String>,
+) -> io::Result<()> {
+    let mut buffer = [0_u8; 4096];
+
+    loop {
+        let bytes_read = stream.read(&mut buffer)?;
+        if bytes_read == 0 {
+            return Ok(());
+        }
+
+        let chunk = &buffer[..bytes_read];
+        if stream_name == "stderr" {
+            let mut host = io::stderr().lock();
+            host.write_all(chunk)?;
+            host.flush()?;
+        } else {
+            let mut host = io::stdout().lock();
+            host.write_all(chunk)?;
+            host.flush()?;
+        }
+
+        let content = String::from_utf8_lossy(chunk);
+        libagent::transcript::append_event(libagent::transcript::TranscriptEvent {
+            source: "runa",
+            kind: if stream_name == "stderr" {
+                "agent_stderr"
+            } else {
+                "agent_stdout"
+            },
+            protocol: Some(&protocol),
+            work_unit: work_unit.as_deref(),
+            stream: Some(stream_name),
+            content: Some(&content),
+            ..Default::default()
+        })?;
+    }
 }
 
 fn execute_live_single(
@@ -884,6 +1016,7 @@ fn build_mcp_config(
         "RUNA_WORKING_DIR".to_string(),
         working_dir.to_string_lossy().into_owned(),
     );
+    env.extend(libagent::transcript::transcript_env());
 
     McpServerConfig {
         command: normalize_mcp_command(mcp_command, &working_dir),
@@ -926,6 +1059,34 @@ fn absolutize_path(path: &Path, base_dir: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::{Mutex, OnceLock};
+
+    fn transcript_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvGuard {
+        names: Vec<&'static str>,
+    }
+
+    impl EnvGuard {
+        fn set(values: &[(&'static str, &str)]) -> Self {
+            let names = values.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+            for (name, value) in values {
+                unsafe { std::env::set_var(name, value) };
+            }
+            Self { names }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for name in &self.names {
+                unsafe { std::env::remove_var(name) };
+            }
+        }
+    }
 
     fn waiting_entry(
         unsatisfied_conditions: &[&str],
@@ -979,6 +1140,74 @@ mod tests {
         fs::set_permissions(path, permissions).unwrap();
     }
 
+    fn minimal_plan_entry(protocol: &str, work_unit: Option<&str>) -> PlanEntry {
+        PlanEntry {
+            protocol: protocol.to_string(),
+            work_unit: work_unit.map(str::to_string),
+            trigger: "on_artifact(request)".to_string(),
+            mcp_config: McpServerConfig {
+                command: "runa-mcp".to_string(),
+                args: vec!["--protocol".to_string(), protocol.to_string()],
+                env: BTreeMap::new(),
+            },
+            context: libagent::context::ContextInjection {
+                protocol: protocol.to_string(),
+                work_unit: work_unit.map(str::to_string),
+                instructions: "Tell the operator about SECRET_VALUE.".to_string(),
+                inputs: Vec::new(),
+                expected_outputs: libagent::context::ExpectedOutputs {
+                    produces: vec!["claim".to_string()],
+                    may_produce: Vec::new(),
+                },
+            },
+            execution_record: ExecutionRecord {
+                input_modes: BTreeMap::new(),
+                inputs: Default::default(),
+            },
+        }
+    }
+
+    #[test]
+    fn execute_entry_writes_redacted_agent_transcript_events_when_enabled() {
+        let _lock = transcript_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let agent = temp.path().join("agent.sh");
+        fs::write(
+            &agent,
+            "#!/bin/sh\nset -eu\ncat > prompt.txt\nprintf 'stdout SECRET_VALUE\\n'\nprintf 'stderr SECRET_VALUE\\n' >&2\n",
+        )
+        .unwrap();
+        let transcript_dir = temp.path().join("transcript");
+        let transcript_dir_string = transcript_dir.to_string_lossy().into_owned();
+        let _env = EnvGuard::set(&[
+            ("RUNA_TRANSCRIPT_DIR", &transcript_dir_string),
+            ("RUNA_TRANSCRIPT_REDACT_ENV", "SECRET_TOKEN"),
+            ("SECRET_TOKEN", "SECRET_VALUE"),
+        ]);
+
+        execute_entry(
+            temp.path(),
+            &["/bin/sh".to_string(), agent.to_string_lossy().into_owned()],
+            &minimal_plan_entry("implement", Some("issue-116")),
+            ExecutionOptions::default(),
+        )
+        .expect("agent execution should succeed");
+
+        let events = fs::read_to_string(transcript_dir.join("events.jsonl"))
+            .expect("transcript events should be written");
+        assert!(events.contains("\"kind\":\"agent_input\""));
+        assert!(events.contains("\"kind\":\"agent_stdout\""));
+        assert!(events.contains("\"kind\":\"agent_stderr\""));
+        assert!(events.contains("\"kind\":\"agent_exit\""));
+        assert!(events.contains("[REDACTED:SECRET_TOKEN]"));
+        assert!(
+            !events.contains("SECRET_VALUE"),
+            "secret values must not be persisted: {events}"
+        );
+    }
+
     #[test]
     fn candidate_key_preserves_protocol_and_work_unit() {
         let candidate = candidate_key("prepare", Some("wu-a"));
@@ -1009,6 +1238,34 @@ mod tests {
         assert_eq!(
             config.env.get("RUNA_CONFIG"),
             Some(&"/tmp/project/.runa/config.toml".to_string())
+        );
+    }
+
+    #[test]
+    fn build_mcp_config_forwards_transcript_environment_when_enabled() {
+        let _lock = transcript_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env = EnvGuard::set(&[
+            ("RUNA_TRANSCRIPT_DIR", "/tmp/runa-transcript"),
+            ("RUNA_TRANSCRIPT_REDACT_ENV", "SECRET_TOKEN"),
+        ]);
+
+        let config = build_mcp_config(
+            "/tmp/bin/runa-mcp",
+            Path::new("/tmp/project"),
+            Path::new("/tmp/project/.runa/config.toml"),
+            "implement",
+            None,
+        );
+
+        assert_eq!(
+            config.env.get("RUNA_TRANSCRIPT_DIR"),
+            Some(&"/tmp/runa-transcript".to_string())
+        );
+        assert_eq!(
+            config.env.get("RUNA_TRANSCRIPT_REDACT_ENV"),
+            Some(&"SECRET_TOKEN".to_string())
         );
     }
 
