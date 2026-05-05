@@ -9,6 +9,10 @@ Semantic Versioning.
 
 ### Changed
 
+- Live `runa step`, `runa run`, and `runa-mcp` can now emit structured
+  transcript events when `RUNA_TRANSCRIPT_DIR` is set, capturing protocol
+  prompts, agent stdout/stderr, agent exit status, and MCP tool calls/results
+  for orchestrators such as agentd to persist.
 - Adopted the shared commons cargo-release discipline for workspace releases,
   including a root release configuration and repeatable release-adoption
   verification.
