@@ -55,6 +55,9 @@ Semantic Versioning.
 
 ### Fixed
 
+- Direct Claude Code live agent commands now receive runa's generated
+  per-protocol MCP configuration automatically, so `runa-mcp` artifact tools
+  are available without requiring an operator-supplied wrapper.
 - Live `runa step` and `runa run` preserve inherited agent stdout/stderr when
   `RUNA_TRANSCRIPT_DIR` is unset, keeping transcript capture opt-in and
   retaining the default attached-terminal behavior.

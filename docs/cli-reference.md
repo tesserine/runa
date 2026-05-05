@@ -33,19 +33,19 @@ Live `runa step` (without `--dry-run`) requires an `[agent].command` entry in th
 
 ```toml
 [agent]
-command = ["./examples/agent-claude-code.sh"]
+command = ["claude", "-p", "--dangerously-skip-permissions"]
 ```
 
 ```bash
-runa run --agent-command -- ./examples/agent-claude-code.sh --dangerously-skip-permissions
+runa run --agent-command -- claude -p --dangerously-skip-permissions
 ```
 
-Runa executes that command in the project root with stdout and stderr attached to the terminal, renders a natural-language execution prompt from the planned protocol context, and writes the prompt on stdin. Before each invocation, runa exports `RUNA_MCP_CONFIG` — a JSON payload containing the resolved `runa-mcp` command, arguments, and environment — so the agent wrapper can launch the MCP server as its own child process. The payload is runtime-agnostic (`{command, args, env}`); agent wrappers adapt it to their runtime's schema. The config path above is resolved from the project root at execution time. To inspect the sample wrapper in this repository, see [`examples/agent-claude-code.sh`](../examples/agent-claude-code.sh), which converts the payload to Claude's `mcpServers` format.
+Runa executes that command in the project root with stdout and stderr attached to the terminal, renders a natural-language execution prompt from the planned protocol context, and writes the prompt on stdin. For direct Claude Code commands, runa writes a temporary `mcpServers.runa` config for the planned protocol and launches Claude with `--mcp-config <path> --strict-mcp-config`. Before each invocation, runa also exports `RUNA_MCP_CONFIG` — a runtime-agnostic JSON payload containing the resolved `runa-mcp` command, arguments, and environment — so non-Claude agent adapters can launch the MCP server as their own child process. Agent adapters translate that payload into their runtime's schema. The config path above is resolved from the project root at execution time.
 
 When `RUNA_TRANSCRIPT_DIR` is set, live execution appends JSON Lines transcript
 events to `$RUNA_TRANSCRIPT_DIR/events.jsonl`. Events include protocol prompts,
 agent stdout/stderr chunks, agent exit status, and `runa-mcp` tool call/result
-events when the agent runtime launches the MCP server from `RUNA_MCP_CONFIG`.
+events when the agent runtime launches the configured MCP server.
 `RUNA_TRANSCRIPT_REDACT_ENV` may name comma-separated environment variables;
 their current non-empty values are replaced with `[REDACTED:<name>]` before
 events are written. Hidden model reasoning and runtime-private provider events
@@ -215,7 +215,7 @@ runa-mcp --protocol <name> [--work-unit <name>]
 
 On startup, the server loads the project, resolves the named protocol from the manifest, validates that its declared scope matches the presence or absence of `--work-unit`, validates that its output types can be served as MCP tools, and serves an MCP session over stdio. Each output artifact type (`produces` and `may_produce`) becomes one MCP tool. The tool input schema is the artifact type's JSON Schema with the `work_unit` field removed — the server injects `work_unit` automatically from the `--work-unit` argument.
 
-`runa step` does not spawn `runa-mcp` directly. It passes the agent wrapper a `RUNA_MCP_CONFIG` JSON payload containing the resolved `runa-mcp` command, arguments, and environment so the agent runtime can launch the server as its own child process. The exported command and environment paths are absolute whenever runa resolves them from the local filesystem, so wrappers do not depend on child process cwd to launch `runa-mcp`. Transcript environment variables are forwarded into that payload when transcript capture is enabled, which lets the MCP server append tool events to the same transcript stream as the CLI execution events.
+`runa step` does not spawn `runa-mcp` directly. For direct Claude Code commands, it writes the resolved `runa-mcp` command, arguments, and environment into a temporary `mcpServers.runa` config and passes that config to Claude. For other agent runtimes, it exports the same data as a `RUNA_MCP_CONFIG` JSON payload so an adapter can launch the server as its own child process. The exported command and environment paths are absolute whenever runa resolves them from the local filesystem, so adapters do not depend on child process cwd to launch `runa-mcp`. Transcript environment variables are forwarded into the MCP config when transcript capture is enabled, which lets the MCP server append tool events to the same transcript stream as the CLI execution events.
 
 **Environment variables:**
 

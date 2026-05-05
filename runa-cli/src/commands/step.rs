@@ -33,6 +33,9 @@ pub enum StepError {
         stage: &'static str,
         source: io::Error,
     },
+    AgentMcpConfigConflict {
+        command: String,
+    },
     AgentCommandFailed {
         command: String,
         protocol: String,
@@ -96,6 +99,10 @@ impl fmt::Display for StepError {
             } => write!(
                 f,
                 "agent command '{command}' failed during {stage}: {source}"
+            ),
+            StepError::AgentMcpConfigConflict { command } => write!(
+                f,
+                "direct Claude command already supplies --mcp-config: '{command}'; runa provides the per-protocol MCP config automatically"
             ),
             StepError::AgentCommandFailed {
                 command,
@@ -167,6 +174,7 @@ impl std::error::Error for StepError {
             StepError::JsonRequiresDryRun => None,
             StepError::McpBinaryNotFound { .. } => None,
             StepError::AgentCommandIo { source, .. } => Some(source),
+            StepError::AgentMcpConfigConflict { .. } => None,
             StepError::AgentCommandFailed { .. } => None,
             StepError::PostExecutionScan { source, .. } => Some(source),
             StepError::PostExecutionEnforcement { source, .. } => Some(source),
@@ -184,7 +192,9 @@ impl From<CommandError> for StepError {
 impl StepError {
     pub(crate) fn exit_code(&self) -> ExitCode {
         match self {
-            StepError::JsonRequiresDryRun => ExitCode::UsageError,
+            StepError::JsonRequiresDryRun | StepError::AgentMcpConfigConflict { .. } => {
+                ExitCode::UsageError
+            }
             StepError::AgentCommandFailed { .. } | StepError::PostExecutionEnforcement { .. } => {
                 ExitCode::WorkFailed
             }
@@ -383,6 +393,47 @@ fn format_exit_status(status: ExitStatus) -> String {
     }
 }
 
+fn is_direct_claude_command(command: &str) -> bool {
+    Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == binary_executable_name("claude"))
+}
+
+fn command_has_mcp_config_arg(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--mcp-config")
+}
+
+fn write_claude_mcp_config(
+    command_display: &str,
+    mcp_config: &McpServerConfig,
+) -> Result<tempfile::NamedTempFile, StepError> {
+    let mut file = tempfile::Builder::new()
+        .prefix("runa-claude-mcp-")
+        .suffix(".json")
+        .tempfile()
+        .map_err(|source| StepError::AgentCommandIo {
+            command: command_display.to_string(),
+            stage: "mcp_config_create",
+            source,
+        })?;
+    serde_json::to_writer(
+        &mut file,
+        &serde_json::json!({
+            "mcpServers": {
+                "runa": mcp_config
+            }
+        }),
+    )
+    .map_err(StepError::Json)?;
+    file.flush().map_err(|source| StepError::AgentCommandIo {
+        command: command_display.to_string(),
+        stage: "mcp_config_write",
+        source,
+    })?;
+    Ok(file)
+}
+
 #[cfg(test)]
 fn candidate_key(protocol: &str, work_unit: Option<&str>) -> CandidateKey {
     CandidateKey {
@@ -408,18 +459,36 @@ pub(crate) fn execute_entry(
         "starting agent command"
     );
 
+    let direct_claude_command = is_direct_claude_command(&agent_command[0]);
+    if direct_claude_command && command_has_mcp_config_arg(&agent_command[1..]) {
+        return Err(StepError::AgentMcpConfigConflict {
+            command: command_display,
+        });
+    }
+    let claude_mcp_config = if direct_claude_command {
+        Some(write_claude_mcp_config(
+            &command_display,
+            &entry.mcp_config,
+        )?)
+    } else {
+        None
+    };
+
     let mut child = ProcessCommand::new(&agent_command[0]);
     if options.isolate_process_group {
         child.process_group(0);
     }
-    child
-        .args(&agent_command[1..])
-        .env(
-            "RUNA_MCP_CONFIG",
-            serde_json::to_string(&entry.mcp_config).map_err(StepError::Json)?,
-        )
-        .current_dir(working_dir)
-        .stdin(Stdio::piped());
+    if let Some(config) = &claude_mcp_config {
+        child
+            .arg("--mcp-config")
+            .arg(config.path())
+            .arg("--strict-mcp-config");
+    }
+    child.args(&agent_command[1..]).env(
+        "RUNA_MCP_CONFIG",
+        serde_json::to_string(&entry.mcp_config).map_err(StepError::Json)?,
+    );
+    child.current_dir(working_dir).stdin(Stdio::piped());
     if transcript_capture_enabled {
         child.stdout(Stdio::piped()).stderr(Stdio::piped());
     } else {
@@ -1213,6 +1282,150 @@ exec 3>&-
 "#,
         )
         .unwrap();
+    }
+
+    fn write_fake_claude(path: &Path) {
+        fs::write(
+            path,
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$@" > "$FAKE_CLAUDE_ARGV_CAPTURE"
+config=""
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--mcp-config" ]; then
+        shift
+        config="$1"
+    fi
+    shift
+done
+if [ -z "$config" ]; then
+    exit 37
+fi
+cat "$config" > "$FAKE_CLAUDE_CONFIG_CAPTURE"
+cat >/dev/null
+"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn execute_entry_wires_direct_claude_command_to_mcp_config() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = transcript_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let bin_dir = temp.path().join("bin");
+        fs::create_dir(&bin_dir).unwrap();
+        let claude = bin_dir.join("claude");
+        write_fake_claude(&claude);
+        let mut permissions = fs::metadata(&claude).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&claude, permissions).unwrap();
+        let argv_capture = temp.path().join("argv.txt");
+        let config_capture = temp.path().join("config.json");
+        let path = format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let _env = EnvGuard::set(&[
+            ("PATH", &path),
+            ("FAKE_CLAUDE_ARGV_CAPTURE", &argv_capture.to_string_lossy()),
+            (
+                "FAKE_CLAUDE_CONFIG_CAPTURE",
+                &config_capture.to_string_lossy(),
+            ),
+        ]);
+
+        execute_entry(
+            temp.path(),
+            &[
+                "claude".to_string(),
+                "-p".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ],
+            &minimal_plan_entry("implement", Some("issue-148")),
+            ExecutionOptions::default(),
+        )
+        .expect("direct Claude execution should be wired to MCP config");
+
+        let argv = fs::read_to_string(argv_capture).expect("fake claude should capture argv");
+        assert!(argv.contains("--mcp-config\n"), "{argv}");
+        assert!(argv.contains("--strict-mcp-config\n"), "{argv}");
+        assert!(argv.contains("-p\n"), "{argv}");
+        assert!(argv.contains("--dangerously-skip-permissions\n"), "{argv}");
+
+        let config: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(config_capture).unwrap()).unwrap();
+        assert_eq!(
+            config,
+            serde_json::json!({
+                "mcpServers": {
+                    "runa": {
+                        "command": "runa-mcp",
+                        "args": ["--protocol", "implement"],
+                        "env": {}
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn execute_entry_rejects_direct_claude_command_with_existing_mcp_config() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = transcript_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let bin_dir = temp.path().join("bin");
+        fs::create_dir(&bin_dir).unwrap();
+        let claude = bin_dir.join("claude");
+        write_fake_claude(&claude);
+        let mut permissions = fs::metadata(&claude).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&claude, permissions).unwrap();
+        let argv_capture = temp.path().join("argv.txt");
+        let config_capture = temp.path().join("config.json");
+        let path = format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let _env = EnvGuard::set(&[
+            ("PATH", &path),
+            ("FAKE_CLAUDE_ARGV_CAPTURE", &argv_capture.to_string_lossy()),
+            (
+                "FAKE_CLAUDE_CONFIG_CAPTURE",
+                &config_capture.to_string_lossy(),
+            ),
+        ]);
+
+        let err = execute_entry(
+            temp.path(),
+            &[
+                "claude".to_string(),
+                "--mcp-config".to_string(),
+                "operator-config.json".to_string(),
+                "-p".to_string(),
+            ],
+            &minimal_plan_entry("implement", Some("issue-148")),
+            ExecutionOptions::default(),
+        )
+        .expect_err("direct Claude execution should reject an existing MCP config");
+
+        assert!(
+            err.to_string()
+                .contains("direct Claude command already supplies --mcp-config"),
+            "{err}"
+        );
+        assert!(
+            !argv_capture.exists(),
+            "runa should fail before launching Claude"
+        );
     }
 
     #[test]

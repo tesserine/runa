@@ -210,6 +210,7 @@ async fn scoped_protocol_writes_artifact_with_injected_work_unit() {
     let artifact =
         fs::read_to_string(project_dir.join(".runa/workspace/implementation/impl-1.json")).unwrap();
     assert!(artifact.contains("\"title\": \"ship it\""), "{artifact}");
+    assert!(!artifact.contains("instance_id"), "{artifact}");
     assert!(artifact.contains("\"work_unit\": \"wu-1\""), "{artifact}");
 
     service.cancel().await.unwrap();
@@ -324,6 +325,7 @@ trigger = { type = "on_change", name = "implementation" }
     let artifact =
         fs::read_to_string(project_dir.join(".runa/workspace/implementation/impl-1.json")).unwrap();
     assert!(artifact.contains("\"title\": \"ship it\""), "{artifact}");
+    assert!(!artifact.contains("instance_id"), "{artifact}");
     assert!(artifact.contains("\"work_unit\": \"wu-1\""), "{artifact}");
 
     service.cancel().await.unwrap();
