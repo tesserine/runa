@@ -398,6 +398,7 @@ pub(crate) fn execute_entry(
     options: ExecutionOptions,
 ) -> Result<(), StepError> {
     let command_display = format_command(agent_command);
+    let transcript_capture_enabled = libagent::transcript::capture_enabled();
     info!(
         operation = "agent_execution",
         outcome = "starting",
@@ -418,9 +419,12 @@ pub(crate) fn execute_entry(
             serde_json::to_string(&entry.mcp_config).map_err(StepError::Json)?,
         )
         .current_dir(working_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(Stdio::piped());
+    if transcript_capture_enabled {
+        child.stdout(Stdio::piped()).stderr(Stdio::piped());
+    } else {
+        child.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    }
 
     let mut child = child.spawn().map_err(|source| StepError::AgentCommandIo {
         command: command_display.clone(),
@@ -428,26 +432,32 @@ pub(crate) fn execute_entry(
         source,
     })?;
 
-    let stdout = child
-        .stdout
-        .take()
-        .expect("agent stdout should be piped for transcript capture");
-    let stderr = child
-        .stderr
-        .take()
-        .expect("agent stderr should be piped for transcript capture");
-    let stdout_forwarder = spawn_stream_forwarder(
-        stdout,
-        "stdout",
-        entry.protocol.clone(),
-        entry.work_unit.clone(),
-    );
-    let stderr_forwarder = spawn_stream_forwarder(
-        stderr,
-        "stderr",
-        entry.protocol.clone(),
-        entry.work_unit.clone(),
-    );
+    let stream_forwarders = if transcript_capture_enabled {
+        let stdout = child
+            .stdout
+            .take()
+            .expect("agent stdout should be piped for transcript capture");
+        let stderr = child
+            .stderr
+            .take()
+            .expect("agent stderr should be piped for transcript capture");
+        Some((
+            spawn_stream_forwarder(
+                stdout,
+                "stdout",
+                entry.protocol.clone(),
+                entry.work_unit.clone(),
+            ),
+            spawn_stream_forwarder(
+                stderr,
+                "stderr",
+                entry.protocol.clone(),
+                entry.work_unit.clone(),
+            ),
+        ))
+    } else {
+        None
+    };
 
     {
         let stdin = child
@@ -459,19 +469,21 @@ pub(crate) fn execute_entry(
                 source: io::Error::new(io::ErrorKind::BrokenPipe, "child stdin was not available"),
             })?;
         let prompt = render_context_prompt(&entry.context);
-        libagent::transcript::append_event(libagent::transcript::TranscriptEvent {
-            source: "runa",
-            kind: "agent_input",
-            protocol: Some(&entry.protocol),
-            work_unit: entry.work_unit.as_deref(),
-            content: Some(&prompt),
-            ..Default::default()
-        })
-        .map_err(|source| StepError::AgentCommandIo {
-            command: command_display.clone(),
-            stage: "transcript_write",
-            source,
-        })?;
+        if transcript_capture_enabled {
+            libagent::transcript::append_event(libagent::transcript::TranscriptEvent {
+                source: "runa",
+                kind: "agent_input",
+                protocol: Some(&entry.protocol),
+                work_unit: entry.work_unit.as_deref(),
+                content: Some(&prompt),
+                ..Default::default()
+            })
+            .map_err(|source| StepError::AgentCommandIo {
+                command: command_display.clone(),
+                stage: "transcript_write",
+                source,
+            })?;
+        }
         stdin
             .write_all(prompt.as_bytes())
             .and_then(|_| stdin.write_all(b"\n"))
@@ -487,23 +499,27 @@ pub(crate) fn execute_entry(
         stage: "wait",
         source,
     })?;
-    finish_stream_forwarder(stdout_forwarder, &command_display)?;
-    finish_stream_forwarder(stderr_forwarder, &command_display)?;
+    if let Some((stdout_forwarder, stderr_forwarder)) = stream_forwarders {
+        finish_stream_forwarder(stdout_forwarder, &command_display)?;
+        finish_stream_forwarder(stderr_forwarder, &command_display)?;
+    }
 
-    libagent::transcript::append_event(libagent::transcript::TranscriptEvent {
-        source: "runa",
-        kind: "agent_exit",
-        protocol: Some(&entry.protocol),
-        work_unit: entry.work_unit.as_deref(),
-        exit_code: status.code(),
-        success: Some(status.success()),
-        ..Default::default()
-    })
-    .map_err(|source| StepError::AgentCommandIo {
-        command: command_display.clone(),
-        stage: "transcript_write",
-        source,
-    })?;
+    if transcript_capture_enabled {
+        libagent::transcript::append_event(libagent::transcript::TranscriptEvent {
+            source: "runa",
+            kind: "agent_exit",
+            protocol: Some(&entry.protocol),
+            work_unit: entry.work_unit.as_deref(),
+            exit_code: status.code(),
+            success: Some(status.success()),
+            ..Default::default()
+        })
+        .map_err(|source| StepError::AgentCommandIo {
+            command: command_display.clone(),
+            stage: "transcript_write",
+            source,
+        })?;
+    }
 
     if !status.success() {
         warn!(
@@ -1067,23 +1083,40 @@ mod tests {
     }
 
     struct EnvGuard {
-        names: Vec<&'static str>,
+        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
     }
 
     impl EnvGuard {
         fn set(values: &[(&'static str, &str)]) -> Self {
-            let names = values.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+            let previous = values
+                .iter()
+                .map(|(name, _)| (*name, std::env::var_os(name)))
+                .collect::<Vec<_>>();
             for (name, value) in values {
                 unsafe { std::env::set_var(name, value) };
             }
-            Self { names }
+            Self { previous }
+        }
+
+        fn unset(names: &[&'static str]) -> Self {
+            let previous = names
+                .iter()
+                .map(|name| (*name, std::env::var_os(name)))
+                .collect::<Vec<_>>();
+            for name in names {
+                unsafe { std::env::remove_var(name) };
+            }
+            Self { previous }
         }
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
-            for name in &self.names {
-                unsafe { std::env::remove_var(name) };
+            for (name, value) in &self.previous {
+                match value {
+                    Some(value) => unsafe { std::env::set_var(name, value) },
+                    None => unsafe { std::env::remove_var(name) },
+                }
             }
         }
     }
@@ -1167,6 +1200,21 @@ mod tests {
         }
     }
 
+    fn write_fd_report_agent(path: &Path) {
+        fs::write(
+            path,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+exec 3>"$1"
+readlink "/proc/$$/fd/1" >&3
+readlink "/proc/$$/fd/2" >&3
+exec 3>&-
+"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn execute_entry_writes_redacted_agent_transcript_events_when_enabled() {
         let _lock = transcript_env_lock()
@@ -1206,6 +1254,92 @@ mod tests {
             !events.contains("SECRET_VALUE"),
             "secret values must not be persisted: {events}"
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn execute_entry_preserves_inherited_agent_streams_when_transcripts_are_disabled() {
+        let _lock = transcript_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let agent = temp.path().join("agent.sh");
+        let fd_report = temp.path().join("fd-report.txt");
+        write_fd_report_agent(&agent);
+        let _env = EnvGuard::unset(&["RUNA_TRANSCRIPT_DIR", "RUNA_TRANSCRIPT_REDACT_ENV"]);
+        let parent_stdout = fs::read_link("/proc/self/fd/1").unwrap();
+        let parent_stderr = fs::read_link("/proc/self/fd/2").unwrap();
+
+        execute_entry(
+            temp.path(),
+            &[
+                "/bin/sh".to_string(),
+                agent.to_string_lossy().into_owned(),
+                fd_report.to_string_lossy().into_owned(),
+            ],
+            &minimal_plan_entry("implement", Some("issue-116")),
+            ExecutionOptions::default(),
+        )
+        .expect("agent execution should succeed");
+
+        let report = fs::read_to_string(fd_report).expect("agent should report stream fds");
+        let mut lines = report.lines();
+        assert_eq!(
+            lines.next().map(PathBuf::from),
+            Some(parent_stdout),
+            "agent stdout should be inherited unchanged when transcripts are disabled"
+        );
+        assert_eq!(
+            lines.next().map(PathBuf::from),
+            Some(parent_stderr),
+            "agent stderr should be inherited unchanged when transcripts are disabled"
+        );
+        assert_eq!(lines.next(), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn execute_entry_pipes_agent_streams_when_transcripts_are_enabled() {
+        let _lock = transcript_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let agent = temp.path().join("agent.sh");
+        let fd_report = temp.path().join("fd-report.txt");
+        write_fd_report_agent(&agent);
+        let transcript_dir = temp.path().join("transcript");
+        let transcript_dir_string = transcript_dir.to_string_lossy().into_owned();
+        let _env = EnvGuard::set(&[("RUNA_TRANSCRIPT_DIR", &transcript_dir_string)]);
+        let parent_stdout = fs::read_link("/proc/self/fd/1").unwrap();
+        let parent_stderr = fs::read_link("/proc/self/fd/2").unwrap();
+
+        execute_entry(
+            temp.path(),
+            &[
+                "/bin/sh".to_string(),
+                agent.to_string_lossy().into_owned(),
+                fd_report.to_string_lossy().into_owned(),
+            ],
+            &minimal_plan_entry("implement", Some("issue-116")),
+            ExecutionOptions::default(),
+        )
+        .expect("agent execution should succeed");
+
+        let report = fs::read_to_string(fd_report).expect("agent should report stream fds");
+        let mut lines = report.lines();
+        let child_stdout = lines.next().expect("agent should report stdout fd");
+        let child_stderr = lines.next().expect("agent should report stderr fd");
+        assert!(
+            child_stdout.starts_with("pipe:["),
+            "agent stdout should be a pipe when transcripts are enabled: {child_stdout}"
+        );
+        assert!(
+            child_stderr.starts_with("pipe:["),
+            "agent stderr should be a pipe when transcripts are enabled: {child_stderr}"
+        );
+        assert_ne!(Path::new(child_stdout), parent_stdout.as_path());
+        assert_ne!(Path::new(child_stderr), parent_stderr.as_path());
+        assert_eq!(lines.next(), None);
     }
 
     #[test]

@@ -53,6 +53,12 @@ Semantic Versioning.
   contract-defined non-Linux `UnsupportedPlatform` runtime rejection; non-Linux
   build and runtime outcomes are unsupported and unspecified.
 
+### Fixed
+
+- Live `runa step` and `runa run` preserve inherited agent stdout/stderr when
+  `RUNA_TRANSCRIPT_DIR` is unset, keeping transcript capture opt-in and
+  retaining the default attached-terminal behavior.
+
 ## [0.1.0] — 2026-04-03
 
 First release. Runa is a runtime that makes multi-step AI agent workflows

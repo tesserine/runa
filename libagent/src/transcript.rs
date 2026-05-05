@@ -91,6 +91,10 @@ pub fn append_event(event: TranscriptEvent<'_>) -> io::Result<()> {
     file.flush()
 }
 
+pub fn capture_enabled() -> bool {
+    transcript_dir().is_some()
+}
+
 pub fn transcript_env() -> Vec<(String, String)> {
     [TRANSCRIPT_DIR_ENV, REDACT_ENV_ENV]
         .into_iter()
