@@ -118,6 +118,11 @@ fn runa_cli_rolls_the_workspace_changelog_once_for_releases() {
         replacement.get("exactly").and_then(toml::Value::as_integer),
         Some(1)
     );
+    assert_eq!(
+        replacement.get("prerelease").and_then(toml::Value::as_bool),
+        Some(true),
+        "CHANGELOG.md replacement should run during RC releases"
+    );
 }
 
 #[test]
@@ -152,8 +157,16 @@ fn release_adoption_verification_script_is_repo_tracked_operational_substrate() 
         "release verification should seed the temp repo with global excludes disabled"
     );
     assert!(
+        script.contains("source \"$workspace_root/scripts/release-check\""),
+        "release verification should source release-check instead of defining a second parser"
+    );
+    assert!(
         script.contains("cargo release patch --execute --no-confirm"),
-        "release verification should exercise the real cargo-release operation"
+        "release verification should exercise the stable cargo-release operation"
+    );
+    assert!(
+        script.contains("cargo release rc --execute --no-confirm"),
+        "release verification should exercise the RC cargo-release operation"
     );
     assert!(
         script.contains("uncommitted changes detected"),
@@ -183,6 +196,14 @@ fn release_adoption_verification_script_is_repo_tracked_operational_substrate() 
         script.contains("target/release/runa-mcp\" --version"),
         "release verification should check the runa-mcp binary version"
     );
+    assert!(
+        script.contains("./scripts/release-check release \"$tag_name\""),
+        "release verification should prove produced tags pass release-check release"
+    );
+    assert!(
+        !script.contains("sed -n '/^\\[workspace.package\\]/"),
+        "release verification should not parse workspace versions with its own sed expression"
+    );
 
     #[cfg(unix)]
     {
@@ -197,4 +218,213 @@ fn release_adoption_verification_script_is_repo_tracked_operational_substrate() 
             script_path.display()
         );
     }
+}
+
+fn release_workflow_tag_patterns() -> Vec<String> {
+    let workflow = read_workspace_file(".github/workflows/release.yml");
+    let mut patterns = Vec::new();
+    let mut in_tags = false;
+
+    for line in workflow.lines() {
+        if line == "    tags:" {
+            in_tags = true;
+            continue;
+        }
+
+        if in_tags {
+            if !line.starts_with("      - ") {
+                break;
+            }
+            patterns.push(
+                line.trim()
+                    .trim_start_matches("- ")
+                    .trim_matches('"')
+                    .to_string(),
+            );
+        }
+    }
+
+    patterns
+}
+
+fn documented_actions_pattern_matches(pattern: &str, candidate: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let candidate = candidate.as_bytes();
+    let mut pattern_index = 0;
+    let mut candidate_index = 0;
+
+    while pattern_index < pattern.len() {
+        if pattern[pattern_index] == b'[' {
+            let range_end = pattern[pattern_index..]
+                .iter()
+                .position(|byte| *byte == b']')
+                .map(|offset| pattern_index + offset)
+                .expect("test pattern character class should close");
+            assert_eq!(
+                &pattern[pattern_index..=range_end],
+                b"[0-9]",
+                "test matcher only models the documented digit class used by release tags"
+            );
+            let one_or_more = pattern.get(range_end + 1) == Some(&b'+');
+            let start = candidate_index;
+            while candidate
+                .get(candidate_index)
+                .is_some_and(u8::is_ascii_digit)
+            {
+                candidate_index += 1;
+            }
+            if one_or_more {
+                if candidate_index == start {
+                    return false;
+                }
+                pattern_index = range_end + 2;
+            } else {
+                if candidate_index != start + 1 {
+                    return false;
+                }
+                pattern_index = range_end + 1;
+            }
+            continue;
+        }
+
+        if candidate.get(candidate_index) != pattern.get(pattern_index) {
+            return false;
+        }
+        pattern_index += 1;
+        candidate_index += 1;
+    }
+
+    candidate_index == candidate.len()
+}
+
+fn matches_any_documented_actions_pattern(patterns: &[String], candidate: &str) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| documented_actions_pattern_matches(pattern, candidate))
+}
+
+#[test]
+fn release_check_script_is_the_release_verifier_surface() {
+    let script_path = workspace_root().join("scripts/release-check");
+    let script = std::fs::read_to_string(&script_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", script_path.display()));
+
+    assert!(
+        script.contains("scripts/release-check metadata")
+            && script.contains("scripts/release-check notes vX.Y.Z[-rc.N]")
+            && script.contains("--runa-bin PATH")
+            && script.contains("--runa-mcp-bin PATH"),
+        "release-check should expose metadata, notes, and release modes for runa binaries"
+    );
+    assert!(
+        !script.contains("--container-image") && !script.contains("--base-image"),
+        "runa release-check should not validate container or base image surfaces"
+    );
+}
+
+#[test]
+fn github_release_workflow_triggers_only_for_documented_tag_shapes() {
+    let patterns = release_workflow_tag_patterns();
+
+    assert!(
+        !patterns.iter().any(|pattern| pattern == "v*.*.*"),
+        "release workflow should not trigger on arbitrary v*.*.* tags"
+    );
+    assert_eq!(
+        patterns,
+        ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"],
+        "release workflow should trigger only documented stable and RC tag shapes"
+    );
+}
+
+#[test]
+fn github_release_workflow_tag_filters_match_the_documented_release_contract() {
+    let patterns = release_workflow_tag_patterns();
+
+    for accepted in ["v0.1.2", "v10.20.300", "v0.1.2-rc.1", "v10.20.300-rc.400"] {
+        assert!(
+            matches_any_documented_actions_pattern(&patterns, accepted),
+            "release workflow tag filters should match documented tag {accepted}"
+        );
+    }
+
+    for rejected in [
+        "v0.1",
+        "v0.1.2.3",
+        "v0.1.2-beta.1",
+        "v0.1.2-rc",
+        "v0.1.2-rc.x",
+        "runa-v0.1.2",
+    ] {
+        assert!(
+            !matches_any_documented_actions_pattern(&patterns, rejected),
+            "release workflow tag filters should reject undocumented tag {rejected}"
+        );
+    }
+}
+
+#[test]
+fn github_release_publication_is_not_coupled_to_path_filters() {
+    let workflow = read_workspace_file(".github/workflows/release.yml");
+
+    assert!(
+        workflow.contains("    tags:"),
+        "release publication workflow should be triggered by release tags"
+    );
+    assert!(
+        !workflow.contains("    paths:"),
+        "release publication workflow should not path-filter tag pushes"
+    );
+}
+
+#[test]
+fn release_metadata_workflow_keeps_path_filtered_branch_and_pr_checks() {
+    let workflow = read_workspace_file(".github/workflows/release-metadata.yml");
+
+    assert!(
+        workflow.contains("name: Release Metadata"),
+        "release metadata workflow should exist separately from tag publication"
+    );
+    assert!(
+        workflow.contains("  push:") && workflow.contains("    branches: [main]"),
+        "release metadata workflow should run on main branch pushes"
+    );
+    assert!(
+        workflow.contains("  pull_request:") && workflow.contains("    paths:"),
+        "release metadata workflow should retain PR path filtering"
+    );
+    assert!(
+        workflow.contains("./scripts/release-check metadata"),
+        "release metadata workflow should run release-check metadata"
+    );
+}
+
+#[test]
+fn github_release_workflow_marks_only_rc_tags_as_prereleases() {
+    let workflow = read_workspace_file(".github/workflows/release.yml");
+
+    assert!(
+        workflow.contains("^v[0-9]+[.][0-9]+[.][0-9]+-rc[.][0-9]+$"),
+        "release workflow should mark only documented RC tags as GitHub prereleases"
+    );
+    assert!(
+        !workflow.contains("[[ \"$GITHUB_REF_NAME\" == *-* ]]"),
+        "release workflow should not treat every hyphenated tag as a prerelease"
+    );
+}
+
+#[test]
+fn release_documentation_describes_runa_release_identity() {
+    let releasing = read_workspace_file("RELEASING.md");
+
+    assert!(releasing.contains("runa --version"));
+    assert!(releasing.contains("runa-mcp --version"));
+    assert!(
+        releasing.contains("runa's own release check does not validate base images"),
+        "RELEASING.md should name the runa/base release boundary"
+    );
+    assert!(
+        releasing.contains("Only `vX.Y.Z-rc.N` tags are published as GitHub prereleases."),
+        "RELEASING.md should describe prerelease publication with RC precision"
+    );
 }
