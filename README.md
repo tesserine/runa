@@ -140,6 +140,7 @@ Both projects are in early development.
 - [Interface Contract](docs/interface-contract.md) — The three primitives defining the methodology-runtime boundary
 - [Architecture](ARCHITECTURE.md) — Workspace structure, data flow, module descriptions, disk layout
 - [Contributing](CONTRIBUTING.md) — Conventions for landing PRs
+- [Releasing](RELEASING.md) — Repository release operation and verification
 - [Quickstart Example](examples/quickstart-methodology/) — A two-protocol review pipeline you can browse and run
 - [Commons](https://github.com/tesserine/commons) — Shared governance for the ecosystem: bedrock principles, design principles, and architectural decision records. All development on runa follows commons as active guidelines, not optional reading
 

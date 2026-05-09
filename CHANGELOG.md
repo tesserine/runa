@@ -9,6 +9,9 @@ Semantic Versioning.
 
 ### Changed
 
+- Added release ceremony tooling for runa, including `scripts/release-check`,
+  stable and RC release verification, GitHub Release workflows, and
+  operator-facing release documentation.
 - Live `runa step`, `runa run`, and `runa-mcp` can now emit structured
   transcript events when `RUNA_TRANSCRIPT_DIR` is set, capturing protocol
   prompts, agent stdout/stderr, agent exit status, and MCP tool calls/results

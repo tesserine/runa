@@ -1,0 +1,345 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+
+usage() {
+    cat <<'EOF'
+usage:
+  scripts/release-check metadata
+  scripts/release-check notes vX.Y.Z[-rc.N]
+  scripts/release-check release vX.Y.Z[-rc.N] --runa-bin PATH --runa-mcp-bin PATH
+EOF
+}
+
+die() {
+    printf 'release-check: %s\n' "$*" >&2
+    exit 1
+}
+
+workspace_version() {
+    local root="${1:-$repo_root}"
+
+    awk '
+        /^[[:space:]]*\[workspace\.package\][[:space:]]*(#.*)?$/ {
+            inside = 1
+            next
+        }
+        inside && /^[[:space:]]*\[/ {
+            inside = 0
+        }
+        inside && /^[[:space:]]*version[[:space:]]*=/ {
+            value = $0
+            sub(/^[^"]*"/, "", value)
+            sub(/".*$/, "", value)
+            print value
+            exit
+        }
+    ' "$root/Cargo.toml"
+}
+
+require_jq() {
+    command -v jq >/dev/null 2>&1 || die "jq is required for workspace metadata checks"
+}
+
+workspace_metadata() {
+    local root="${1:-$repo_root}"
+
+    cargo metadata --no-deps --format-version 1 --manifest-path "$root/Cargo.toml"
+}
+
+workspace_package_manifest_paths() {
+    local root="${1:-$repo_root}"
+
+    workspace_metadata "$root" | jq -r '
+        .workspace_members as $members
+        | .packages[]
+        | select(.id as $id | $members | index($id))
+        | .manifest_path
+    '
+}
+
+workspace_package_names() {
+    local root="${1:-$repo_root}"
+
+    workspace_metadata "$root" | jq -r '
+        .workspace_members as $members
+        | .packages[]
+        | select(.id as $id | $members | index($id))
+        | .name
+    '
+}
+
+release_from_tag() {
+    local tag="$1"
+    [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.([1-9][0-9]*))?$ ]] \
+        || die "release version must look like vX.Y.Z or vX.Y.Z-rc.N: $tag"
+    printf '%s\n' "${tag#v}"
+}
+
+check_version_shape() {
+    local version="$1"
+    [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.([1-9][0-9]*))?$ ]] \
+        || die "workspace version must look like X.Y.Z or X.Y.Z-rc.N: $version"
+}
+
+check_workspace_version_present() {
+    local version
+    version="$(workspace_version)"
+    [[ -n "$version" ]] || die "workspace package version not found in Cargo.toml"
+    check_version_shape "$version"
+}
+
+check_workspace_crates_inherit_version() {
+    local manifest
+    while IFS= read -r manifest; do
+        [[ -n "$manifest" ]] || continue
+        [[ -f "$manifest" ]] || die "workspace crate manifest not found: ${manifest#$repo_root/}"
+        grep -Eq '^[[:space:]]*version\.workspace[[:space:]]*=[[:space:]]*true$' "$manifest" \
+            || die "${manifest#$repo_root/} must inherit version.workspace = true"
+    done < <(workspace_package_manifest_paths)
+}
+
+check_cargo_lock_versions() {
+    local lockfile="$repo_root/Cargo.lock"
+    local package_names version
+    version="$(workspace_version)"
+    package_names="$(workspace_package_names)"
+    [[ -f "$lockfile" ]] || die "Cargo.lock not found"
+
+    awk -v expected="$version" -v package_names="$package_names" '
+        BEGIN {
+            split(package_names, names, "\n")
+            for (i in names) {
+                if (names[i] != "") {
+                    wanted[names[i]] = 1
+                }
+            }
+        }
+
+        function trim(value) {
+            sub(/^[^"]*"/, "", value)
+            sub(/".*$/, "", value)
+            return value
+        }
+
+        function check_package() {
+            if (name in wanted) {
+                seen[name] = 1
+                if (version != expected) {
+                    print "Cargo.lock package " name " version " version " does not match workspace version " expected > "/dev/stderr"
+                    exit 1
+                }
+            }
+        }
+
+        /^\[\[package\]\]$/ {
+            check_package()
+            name = ""
+            version = ""
+            next
+        }
+
+        /^name[[:space:]]*=/ {
+            name = trim($0)
+            next
+        }
+
+        /^version[[:space:]]*=/ {
+            version = trim($0)
+            next
+        }
+
+        END {
+            check_package()
+            for (package_name in wanted) {
+                if (!(package_name in seen)) {
+                    print "Cargo.lock package " package_name " not found" > "/dev/stderr"
+                    exit 1
+                }
+            }
+        }
+    ' "$lockfile" || exit 1
+}
+
+check_changelog_structure() {
+    local changelog="$repo_root/CHANGELOG.md"
+    [[ -f "$changelog" ]] || die "CHANGELOG.md not found"
+
+    local unreleased_count
+    unreleased_count="$(grep -c '^## \[Unreleased\]$' "$changelog" || true)"
+    [[ "$unreleased_count" == "1" ]] \
+        || die "CHANGELOG.md must contain exactly one ## [Unreleased] heading"
+
+    awk '
+        /^## / {
+            if ($0 == "## [Unreleased]") {
+                if (seen_release) {
+                    print "CHANGELOG.md places ## [Unreleased] after a release heading" > "/dev/stderr"
+                    exit 1
+                }
+                next
+            }
+
+            if ($0 !~ /^## \[(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.([1-9][0-9]*))?\] — [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) {
+                print "CHANGELOG.md release heading is malformed: " $0 > "/dev/stderr"
+                exit 1
+            }
+
+            seen_release = 1
+        }
+    ' "$changelog" || exit 1
+}
+
+check_release_heading() {
+    local version="$1"
+    awk -v prefix="## [$version] — " '
+        index($0, prefix) == 1 {
+            date = substr($0, length(prefix) + 1)
+            if (date ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) {
+                found = 1
+            }
+        }
+        END {
+            exit found ? 0 : 1
+        }
+    ' "$repo_root/CHANGELOG.md" \
+        || die "CHANGELOG.md has no release heading for [$version]"
+}
+
+check_release_version() {
+    local version="$1"
+    local current
+    current="$(workspace_version)"
+    [[ "$current" == "$version" ]] \
+        || die "workspace version $current does not match tag version $version"
+}
+
+check_binary() {
+    local label="$1"
+    local version="$2"
+    local bin="$3"
+    if [[ "$bin" != /* ]]; then
+        bin="$repo_root/$bin"
+    fi
+    [[ -x "$bin" ]] || die "$label binary is not executable: $bin"
+
+    local output
+    output="$("$bin" --version)"
+    [[ "$output" == "$label $version" ]] \
+        || die "$label binary reports '$output', expected '$label $version'"
+}
+
+emit_notes() {
+    local version="$1"
+    awk -v prefix="## [$version] — " -v version="$version" '
+        index($0, prefix) == 1 {
+            found = 1
+            inside = 1
+            next
+        }
+        inside && /^## / {
+            exit
+        }
+        inside {
+            lines[++line_count] = $0
+        }
+        END {
+            if (!found) {
+                print "CHANGELOG.md has no release heading for [" version "]" > "/dev/stderr"
+                exit 1
+            }
+
+            first = 1
+            while (first <= line_count && lines[first] == "") {
+                first++
+            }
+
+            last = line_count
+            while (last >= first && lines[last] == "") {
+                last--
+            }
+
+            for (i = first; i <= last; i++) {
+                print lines[i]
+            }
+        }
+    ' "$repo_root/CHANGELOG.md"
+}
+
+run_metadata() {
+    require_jq
+    check_workspace_version_present
+    check_workspace_crates_inherit_version
+    check_cargo_lock_versions
+    check_changelog_structure
+}
+
+run_release() {
+    local tag="$1"
+    shift
+
+    local version runa_bin="" runa_mcp_bin=""
+    version="$(release_from_tag "$tag")"
+
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            --runa-bin)
+                [[ "$#" -ge 2 ]] || die "--runa-bin requires a path"
+                runa_bin="$2"
+                shift 2
+                ;;
+            --runa-mcp-bin)
+                [[ "$#" -ge 2 ]] || die "--runa-mcp-bin requires a path"
+                runa_mcp_bin="$2"
+                shift 2
+                ;;
+            *)
+                die "unknown release option: $1"
+                ;;
+        esac
+    done
+
+    run_metadata
+    check_release_version "$version"
+    check_release_heading "$version"
+    [[ -n "$runa_bin" ]] || die "--runa-bin is required"
+    [[ -n "$runa_mcp_bin" ]] || die "--runa-mcp-bin is required"
+    check_binary "runa" "$version" "$runa_bin"
+    check_binary "runa-mcp" "$version" "$runa_mcp_bin"
+}
+
+main() {
+    [[ "$#" -ge 1 ]] || {
+        usage >&2
+        exit 2
+    }
+
+    case "$1" in
+        metadata)
+            [[ "$#" == 1 ]] || die "metadata takes no arguments"
+            run_metadata
+            ;;
+        notes)
+            [[ "$#" == 2 ]] || die "notes requires exactly one vX.Y.Z[-rc.N] argument"
+            emit_notes "$(release_from_tag "$2")"
+            ;;
+        release)
+            [[ "$#" -ge 2 ]] || die "release requires a vX.Y.Z[-rc.N] argument"
+            shift
+            run_release "$@"
+            ;;
+        -h|--help|help)
+            usage
+            ;;
+        *)
+            usage >&2
+            exit 2
+            ;;
+    esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

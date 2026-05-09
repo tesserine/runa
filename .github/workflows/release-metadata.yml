@@ -1,0 +1,46 @@
+name: Release Metadata
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "CHANGELOG.md"
+      - "RELEASING.md"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "libagent/Cargo.toml"
+      - "runa-cli/Cargo.toml"
+      - "runa-mcp/Cargo.toml"
+      - "scripts/release-check"
+      - "scripts/verify-release-adoption.sh"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-metadata.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "CHANGELOG.md"
+      - "RELEASING.md"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "libagent/Cargo.toml"
+      - "runa-cli/Cargo.toml"
+      - "runa-mcp/Cargo.toml"
+      - "scripts/release-check"
+      - "scripts/verify-release-adoption.sh"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-metadata.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Release metadata
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check release metadata
+        run: ./scripts/release-check metadata
