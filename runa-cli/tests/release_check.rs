@@ -753,6 +753,63 @@ fn release_rejects_partial_binary_validation_arguments() {
 }
 
 #[test]
+fn release_rejects_empty_binary_validation_paths() {
+    let fixture = valid_fixture("release-empty-binary-args", "1.2.3");
+
+    let output =
+        fixture.run_release_check(&["release", "v1.2.3", "--runa-bin", "", "--runa-mcp-bin", ""]);
+
+    assert_failure_contains(&output, "--runa-bin requires a non-empty path");
+}
+
+#[test]
+fn release_rejects_empty_runa_binary_path_even_with_runa_mcp_path() {
+    let fixture = valid_fixture("release-empty-runa-bin", "1.2.3");
+    fixture.write(
+        "fake-runa-mcp",
+        "#!/usr/bin/env sh\nprintf 'runa-mcp 1.2.3\\n'\n",
+    );
+    fs::set_permissions(
+        fixture.root.join("fake-runa-mcp"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("fake runa-mcp should be executable");
+
+    let output = fixture.run_release_check(&[
+        "release",
+        "v1.2.3",
+        "--runa-bin",
+        "",
+        "--runa-mcp-bin",
+        "fake-runa-mcp",
+    ]);
+
+    assert_failure_contains(&output, "--runa-bin requires a non-empty path");
+}
+
+#[test]
+fn release_rejects_empty_runa_mcp_binary_path_even_with_runa_path() {
+    let fixture = valid_fixture("release-empty-runa-mcp-bin", "1.2.3");
+    fixture.write("fake-runa", "#!/usr/bin/env sh\nprintf 'runa 1.2.3\\n'\n");
+    fs::set_permissions(
+        fixture.root.join("fake-runa"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("fake runa should be executable");
+
+    let output = fixture.run_release_check(&[
+        "release",
+        "v1.2.3",
+        "--runa-bin",
+        "fake-runa",
+        "--runa-mcp-bin",
+        "",
+    ]);
+
+    assert_failure_contains(&output, "--runa-mcp-bin requires a non-empty path");
+}
+
+#[test]
 fn release_checks_both_runa_binary_identities() {
     let fixture = valid_fixture("release-binaries-success", "1.2.3");
     fixture.write("fake-runa", "#!/usr/bin/env sh\nprintf 'runa 1.2.3\\n'\n");

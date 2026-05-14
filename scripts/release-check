@@ -474,11 +474,13 @@ run_release() {
         case "$1" in
             --runa-bin)
                 [[ "$#" -ge 2 ]] || die "--runa-bin requires a path"
+                [[ -n "$2" ]] || die "--runa-bin requires a non-empty path"
                 runa_bin="$2"
                 shift 2
                 ;;
             --runa-mcp-bin)
                 [[ "$#" -ge 2 ]] || die "--runa-mcp-bin requires a path"
+                [[ -n "$2" ]] || die "--runa-mcp-bin requires a non-empty path"
                 runa_mcp_bin="$2"
                 shift 2
                 ;;
