@@ -9,7 +9,7 @@ usage() {
 usage:
   scripts/release-check metadata
   scripts/release-check notes vX.Y.Z[-rc.N]
-  scripts/release-check release vX.Y.Z[-rc.N] --runa-bin PATH --runa-mcp-bin PATH
+  scripts/release-check release vX.Y.Z[-rc.N] [--runa-bin PATH --runa-mcp-bin PATH]
 EOF
 }
 
@@ -163,6 +163,192 @@ check_cargo_lock_versions() {
     ' "$lockfile" || exit 1
 }
 
+workflow_tag_patterns() {
+    local workflow="$repo_root/.github/workflows/release.yml"
+
+    awk '
+        $0 == "    tags:" {
+            inside = 1
+            next
+        }
+        inside && $0 ~ /^      - / {
+            value = $0
+            sub(/^      - /, "", value)
+            gsub(/"/, "", value)
+            print value
+            next
+        }
+        inside {
+            exit
+        }
+    ' "$workflow"
+}
+
+workflow_executable_lines() {
+    local workflow="$1"
+
+    awk '
+        function indent_of(line,    i, char) {
+            for (i = 1; i <= length(line); i++) {
+                char = substr(line, i, 1)
+                if (char != " ") {
+                    return i - 1
+                }
+            }
+            return length(line)
+        }
+
+        function trim(value) {
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            return value
+        }
+
+        function unquote(value) {
+            if ((value ~ /^".*"$/) || (value ~ /^\047.*\047$/)) {
+                return substr(value, 2, length(value) - 2)
+            }
+            return value
+        }
+
+        function strip_shell_comment(value) {
+            sub(/(^|[[:space:]])#.*/, "", value)
+            return value
+        }
+
+        function emit(line_number, command) {
+            command = strip_shell_comment(command)
+            command = trim(command)
+            if (command == "" || command ~ /^#/) {
+                return
+            }
+            print line_number "\t" command
+        }
+
+        {
+            line = $0
+            sub(/\r$/, "", line)
+            indent = indent_of(line)
+            stripped = trim(line)
+
+            if (in_run_block) {
+                if (stripped != "" && indent <= run_indent) {
+                    in_run_block = 0
+                } else {
+                    emit(NR, line)
+                    next
+                }
+            }
+
+            if (stripped ~ /^#/) {
+                next
+            }
+
+            if (line ~ /^[[:space:]]*(-[[:space:]]*)?run:[[:space:]]*/) {
+                value = line
+                sub(/^[[:space:]]*(-[[:space:]]*)?run:[[:space:]]*/, "", value)
+                value = trim(value)
+
+                if (value ~ /^[|>]/) {
+                    in_run_block = 1
+                    run_indent = indent
+                    next
+                }
+
+                emit(NR, unquote(value))
+            }
+        }
+    ' "$workflow"
+}
+
+workflow_uses_lines() {
+    local workflow="$1"
+
+    awk '
+        function trim(value) {
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            return value
+        }
+
+        function unquote(value) {
+            if ((value ~ /^".*"$/) || (value ~ /^\047.*\047$/)) {
+                return substr(value, 2, length(value) - 2)
+            }
+            return value
+        }
+
+        {
+            line = $0
+            sub(/\r$/, "", line)
+            stripped = trim(line)
+
+            if (stripped ~ /^#/) {
+                next
+            }
+
+            if (line ~ /^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*/) {
+                value = line
+                sub(/^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*/, "", value)
+                value = trim(value)
+                sub(/[[:space:]]+#.*/, "", value)
+                value = trim(value)
+                if (value != "") {
+                    print NR "\t" unquote(value)
+                }
+            }
+        }
+    ' "$workflow"
+}
+
+check_release_workflow_surface() {
+    local workflow="$repo_root/.github/workflows/release.yml"
+    [[ -f "$workflow" ]] || die ".github/workflows/release.yml not found"
+
+    mapfile -t patterns < <(workflow_tag_patterns)
+    [[ "${#patterns[@]}" == "1" ]] \
+        || die ".github/workflows/release.yml must declare exactly one release tag pattern"
+    [[ "${patterns[0]}" == "v*" ]] \
+        || die ".github/workflows/release.yml tag pattern must delegate v-prefixed tags to release-check validation"
+    ! grep -Eq '^    paths:' "$workflow" \
+        || die ".github/workflows/release.yml tag publication must not use paths filters"
+
+    local validation_line expensive_work_line checkout_line tag_ref_restore_line event_identity_verify_line annotated_tag_line main_ancestry_line repository_code_line
+    validation_line="$(workflow_executable_lines "$workflow" | awk -F '\t' 'index($2, "./scripts/release-check release \"$GITHUB_REF_NAME\"") { print $1; exit }')"
+    expensive_work_line="$(workflow_executable_lines "$workflow" | awk -F '\t' '$2 ~ /rustup toolchain install|cargo build --release/ { print $1; exit }')"
+    [[ -n "$validation_line" ]] && [[ -n "$expensive_work_line" ]] && [[ "$validation_line" -lt "$expensive_work_line" ]] \
+        || die ".github/workflows/release.yml must validate the release tag before expensive release work"
+
+    checkout_line="$(workflow_uses_lines "$workflow" | awk -F '\t' '$2 ~ /^actions\/checkout(@|$)/ { print $1; exit }')"
+    tag_ref_restore_line="$(workflow_executable_lines "$workflow" | awk -F '\t' '$2 == "git fetch --tags --force origin" { print $1; exit }')"
+    event_identity_verify_line="$(workflow_executable_lines "$workflow" | awk -F '\t' '
+        $2 == "restored_commit=$(git rev-parse \"refs/tags/$GITHUB_REF_NAME^{commit}\")" {
+            saw_restored_commit = 1
+            next
+        }
+        saw_restored_commit && $2 == "if [ \"$restored_commit\" != \"$GITHUB_SHA\" ]; then" {
+            print $1
+            exit
+        }
+    ')"
+    annotated_tag_line="$(workflow_executable_lines "$workflow" | awk -F '\t' '$2 ~ /git cat-file -t/ { print $1; exit }')"
+    main_ancestry_line="$(workflow_executable_lines "$workflow" | awk -F '\t' '$2 ~ /git merge-base --is-ancestor/ { print $1; exit }')"
+    repository_code_line="$(workflow_executable_lines "$workflow" | awk -F '\t' 'index($2, "./scripts/") || $2 ~ /cargo build/ { print $1; exit }')"
+
+    [[ -n "$tag_ref_restore_line" ]] \
+        || die ".github/workflows/release.yml must restore annotated tag refs before checking tag type"
+    [[ -n "$checkout_line" ]] && [[ "$checkout_line" -lt "$tag_ref_restore_line" ]] \
+        || die ".github/workflows/release.yml must restore annotated tag refs after checkout and before checking tag type"
+    [[ -z "$annotated_tag_line" ]] || [[ "$tag_ref_restore_line" -lt "$annotated_tag_line" ]] \
+        || die ".github/workflows/release.yml must restore annotated tag refs before checking tag type"
+    [[ -n "$event_identity_verify_line" ]] && [[ "$tag_ref_restore_line" -lt "$event_identity_verify_line" ]] \
+        && { [[ -z "$annotated_tag_line" ]] || [[ "$event_identity_verify_line" -lt "$annotated_tag_line" ]]; } \
+        || die ".github/workflows/release.yml must verify the restored tag matches the triggering event before checking tag type"
+    [[ -n "$annotated_tag_line" ]] && [[ -n "$main_ancestry_line" ]] && [[ -n "$repository_code_line" ]] \
+        && [[ "$annotated_tag_line" -lt "$repository_code_line" ]] && [[ "$main_ancestry_line" -lt "$repository_code_line" ]] \
+        || die ".github/workflows/release.yml must establish tag trust before running repository code"
+}
+
 check_changelog_structure() {
     local changelog="$repo_root/CHANGELOG.md"
     [[ -f "$changelog" ]] || die "CHANGELOG.md not found"
@@ -273,6 +459,7 @@ run_metadata() {
     check_workspace_version_present
     check_workspace_crates_inherit_version
     check_cargo_lock_versions
+    check_release_workflow_surface
     check_changelog_structure
 }
 
@@ -304,10 +491,14 @@ run_release() {
     run_metadata
     check_release_version "$version"
     check_release_heading "$version"
-    [[ -n "$runa_bin" ]] || die "--runa-bin is required"
-    [[ -n "$runa_mcp_bin" ]] || die "--runa-mcp-bin is required"
-    check_binary "runa" "$version" "$runa_bin"
-    check_binary "runa-mcp" "$version" "$runa_mcp_bin"
+    if { [[ -n "$runa_bin" ]] && [[ -z "$runa_mcp_bin" ]]; } \
+        || { [[ -z "$runa_bin" ]] && [[ -n "$runa_mcp_bin" ]]; }; then
+        die "--runa-bin and --runa-mcp-bin must be supplied together"
+    fi
+    if [[ -n "$runa_bin" ]]; then
+        check_binary "runa" "$version" "$runa_bin"
+        check_binary "runa-mcp" "$version" "$runa_mcp_bin"
+    fi
 }
 
 main() {

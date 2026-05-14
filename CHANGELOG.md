@@ -64,6 +64,10 @@ Semantic Versioning.
 - Live `runa step` and `runa run` preserve inherited agent stdout/stderr when
   `RUNA_TRANSCRIPT_DIR` is unset, keeping transcript capture opt-in and
   retaining the default attached-terminal behavior.
+- Release publication now delegates `v*` tag filtering to `release-check`,
+  restores annotated tag refs after checkout, and verifies the restored tag
+  still matches the triggering event commit before tag-trust checks. Refs
+  tesserine/commons#34.
 
 ## [0.1.0] — 2026-04-03
 
