@@ -247,60 +247,18 @@ fn release_workflow_tag_patterns() -> Vec<String> {
     patterns
 }
 
-fn documented_actions_pattern_matches(pattern: &str, candidate: &str) -> bool {
-    let pattern = pattern.as_bytes();
-    let candidate = candidate.as_bytes();
-    let mut pattern_index = 0;
-    let mut candidate_index = 0;
-
-    while pattern_index < pattern.len() {
-        if pattern[pattern_index] == b'[' {
-            let range_end = pattern[pattern_index..]
-                .iter()
-                .position(|byte| *byte == b']')
-                .map(|offset| pattern_index + offset)
-                .expect("test pattern character class should close");
-            assert_eq!(
-                &pattern[pattern_index..=range_end],
-                b"[0-9]",
-                "test matcher only models the documented digit class used by release tags"
-            );
-            let one_or_more = pattern.get(range_end + 1) == Some(&b'+');
-            let start = candidate_index;
-            while candidate
-                .get(candidate_index)
-                .is_some_and(u8::is_ascii_digit)
-            {
-                candidate_index += 1;
-            }
-            if one_or_more {
-                if candidate_index == start {
-                    return false;
-                }
-                pattern_index = range_end + 2;
-            } else {
-                if candidate_index != start + 1 {
-                    return false;
-                }
-                pattern_index = range_end + 1;
-            }
-            continue;
-        }
-
-        if candidate.get(candidate_index) != pattern.get(pattern_index) {
-            return false;
-        }
-        pattern_index += 1;
-        candidate_index += 1;
-    }
-
-    candidate_index == candidate.len()
+fn line_number_containing(contents: &str, needle: &str) -> Option<usize> {
+    contents
+        .lines()
+        .position(|line| line.contains(needle))
+        .map(|index| index + 1)
 }
 
-fn matches_any_documented_actions_pattern(patterns: &[String], candidate: &str) -> bool {
-    patterns
-        .iter()
-        .any(|pattern| documented_actions_pattern_matches(pattern, candidate))
+fn first_line_number_containing_any(contents: &str, needles: &[&str]) -> Option<usize> {
+    contents
+        .lines()
+        .position(|line| needles.iter().any(|needle| line.contains(needle)))
+        .map(|index| index + 1)
 }
 
 #[test]
@@ -323,44 +281,66 @@ fn release_check_script_is_the_release_verifier_surface() {
 }
 
 #[test]
-fn github_release_workflow_triggers_only_for_documented_tag_shapes() {
+fn github_release_workflow_delegates_v_prefixed_tags_to_release_check() {
     let patterns = release_workflow_tag_patterns();
 
-    assert!(
-        !patterns.iter().any(|pattern| pattern == "v*.*.*"),
-        "release workflow should not trigger on arbitrary v*.*.* tags"
-    );
     assert_eq!(
         patterns,
-        ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"],
-        "release workflow should trigger only documented stable and RC tag shapes"
+        ["v*"],
+        "release workflow should delegate v-prefixed tag shape validation to release-check"
     );
 }
 
 #[test]
-fn github_release_workflow_tag_filters_match_the_documented_release_contract() {
-    let patterns = release_workflow_tag_patterns();
+fn github_release_workflow_validates_tags_before_expensive_release_work() {
+    let workflow = read_workspace_file(".github/workflows/release.yml");
+    let validation_line = line_number_containing(
+        &workflow,
+        "run: ./scripts/release-check release \"$GITHUB_REF_NAME\"",
+    )
+    .expect("release workflow should validate the tag with release-check");
+    let expensive_work_line = first_line_number_containing_any(
+        &workflow,
+        &["rustup toolchain install", "cargo build --release"],
+    )
+    .expect("release workflow should perform expensive release work");
 
-    for accepted in ["v0.1.2", "v10.20.300", "v0.1.2-rc.1", "v10.20.300-rc.400"] {
-        assert!(
-            matches_any_documented_actions_pattern(&patterns, accepted),
-            "release workflow tag filters should match documented tag {accepted}"
-        );
-    }
+    assert!(
+        validation_line < expensive_work_line,
+        "release workflow should validate the release tag before installing toolchains or building"
+    );
+}
 
-    for rejected in [
-        "v0.1",
-        "v0.1.2.3",
-        "v0.1.2-beta.1",
-        "v0.1.2-rc",
-        "v0.1.2-rc.x",
-        "runa-v0.1.2",
-    ] {
-        assert!(
-            !matches_any_documented_actions_pattern(&patterns, rejected),
-            "release workflow tag filters should reject undocumented tag {rejected}"
-        );
-    }
+#[test]
+fn github_release_workflow_establishes_tag_trust_before_repository_code_execution() {
+    let workflow = read_workspace_file(".github/workflows/release.yml");
+    let tag_ref_restore_line = line_number_containing(&workflow, "git fetch --tags --force origin")
+        .expect("release workflow should restore annotated tag refs after checkout");
+    let event_identity_line = line_number_containing(
+        &workflow,
+        "restored_commit=$(git rev-parse \"refs/tags/$GITHUB_REF_NAME^{commit}\")",
+    )
+    .expect("release workflow should verify restored tag identity");
+    let annotated_tag_line = line_number_containing(&workflow, "git cat-file -t")
+        .expect("release workflow should require an annotated tag");
+    let main_ancestry_line = line_number_containing(&workflow, "git merge-base --is-ancestor")
+        .expect("release workflow should require the tag target on main");
+    let repository_code_line = first_line_number_containing_any(
+        &workflow,
+        &[
+            "./scripts/release-check release \"$GITHUB_REF_NAME\"",
+            "cargo build",
+        ],
+    )
+    .expect("release workflow should run trusted repository release code");
+
+    assert!(
+        tag_ref_restore_line < event_identity_line
+            && event_identity_line < annotated_tag_line
+            && annotated_tag_line < repository_code_line
+            && main_ancestry_line < repository_code_line,
+        "release workflow should establish tag trust before running repository code"
+    );
 }
 
 #[test]
@@ -404,7 +384,8 @@ fn github_release_workflow_marks_only_rc_tags_as_prereleases() {
     let workflow = read_workspace_file(".github/workflows/release.yml");
 
     assert!(
-        workflow.contains("^v[0-9]+[.][0-9]+[.][0-9]+-rc[.][0-9]+$"),
+        workflow
+            .contains("^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)-rc[.][1-9][0-9]*$"),
         "release workflow should mark only documented RC tags as GitHub prereleases"
     );
     assert!(
@@ -426,5 +407,9 @@ fn release_documentation_describes_runa_release_identity() {
     assert!(
         releasing.contains("Only `vX.Y.Z-rc.N` tags are published as GitHub prereleases."),
         "RELEASING.md should describe prerelease publication with RC precision"
+    );
+    assert!(
+        releasing.contains("verifies that its commit still matches the event commit"),
+        "RELEASING.md should describe the event-identity trust check"
     );
 }
