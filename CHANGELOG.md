@@ -7,6 +7,8 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-05-17
+
 ### Changed
 
 - Added release ceremony tooling for runa, including `scripts/release-check`,
