@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::completion::completion_scan_gap_affects_work_unit;
 use crate::model::{ProtocolDeclaration, RequiredOutputChoice, TriggerCondition};
 use crate::selection::{
     Candidate, EvaluationScope, FreshnessInputMode, candidate_work_units_for_scope,
@@ -265,16 +266,16 @@ fn derived_completion_timestamp(
         return None;
     }
 
-    if completion_outputs.iter().any(|artifact_type| {
-        projection
-            .store
-            .scan_gap_affects_work_unit(artifact_type, work_unit)
-            || (projection
-                .partially_scanned_types
-                .contains(artifact_type.as_str())
-                && !projection.store.has_any_scan_gap_for_type(artifact_type))
-            || !projection.type_is_fully_valid(artifact_type, work_unit)
-    }) {
+    if completion_scan_gap_affects_work_unit(
+        protocol,
+        &completion_outputs,
+        projection.store,
+        work_unit,
+        projection.partially_scanned_types,
+    ) || completion_outputs
+        .iter()
+        .any(|artifact_type| !projection.type_is_fully_valid(artifact_type, work_unit))
+    {
         return None;
     }
 
@@ -1186,6 +1187,82 @@ mod tests {
                     projection: ProjectionClass::Projected,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn projection_matches_live_ready_when_non_selected_choice_member_has_scan_gap() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("store"),
+            vec!["review-request", "approved", "needs-revision"],
+        );
+        store
+            .record_with_timestamp(
+                "review-request",
+                "request",
+                Path::new("request.json"),
+                &json!({"title":"request"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "approved",
+                "decision",
+                Path::new("approved.json"),
+                &json!({"title":"approved"}),
+                2000,
+            )
+            .unwrap();
+        store.mark_instance_scan_gap("needs-revision", "hidden");
+
+        let mut review = protocol(
+            "review",
+            &["review-request"],
+            &[],
+            TriggerCondition::OnChange {
+                name: "review-request".into(),
+            },
+        );
+        review.required_output_choices = vec![RequiredOutputChoice {
+            name: "disposition".into(),
+            members: vec!["approved".into(), "needs-revision".into()],
+        }];
+        let protocols = vec![review];
+        let partials = HashSet::new();
+        let live_ready = crate::selection::discover_ready_candidates(
+            &protocols,
+            &store,
+            &["review"],
+            &partials,
+            EvaluationScope::Unscoped,
+        );
+
+        assert_eq!(
+            live_ready,
+            vec![Candidate {
+                protocol_name: "review".into(),
+                work_unit: None,
+            }]
+        );
+
+        let plan = project_cascade(
+            &protocols,
+            &store,
+            &["review"],
+            &live_ready,
+            &partials,
+            EvaluationScope::Unscoped,
+        );
+
+        assert_eq!(
+            plan,
+            vec![ProjectionCandidate {
+                protocol_name: "review".into(),
+                work_unit: None,
+                projection: ProjectionClass::Current,
+            }]
         );
     }
 }

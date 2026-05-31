@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 
+use crate::completion::completion_scan_gap_affects_work_unit;
 use crate::enforcement::enforce_postconditions;
 use crate::model::{ProtocolDeclaration, TriggerCondition};
 use crate::store::ArtifactStore;
@@ -131,12 +132,13 @@ pub(crate) fn derived_completion_timestamp(
         return None;
     }
 
-    let completion_scan_gap_types = completion_scan_gap_types(protocol, &completion_outputs);
-    if completion_scan_gap_types.iter().any(|artifact_type| {
-        store.scan_gap_affects_work_unit(artifact_type, work_unit)
-            || (partially_scanned_types.contains(artifact_type.as_str())
-                && !store.has_any_scan_gap_for_type(artifact_type))
-    }) {
+    if completion_scan_gap_affects_work_unit(
+        protocol,
+        &completion_outputs,
+        store,
+        work_unit,
+        partially_scanned_types,
+    ) {
         return None;
     }
 
@@ -176,15 +178,6 @@ fn completion_output_types<'a>(
     }
 
     Some(output_types)
-}
-
-fn completion_scan_gap_types<'a>(
-    protocol: &'a ProtocolDeclaration,
-    completion_outputs: &[&'a String],
-) -> Vec<&'a String> {
-    let mut output_types = completion_outputs.to_vec();
-    output_types.extend(protocol.required_choice_members());
-    output_types
 }
 
 #[cfg(test)]

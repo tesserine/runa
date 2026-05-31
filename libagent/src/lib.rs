@@ -10,11 +10,13 @@
 //! - [`graph`] — Dependency graph: topological ordering, cycle detection, blocked-protocol identification
 //! - [`store`] — Artifact state tracking: validation status, content hashing, JSON persistence
 //! - [`mod@scan`] — Filesystem reconciliation from artifact workspace into store state
+//! - [`completion`] — Shared completion evidence checks for live and projected readiness
 //! - [`trigger`] — Trigger condition evaluation against runtime state
 //! - [`enforcement`] — Pre/post-execution enforcement of protocol contracts
 //!
 //! See `ARCHITECTURE.md` in the repository root for data flow and design details.
 
+pub(crate) mod completion;
 pub mod context;
 pub mod enforcement;
 pub mod graph;
