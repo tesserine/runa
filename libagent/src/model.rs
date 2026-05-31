@@ -100,6 +100,16 @@ pub fn validate_output_scope(
     Ok(())
 }
 
+/// A named group of output artifact types where exactly one member is required.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredOutputChoice {
+    /// Unique group name within the declaring protocol.
+    pub name: String,
+    /// Artifact type names that satisfy this choice. Exactly one must exist
+    /// and validate after protocol execution.
+    pub members: Vec<String>,
+}
+
 /// A protocol's declared relationship to artifacts and its activation condition.
 ///
 /// Protocols declare what they require, accept, produce, and may produce.
@@ -120,6 +130,9 @@ pub struct ProtocolDeclaration {
     /// Artifact types that may be produced; validated if present.
     #[serde(default)]
     pub may_produce: Vec<String>,
+    /// Named output groups where exactly one member type must be produced.
+    #[serde(default)]
+    pub required_output_choices: Vec<RequiredOutputChoice>,
     /// Whether this protocol must be evaluated within a delegated work-unit scope.
     #[serde(default)]
     pub scoped: bool,
@@ -130,6 +143,23 @@ pub struct ProtocolDeclaration {
     /// `None` when produced by `manifest::from_str` (no filesystem access).
     #[serde(skip)]
     pub instructions: Option<String>,
+}
+
+impl ProtocolDeclaration {
+    /// Required-choice member artifact types, in declaration order.
+    pub fn required_choice_members(&self) -> impl Iterator<Item = &String> {
+        self.required_output_choices
+            .iter()
+            .flat_map(|choice| choice.members.iter())
+    }
+
+    /// All declared output artifact types that can be produced by this protocol.
+    pub fn output_artifact_types(&self) -> impl Iterator<Item = &String> {
+        self.produces
+            .iter()
+            .chain(&self.may_produce)
+            .chain(self.required_choice_members())
+    }
 }
 
 /// Defines when the runtime should activate a protocol.
@@ -211,6 +241,7 @@ mod tests {
             accepts: vec!["prior-design".into()],
             produces: vec!["design-doc".into()],
             may_produce: vec!["design-notes".into()],
+            required_output_choices: Vec::new(),
             scoped: true,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
@@ -305,6 +336,7 @@ mod tests {
             accepts: vec![],
             produces: vec![],
             may_produce: vec![],
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
@@ -385,6 +417,7 @@ mod tests {
             accepts: vec![],
             produces: vec!["implementation".into()],
             may_produce: vec![],
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnArtifact {
                 name: "draft".into(),
@@ -416,6 +449,7 @@ mod tests {
             accepts: vec![],
             produces: vec!["summary".into()],
             may_produce: vec![],
+            required_output_choices: Vec::new(),
             scoped: true,
             trigger: TriggerCondition::OnArtifact {
                 name: "draft".into(),

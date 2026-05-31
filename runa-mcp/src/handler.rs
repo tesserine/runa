@@ -39,6 +39,7 @@ impl RunaHandler {
         let output_types: Vec<&String> = protocol
             .produces
             .iter()
+            .chain(protocol.required_choice_members())
             .chain(protocol.may_produce.iter().filter(|type_name| {
                 if work_unit.is_none()
                     && let Some(at) = store.artifact_type(type_name)
@@ -145,7 +146,11 @@ pub fn validate_output_types(
     store: &ArtifactStore,
     _work_unit: Option<&str>,
 ) -> Result<(), String> {
-    for type_name in &protocol.produces {
+    for type_name in protocol
+        .produces
+        .iter()
+        .chain(protocol.required_choice_members())
+    {
         let Some(at) = store.artifact_type(type_name) else {
             return Err(format!(
                 "required output type '{type_name}' not found in manifest"
@@ -173,9 +178,12 @@ pub fn validate_output_types(
         }
     }
 
-    // For may_produce-only protocols, ensure at least one may_produce type
-    // can become a viable tool. If none can, the session is pointless.
-    if protocol.produces.is_empty() && !protocol.may_produce.is_empty() {
+    // For protocols with only optional outputs, ensure at least one may_produce
+    // type can become a viable tool. If none can, the session is pointless.
+    if protocol.produces.is_empty()
+        && protocol.required_output_choices.is_empty()
+        && !protocol.may_produce.is_empty()
+    {
         let has_viable = protocol.may_produce.iter().any(|type_name| {
             let Some(at) = store.artifact_type(type_name) else {
                 return false;
@@ -448,6 +456,7 @@ fn append_tool_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libagent::RequiredOutputChoice;
     use libagent::model::TriggerCondition;
     use serde_json::json;
 
@@ -522,6 +531,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
@@ -560,6 +570,53 @@ mod tests {
     }
 
     #[test]
+    fn handler_derives_tools_from_required_output_choice_members() {
+        let tmp = tempfile::tempdir().unwrap();
+        let types = vec![
+            ArtifactType {
+                name: "approved".into(),
+                schema: json!({
+                    "type": "object",
+                    "properties": { "summary": { "type": "string" } }
+                }),
+            },
+            ArtifactType {
+                name: "needs-revision".into(),
+                schema: json!({
+                    "type": "object",
+                    "properties": { "summary": { "type": "string" } }
+                }),
+            },
+        ];
+        let store = ArtifactStore::new(types.clone(), tmp.path().join("store")).unwrap();
+        let protocol = ProtocolDeclaration {
+            name: "review".into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: Vec::new(),
+            may_produce: Vec::new(),
+            required_output_choices: vec![RequiredOutputChoice {
+                name: "disposition".into(),
+                members: vec!["approved".into(), "needs-revision".into()],
+            }],
+            scoped: false,
+            trigger: TriggerCondition::OnChange {
+                name: "approved".into(),
+            },
+            instructions: None,
+        };
+
+        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
+        let tool_names = handler
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+
+        assert_eq!(tool_names, vec!["approved", "needs-revision"]);
+    }
+
+    #[test]
     fn handler_get_info_reports_tools_only_capabilities() {
         let tmp = tempfile::tempdir().unwrap();
         let types = vec![ArtifactType {
@@ -576,6 +633,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
@@ -628,6 +686,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: vec!["log_entries".into()],
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
@@ -678,6 +737,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: vec!["composed".into()],
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnArtifact {
                 name: "constraints".into(),
@@ -727,6 +787,7 @@ mod tests {
             accepts: Vec::new(),
             produces: Vec::new(),
             may_produce: vec!["composed_a".into(), "composed_b".into()],
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
@@ -757,6 +818,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["log_entries".into()],
             may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
@@ -788,6 +850,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["composed".into()],
             may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
@@ -823,6 +886,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["output_a".into(), "output_b".into()],
             may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
@@ -854,6 +918,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
@@ -887,6 +952,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
             scoped: true,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
@@ -917,6 +983,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["implementation".into()],
             may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
             scoped: true,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
@@ -957,6 +1024,7 @@ mod tests {
             accepts: Vec::new(),
             produces: vec!["output".into()],
             may_produce: vec!["scoped_output".into()],
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
@@ -984,6 +1052,7 @@ mod tests {
             accepts: Vec::new(),
             produces: Vec::new(),
             may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
             scoped: true,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),
@@ -1004,6 +1073,7 @@ mod tests {
             accepts: Vec::new(),
             produces: Vec::new(),
             may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnChange {
                 name: "unused".into(),

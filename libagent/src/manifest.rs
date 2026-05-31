@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::model::{
-    ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition, validate_output_scope,
+    ArtifactType, Manifest, ProtocolDeclaration, RequiredOutputChoice, TriggerCondition,
+    validate_output_scope,
 };
 
 // ---------------------------------------------------------------------------
@@ -46,6 +47,8 @@ struct RawProtocolDeclaration {
     produces: Vec<String>,
     #[serde(default)]
     may_produce: Vec<String>,
+    #[serde(default)]
+    required_output_choices: Vec<RequiredOutputChoice>,
     #[serde(default)]
     scoped: bool,
     trigger: TriggerCondition,
@@ -88,6 +91,29 @@ pub enum ManifestError {
     },
     /// Unscoped protocol declares an output schema that requires work_unit.
     UnscopedProtocolOutputRequiresWorkUnit {
+        protocol: String,
+        artifact_type: String,
+    },
+    /// Required output choice group name is unsafe.
+    InvalidRequiredOutputChoiceName { protocol: String, choice: String },
+    /// Two required output choices on one protocol share the same name.
+    DuplicateRequiredOutputChoiceName { protocol: String, choice: String },
+    /// A required output choice group has fewer than two members.
+    RequiredOutputChoiceTooSmall { protocol: String, choice: String },
+    /// A required output choice member is not a registered artifact type.
+    RequiredOutputChoiceUnknownMember {
+        protocol: String,
+        choice: String,
+        artifact_type: String,
+    },
+    /// A required output choice repeats a member type.
+    DuplicateRequiredOutputChoiceMember {
+        protocol: String,
+        choice: String,
+        artifact_type: String,
+    },
+    /// A protocol declares one output artifact type in incompatible output edges.
+    RequiredOutputChoiceOverlap {
         protocol: String,
         artifact_type: String,
     },
@@ -156,6 +182,41 @@ impl fmt::Display for ManifestError {
                      remove 'work_unit' from the output schema's required fields"
                 )
             }
+            ManifestError::InvalidRequiredOutputChoiceName { protocol, choice } => write!(
+                f,
+                "invalid required output choice name '{choice}' in protocol '{protocol}': names must not contain '/', '\\', or '..'"
+            ),
+            ManifestError::DuplicateRequiredOutputChoiceName { protocol, choice } => write!(
+                f,
+                "duplicate required output choice name '{choice}' in protocol '{protocol}'"
+            ),
+            ManifestError::RequiredOutputChoiceTooSmall { protocol, choice } => write!(
+                f,
+                "required output choice '{choice}' in protocol '{protocol}' must list at least two members"
+            ),
+            ManifestError::RequiredOutputChoiceUnknownMember {
+                protocol,
+                choice,
+                artifact_type,
+            } => write!(
+                f,
+                "required output choice '{choice}' in protocol '{protocol}' references unknown artifact type '{artifact_type}'"
+            ),
+            ManifestError::DuplicateRequiredOutputChoiceMember {
+                protocol,
+                choice,
+                artifact_type,
+            } => write!(
+                f,
+                "required output choice '{choice}' in protocol '{protocol}' repeats artifact type '{artifact_type}'"
+            ),
+            ManifestError::RequiredOutputChoiceOverlap {
+                protocol,
+                artifact_type,
+            } => write!(
+                f,
+                "protocol '{protocol}' declares artifact type '{artifact_type}' in more than one output edge"
+            ),
         }
     }
 }
@@ -257,7 +318,7 @@ fn resolve_methodology_layout(
 
 fn validate_resolved_manifest(manifest: &Manifest) -> Result<(), ManifestError> {
     for protocol in &manifest.protocols {
-        for artifact_type_name in protocol.produces.iter().chain(&protocol.may_produce) {
+        for artifact_type_name in protocol.output_artifact_types() {
             let Some(artifact_type) = manifest
                 .artifact_types
                 .iter()
@@ -312,6 +373,7 @@ pub fn from_str(content: &str) -> Result<Manifest, ManifestError> {
                 accepts: r.accepts,
                 produces: r.produces,
                 may_produce: r.may_produce,
+                required_output_choices: r.required_output_choices,
                 scoped: r.scoped,
                 trigger: r.trigger,
                 instructions: None,
@@ -339,6 +401,75 @@ fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
         }
     }
 
+    let registered_types: HashSet<&str> = manifest
+        .artifact_types
+        .iter()
+        .map(|artifact_type| artifact_type.name.as_str())
+        .collect();
+    for protocol in &manifest.protocols {
+        validate_required_output_choices(protocol, &registered_types)?;
+    }
+
+    Ok(())
+}
+
+fn validate_required_output_choices(
+    protocol: &ProtocolDeclaration,
+    registered_types: &HashSet<&str>,
+) -> Result<(), ManifestError> {
+    let mut choice_names = HashSet::new();
+    let mut output_types: HashSet<&str> = protocol
+        .produces
+        .iter()
+        .chain(&protocol.may_produce)
+        .map(String::as_str)
+        .collect();
+
+    for choice in &protocol.required_output_choices {
+        if validate_layout_name(&choice.name, NameKind::RequiredOutputChoice).is_err() {
+            return Err(ManifestError::InvalidRequiredOutputChoiceName {
+                protocol: protocol.name.clone(),
+                choice: choice.name.clone(),
+            });
+        }
+        if !choice_names.insert(choice.name.as_str()) {
+            return Err(ManifestError::DuplicateRequiredOutputChoiceName {
+                protocol: protocol.name.clone(),
+                choice: choice.name.clone(),
+            });
+        }
+        if choice.members.len() < 2 {
+            return Err(ManifestError::RequiredOutputChoiceTooSmall {
+                protocol: protocol.name.clone(),
+                choice: choice.name.clone(),
+            });
+        }
+
+        let mut members = HashSet::new();
+        for member in &choice.members {
+            if !registered_types.contains(member.as_str()) {
+                return Err(ManifestError::RequiredOutputChoiceUnknownMember {
+                    protocol: protocol.name.clone(),
+                    choice: choice.name.clone(),
+                    artifact_type: member.clone(),
+                });
+            }
+            if !members.insert(member.as_str()) {
+                return Err(ManifestError::DuplicateRequiredOutputChoiceMember {
+                    protocol: protocol.name.clone(),
+                    choice: choice.name.clone(),
+                    artifact_type: member.clone(),
+                });
+            }
+            if !output_types.insert(member.as_str()) {
+                return Err(ManifestError::RequiredOutputChoiceOverlap {
+                    protocol: protocol.name.clone(),
+                    artifact_type: member.clone(),
+                });
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -346,6 +477,7 @@ fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
 enum NameKind {
     ArtifactType,
     Protocol,
+    RequiredOutputChoice,
 }
 
 fn validate_layout_name(name: &str, kind: NameKind) -> Result<(), ManifestError> {
@@ -358,6 +490,10 @@ fn validate_layout_name(name: &str, kind: NameKind) -> Result<(), ManifestError>
         return Err(match kind {
             NameKind::ArtifactType => ManifestError::InvalidArtifactTypeName(name.to_string()),
             NameKind::Protocol => ManifestError::InvalidProtocolName(name.to_string()),
+            NameKind::RequiredOutputChoice => ManifestError::InvalidRequiredOutputChoiceName {
+                protocol: String::new(),
+                choice: name.to_string(),
+            },
         });
     }
     Ok(())
@@ -449,6 +585,184 @@ name = "constraints"
                 name: "constraints".into()
             }
         );
+    }
+
+    #[test]
+    fn from_str_rejects_required_output_choice_with_one_member() {
+        let toml = r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "approved"
+
+[[protocols]]
+name = "review"
+trigger = { type = "on_change", name = "approved" }
+
+[[protocols.required_output_choices]]
+name = "disposition"
+members = ["approved"]
+"#;
+
+        let err = from_str(toml).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ManifestError::RequiredOutputChoiceTooSmall {
+                    protocol,
+                    choice
+                } if protocol == "review" && choice == "disposition"
+            ),
+            "err: {err}"
+        );
+    }
+
+    #[test]
+    fn from_str_rejects_required_output_choice_unknown_member() {
+        let toml = r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "approved"
+
+[[protocols]]
+name = "review"
+trigger = { type = "on_change", name = "approved" }
+
+[[protocols.required_output_choices]]
+name = "disposition"
+members = ["approved", "needs-revision"]
+"#;
+
+        let err = from_str(toml).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ManifestError::RequiredOutputChoiceUnknownMember {
+                    protocol,
+                    choice,
+                    artifact_type
+                } if protocol == "review"
+                    && choice == "disposition"
+                    && artifact_type == "needs-revision"
+            ),
+            "err: {err}"
+        );
+    }
+
+    #[test]
+    fn from_str_rejects_required_output_choice_duplicate_member() {
+        let toml = r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "approved"
+
+[[protocols]]
+name = "review"
+trigger = { type = "on_change", name = "approved" }
+
+[[protocols.required_output_choices]]
+name = "disposition"
+members = ["approved", "approved"]
+"#;
+
+        let err = from_str(toml).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ManifestError::DuplicateRequiredOutputChoiceMember {
+                    protocol,
+                    choice,
+                    artifact_type
+                } if protocol == "review"
+                    && choice == "disposition"
+                    && artifact_type == "approved"
+            ),
+            "err: {err}"
+        );
+    }
+
+    #[test]
+    fn from_str_rejects_required_output_choice_overlapping_with_produces() {
+        let toml = r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "approved"
+
+[[artifact_types]]
+name = "needs-revision"
+
+[[protocols]]
+name = "review"
+produces = ["approved"]
+trigger = { type = "on_change", name = "approved" }
+
+[[protocols.required_output_choices]]
+name = "disposition"
+members = ["approved", "needs-revision"]
+"#;
+
+        let err = from_str(toml).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ManifestError::RequiredOutputChoiceOverlap {
+                    protocol,
+                    artifact_type
+                } if protocol == "review" && artifact_type == "approved"
+            ),
+            "err: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_unscoped_required_output_choice_member_requiring_work_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        write_layout(
+            dir.path(),
+            &[
+                ("approved", r#"{"type": "object", "required": ["title"]}"#),
+                (
+                    "needs-revision",
+                    r#"{
+                        "type": "object",
+                        "properties": {
+                            "title": { "type": "string" },
+                            "work_unit": { "type": "string" }
+                        },
+                        "required": ["title", "work_unit"]
+                    }"#,
+                ),
+            ],
+            &["review"],
+        );
+
+        let toml = r#"
+name = "invalid-unscoped-choice"
+
+[[artifact_types]]
+name = "approved"
+
+[[artifact_types]]
+name = "needs-revision"
+
+[[protocols]]
+name = "review"
+trigger = { type = "on_change", name = "approved" }
+
+[[protocols.required_output_choices]]
+name = "disposition"
+members = ["approved", "needs-revision"]
+"#;
+        let manifest_path = dir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, toml).unwrap();
+
+        let err = parse(&manifest_path).unwrap_err();
+        assert!(err.to_string().contains("review"), "err: {err}");
+        assert!(err.to_string().contains("needs-revision"), "err: {err}");
+        assert!(err.to_string().contains("work_unit"), "err: {err}");
     }
 
     #[test]
@@ -1272,6 +1586,43 @@ trigger = { type = "on_change", name = "report" }
         assert!(protocol.accepts.is_empty());
         assert_eq!(protocol.produces, vec!["thing"]);
         assert!(protocol.may_produce.is_empty());
+    }
+
+    #[test]
+    fn from_str_parses_required_output_choice_groups() {
+        let toml = r#"
+name = "required-choice"
+
+[[artifact_types]]
+name = "review-request"
+
+[[artifact_types]]
+name = "change-approved"
+
+[[artifact_types]]
+name = "change-needs-revision"
+
+[[protocols]]
+name = "review"
+requires = ["review-request"]
+trigger = { type = "on_artifact", name = "review-request" }
+
+[[protocols.required_output_choices]]
+name = "review-disposition"
+members = ["change-approved", "change-needs-revision"]
+"#;
+        let manifest = from_str(toml).unwrap();
+        let protocol = serde_json::to_value(&manifest.protocols[0]).unwrap();
+
+        assert_eq!(
+            protocol["required_output_choices"],
+            serde_json::json!([
+                {
+                    "name": "review-disposition",
+                    "members": ["change-approved", "change-needs-revision"]
+                }
+            ])
+        );
     }
 
     #[test]

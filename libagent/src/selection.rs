@@ -291,7 +291,10 @@ fn protocol_is_current(
     work_unit: Option<&str>,
     partially_scanned_types: &HashSet<String>,
 ) -> bool {
-    if protocol.produces.is_empty() && protocol.may_produce.is_empty() {
+    if protocol.produces.is_empty()
+        && protocol.may_produce.is_empty()
+        && protocol.required_output_choices.is_empty()
+    {
         return false;
     }
 
@@ -308,6 +311,14 @@ fn protocol_is_current(
             && (store.scan_gap_affects_work_unit(artifact_type, work_unit)
                 || (partially_scanned_types.contains(artifact_type.as_str())
                     && !store.has_any_scan_gap_for_type(artifact_type)))
+    }) {
+        return false;
+    }
+
+    if protocol.required_choice_members().any(|artifact_type| {
+        store.scan_gap_affects_work_unit(artifact_type, work_unit)
+            || (partially_scanned_types.contains(artifact_type.as_str())
+                && !store.has_any_scan_gap_for_type(artifact_type))
     }) {
         return false;
     }
@@ -1006,6 +1017,7 @@ mod tests {
             accepts: accepts.iter().map(|s| s.to_string()).collect(),
             produces: produces.iter().map(|s| s.to_string()).collect(),
             may_produce: may_produce.iter().map(|s| s.to_string()).collect(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger,
             instructions: None,

@@ -75,6 +75,44 @@ fn methodology_protocols() -> Vec<&'static str> {
     vec!["summarize", "implement"]
 }
 
+fn required_choice_with_unsupported_optional_manifest_toml() -> &'static str {
+    r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "approved"
+
+[[artifact_types]]
+name = "needs-revision"
+
+[[artifact_types]]
+name = "audit-log"
+
+[[protocols]]
+name = "review"
+may_produce = ["audit-log"]
+trigger = { type = "on_change", name = "approved" }
+
+[[protocols.required_output_choices]]
+name = "disposition"
+members = ["approved", "needs-revision"]
+"#
+}
+
+fn required_choice_with_unsupported_optional_schemas() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "approved",
+            r#"{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"}}}"#,
+        ),
+        (
+            "needs-revision",
+            r#"{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"}}}"#,
+        ),
+        ("audit-log", r#"{"type":"array","items":{"type":"string"}}"#),
+    ]
+}
+
 fn init_project(project_dir: &Path, manifest_path: &Path) {
     let runa_dir = project_dir.join(".runa");
     fs::create_dir_all(&runa_dir).unwrap();
@@ -139,6 +177,43 @@ fn unknown_protocol_name_references_manifest() {
     assert!(stderr.contains("missing"), "stderr: {stderr}");
     assert!(stderr.contains("manifest"), "stderr: {stderr}");
     assert!(stderr.contains("groundwork"), "stderr: {stderr}");
+}
+
+#[tokio::test]
+async fn choice_only_protocol_with_unsupported_may_produce_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        required_choice_with_unsupported_optional_manifest_toml(),
+        &required_choice_with_unsupported_optional_schemas(),
+        &["review"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("review")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let tools = service.list_all_tools().await.unwrap();
+    let tool_names = tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(tool_names, vec!["approved", "needs-revision"]);
+
+    service.cancel().await.unwrap();
 }
 
 #[tokio::test]

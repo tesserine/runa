@@ -202,6 +202,8 @@ fn names_for(
             ArtifactFailure::Missing { artifact_type, .. }
             | ArtifactFailure::Invalid { artifact_type, .. }
             | ArtifactFailure::Stale { artifact_type, .. } => artifact_type.clone(),
+            ArtifactFailure::RequiredChoiceMissing { choice, .. }
+            | ArtifactFailure::RequiredChoiceConflict { choice, .. } => choice.clone(),
         })
         .collect()
 }

@@ -147,6 +147,61 @@ fn list_shows_blocked_status() {
 }
 
 #[test]
+fn list_shows_required_output_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "approved"
+
+[[artifact_types]]
+name = "needs-revision"
+
+[[protocols]]
+name = "review"
+requires = ["constraints"]
+trigger = { type = "on_artifact", name = "constraints" }
+
+[[protocols.required_output_choices]]
+name = "disposition"
+members = ["approved", "needs-revision"]
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            ("approved", r#"{"type":"object"}"#),
+            ("needs-revision", r#"{"type":"object"}"#),
+        ],
+        &["review"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let output = runa_bin()
+        .arg("list")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("required_output_choice disposition: approved, needs-revision"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
 fn list_implicitly_scans_workspace_before_reporting() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(

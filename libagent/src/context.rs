@@ -54,6 +54,8 @@ pub struct ExpectedOutputs {
     pub produces: Vec<String>,
     /// Artifact types that may optionally be delivered -- validated if present.
     pub may_produce: Vec<String>,
+    /// Named output groups where exactly one member must be delivered.
+    pub required_output_choices: Vec<crate::model::RequiredOutputChoice>,
 }
 
 /// The complete agent-facing context for one protocol invocation.
@@ -117,6 +119,7 @@ pub fn build_context(
         expected_outputs: ExpectedOutputs {
             produces: protocol.produces.clone(),
             may_produce: protocol.may_produce.clone(),
+            required_output_choices: protocol.required_output_choices.clone(),
         },
     }
 }
@@ -170,6 +173,13 @@ pub fn render_context_prompt(context: &ContextInjection) -> String {
     if !context.expected_outputs.may_produce.is_empty() {
         let list = context.expected_outputs.may_produce.join(", ");
         sections.push(format!("You may also produce: {list}"));
+    }
+    for choice in &context.expected_outputs.required_output_choices {
+        sections.push(format!(
+            "You must produce exactly one output for {}: {}",
+            choice.name,
+            choice.members.join(", ")
+        ));
     }
     sections.push(
         "\nTo deliver each required output, call the tool with the matching name \
@@ -338,6 +348,7 @@ mod tests {
             accepts: vec!["notes".into()],
             produces: vec!["implementation".into()],
             may_produce: vec!["scratchpad".into()],
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: crate::TriggerCondition::OnArtifact {
                 name: "constraints".into(),
@@ -354,6 +365,7 @@ mod tests {
             ExpectedOutputs {
                 produces: vec!["implementation".into()],
                 may_produce: vec!["scratchpad".into()],
+                required_output_choices: Vec::new(),
             }
         );
         assert_eq!(context.inputs.len(), 2);
@@ -410,6 +422,7 @@ mod tests {
             accepts: vec!["notes".into(), "missing".into()],
             produces: Vec::new(),
             may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: crate::TriggerCondition::OnArtifact {
                 name: "constraints".into(),
@@ -467,6 +480,7 @@ mod tests {
             expected_outputs: ExpectedOutputs {
                 produces: vec!["implementation".into()],
                 may_produce: Vec::new(),
+                required_output_choices: Vec::new(),
             },
         };
 
@@ -514,6 +528,7 @@ mod tests {
             accepts: Vec::new(),
             produces: Vec::new(),
             may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: crate::TriggerCondition::OnArtifact {
                 name: "constraints".into(),
@@ -571,6 +586,7 @@ mod tests {
             expected_outputs: ExpectedOutputs {
                 produces: vec!["implementation".into()],
                 may_produce: vec!["notes".into()],
+                required_output_choices: Vec::new(),
             },
         });
 
@@ -594,6 +610,7 @@ mod tests {
             expected_outputs: ExpectedOutputs {
                 produces: vec!["implementation".into()],
                 may_produce: Vec::new(),
+                required_output_choices: Vec::new(),
             },
         });
 
@@ -617,6 +634,7 @@ mod tests {
             expected_outputs: ExpectedOutputs {
                 produces: vec!["implementation".into()],
                 may_produce: Vec::new(),
+                required_output_choices: Vec::new(),
             },
         });
 

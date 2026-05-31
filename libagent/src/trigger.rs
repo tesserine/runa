@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 
+use crate::completion::completion_scan_gap_affects_work_unit;
 use crate::enforcement::enforce_postconditions;
 use crate::model::{ProtocolDeclaration, TriggerCondition};
 use crate::store::ArtifactStore;
@@ -126,15 +127,18 @@ pub(crate) fn derived_completion_timestamp(
     work_unit: Option<&str>,
     partially_scanned_types: &HashSet<String>,
 ) -> Option<u64> {
-    if protocol.produces.is_empty() {
+    let completion_outputs = completion_output_types(protocol, store, work_unit)?;
+    if completion_outputs.is_empty() {
         return None;
     }
 
-    if protocol.produces.iter().any(|artifact_type| {
-        store.scan_gap_affects_work_unit(artifact_type, work_unit)
-            || (partially_scanned_types.contains(artifact_type.as_str())
-                && !store.has_any_scan_gap_for_type(artifact_type))
-    }) {
+    if completion_scan_gap_affects_work_unit(
+        protocol,
+        &completion_outputs,
+        store,
+        work_unit,
+        partially_scanned_types,
+    ) {
         return None;
     }
 
@@ -142,8 +146,7 @@ pub(crate) fn derived_completion_timestamp(
         return None;
     }
 
-    protocol
-        .produces
+    completion_outputs
         .iter()
         .filter_map(|artifact_type| {
             store
@@ -155,10 +158,32 @@ pub(crate) fn derived_completion_timestamp(
         .min()
 }
 
+fn completion_output_types<'a>(
+    protocol: &'a ProtocolDeclaration,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+) -> Option<Vec<&'a String>> {
+    let mut output_types: Vec<&String> = protocol.produces.iter().collect();
+
+    for choice in &protocol.required_output_choices {
+        let produced_members: Vec<&String> = choice
+            .members
+            .iter()
+            .filter(|artifact_type| !store.instances_of(artifact_type, work_unit).is_empty())
+            .collect();
+        match produced_members.as_slice() {
+            [member] => output_types.push(member),
+            _ => return None,
+        }
+    }
+
+    Some(output_types)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ProtocolDeclaration;
+    use crate::model::{ProtocolDeclaration, RequiredOutputChoice};
     use crate::test_helpers::make_store;
     use serde_json::json;
     use std::path::Path;
@@ -175,6 +200,7 @@ mod tests {
             accepts: Vec::new(),
             produces: produces.iter().map(|s| s.to_string()).collect(),
             may_produce: may_produce.iter().map(|s| s.to_string()).collect(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger,
             instructions: None,
@@ -604,6 +630,165 @@ mod tests {
             &[],
             &["notes"],
         );
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, None, &HashSet::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn derived_completion_timestamp_uses_exactly_one_required_output_choice_member() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["approved", "needs-revision"]);
+        store
+            .record_with_timestamp(
+                "approved",
+                "result",
+                Path::new("approved.json"),
+                &json!({"title": "approved"}),
+                1000,
+            )
+            .unwrap();
+
+        let mut protocol = make_protocol(
+            TriggerCondition::OnChange {
+                name: "unused".into(),
+            },
+            &[],
+            &[],
+        );
+        protocol.required_output_choices = vec![RequiredOutputChoice {
+            name: "disposition".into(),
+            members: vec!["approved".into(), "needs-revision".into()],
+        }];
+
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, None, &HashSet::new()),
+            Some(1000)
+        );
+    }
+
+    #[test]
+    fn derived_completion_timestamp_is_none_when_non_selected_choice_member_has_scan_gap() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["approved", "needs-revision"]);
+        store
+            .record_with_timestamp(
+                "approved",
+                "result",
+                Path::new("approved.json"),
+                &json!({"title": "approved"}),
+                1000,
+            )
+            .unwrap();
+        store.mark_instance_scan_gap("needs-revision", "hidden");
+
+        let mut protocol = make_protocol(
+            TriggerCondition::OnChange {
+                name: "unused".into(),
+            },
+            &[],
+            &[],
+        );
+        protocol.required_output_choices = vec![RequiredOutputChoice {
+            name: "disposition".into(),
+            members: vec!["approved".into(), "needs-revision".into()],
+        }];
+
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, None, &HashSet::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn on_change_required_output_choice_rerun_is_not_suppressed_by_non_selected_member_scan_gap() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["review-request", "approved", "needs-revision"],
+        );
+        store
+            .record_with_timestamp(
+                "review-request",
+                "request",
+                Path::new("request.json"),
+                &json!({"title": "request"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "approved",
+                "result",
+                Path::new("approved.json"),
+                &json!({"title": "approved"}),
+                2000,
+            )
+            .unwrap();
+        store.mark_instance_scan_gap("needs-revision", "hidden");
+
+        let cond = TriggerCondition::OnChange {
+            name: "review-request".into(),
+        };
+        let mut protocol = make_protocol(cond.clone(), &[], &[]);
+        protocol.required_output_choices = vec![RequiredOutputChoice {
+            name: "disposition".into(),
+            members: vec!["approved".into(), "needs-revision".into()],
+        }];
+        let ctx = TriggerContext {
+            store: &store,
+            work_unit: None,
+            partially_scanned_types: empty_partials(),
+        };
+
+        assert_eq!(
+            super::evaluate(&cond, &protocol, &ctx),
+            TriggerResult::Satisfied
+        );
+    }
+
+    #[test]
+    fn derived_completion_timestamp_is_none_when_required_output_choice_is_missing_or_conflicting()
+    {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["approved", "needs-revision"]);
+        let mut protocol = make_protocol(
+            TriggerCondition::OnChange {
+                name: "unused".into(),
+            },
+            &[],
+            &[],
+        );
+        protocol.required_output_choices = vec![RequiredOutputChoice {
+            name: "disposition".into(),
+            members: vec!["approved".into(), "needs-revision".into()],
+        }];
+
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, None, &HashSet::new()),
+            None
+        );
+
+        store
+            .record_with_timestamp(
+                "approved",
+                "approved",
+                Path::new("approved.json"),
+                &json!({"title": "approved"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "needs-revision",
+                "needs-revision",
+                Path::new("needs-revision.json"),
+                &json!({"title": "revise"}),
+                1000,
+            )
+            .unwrap();
+
         assert_eq!(
             derived_completion_timestamp(&protocol, &store, None, &HashSet::new()),
             None

@@ -466,7 +466,7 @@ pub fn run(
 
         if json_output {
             let payload = RunJson {
-                version: 1,
+                version: 2,
                 methodology: &loaded.manifest.name,
                 scan_warnings: initial_state.scan_findings.warnings.clone(),
                 cycle: initial_state

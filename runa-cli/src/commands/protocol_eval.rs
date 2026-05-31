@@ -387,6 +387,14 @@ fn failure_entry(failure: &libagent::ArtifactFailure) -> FailureEntry {
             artifact_type: artifact_type.clone(),
             reason: "stale",
         },
+        libagent::ArtifactFailure::RequiredChoiceMissing { choice, .. } => FailureEntry {
+            artifact_type: choice.clone(),
+            reason: "missing_choice",
+        },
+        libagent::ArtifactFailure::RequiredChoiceConflict { choice, .. } => FailureEntry {
+            artifact_type: choice.clone(),
+            reason: "conflicting_choice",
+        },
     }
 }
 

@@ -122,6 +122,12 @@ impl DependencyGraph {
                 // may_produce x may_produce is allowed; all producers get edges.
                 soft_producer.entry(artifact.clone()).or_default().push(idx);
             }
+            for artifact in protocol.required_choice_members() {
+                // Required choices guarantee one member from the group, but any
+                // individual member is branch-dependent, so each member creates
+                // only a soft producer edge.
+                soft_producer.entry(artifact.clone()).or_default().push(idx);
+            }
         }
 
         // Resolve edges.
@@ -477,6 +483,7 @@ mod tests {
             accepts: vec![],
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: vec![],
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: default_trigger(requires, produces),
             instructions: None,
@@ -495,6 +502,7 @@ mod tests {
             accepts: vec![],
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: may_produce.iter().map(|s| (*s).into()).collect(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: default_trigger(requires, produces),
             instructions: None,
@@ -513,6 +521,7 @@ mod tests {
             accepts: accepts.iter().map(|s| (*s).into()).collect(),
             produces: produces.iter().map(|s| (*s).into()).collect(),
             may_produce: vec![],
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: default_trigger(requires, produces),
             instructions: None,

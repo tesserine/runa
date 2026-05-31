@@ -60,6 +60,13 @@ pub fn run(working_dir: &Path, config_override: Option<&Path>) -> Result<(), Com
         if !protocol.may_produce.is_empty() {
             println!("     may_produce: {}", protocol.may_produce.join(", "));
         }
+        for choice in &protocol.required_output_choices {
+            println!(
+                "     required_output_choice {}: {}",
+                choice.name,
+                choice.members.join(", ")
+            );
+        }
 
         println!("     trigger:  {}", protocol.trigger);
 
@@ -107,6 +114,8 @@ fn names_for(
             ArtifactFailure::Missing { artifact_type, .. }
             | ArtifactFailure::Invalid { artifact_type, .. }
             | ArtifactFailure::Stale { artifact_type, .. } => artifact_type.clone(),
+            ArtifactFailure::RequiredChoiceMissing { choice, .. }
+            | ArtifactFailure::RequiredChoiceConflict { choice, .. } => choice.clone(),
         })
         .collect()
 }

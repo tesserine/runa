@@ -10,11 +10,13 @@
 //! - [`graph`] — Dependency graph: topological ordering, cycle detection, blocked-protocol identification
 //! - [`store`] — Artifact state tracking: validation status, content hashing, JSON persistence
 //! - [`mod@scan`] — Filesystem reconciliation from artifact workspace into store state
+//! - [`completion`] — Shared completion evidence checks for live and projected readiness
 //! - [`trigger`] — Trigger condition evaluation against runtime state
 //! - [`enforcement`] — Pre/post-execution enforcement of protocol contracts
 //!
 //! See `ARCHITECTURE.md` in the repository root for data flow and design details.
 
+pub(crate) mod completion;
 pub mod context;
 pub mod enforcement;
 pub mod graph;
@@ -40,7 +42,7 @@ pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use logging::{LoggingError, ResolvedLoggingConfig, configure_tracing, resolve_logging_config};
 pub use manifest::ManifestError;
 pub use model::{
-    ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition,
+    ArtifactType, Manifest, ProtocolDeclaration, RequiredOutputChoice, TriggerCondition,
     UnscopedOutputRequiresWorkUnitError, validate_output_scope,
 };
 pub use project::{Config, LoadedProject, LogFormat, LoggingConfig, ProjectError, State};
