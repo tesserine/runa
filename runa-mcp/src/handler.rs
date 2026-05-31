@@ -178,9 +178,12 @@ pub fn validate_output_types(
         }
     }
 
-    // For may_produce-only protocols, ensure at least one may_produce type
-    // can become a viable tool. If none can, the session is pointless.
-    if protocol.produces.is_empty() && !protocol.may_produce.is_empty() {
+    // For protocols with only optional outputs, ensure at least one may_produce
+    // type can become a viable tool. If none can, the session is pointless.
+    if protocol.produces.is_empty()
+        && protocol.required_output_choices.is_empty()
+        && !protocol.may_produce.is_empty()
+    {
         let has_viable = protocol.may_produce.iter().any(|type_name| {
             let Some(at) = store.artifact_type(type_name) else {
                 return false;
