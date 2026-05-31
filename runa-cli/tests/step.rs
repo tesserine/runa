@@ -105,6 +105,30 @@ trigger = { type = "on_artifact", name = "constraints" }
 "#
 }
 
+fn required_choice_manifest_toml() -> &'static str {
+    r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "approved"
+
+[[artifact_types]]
+name = "needs-revision"
+
+[[protocols]]
+name = "review"
+requires = ["constraints"]
+trigger = { type = "on_artifact", name = "constraints" }
+
+[[protocols.required_output_choices]]
+name = "disposition"
+members = ["approved", "needs-revision"]
+"#
+}
+
 fn methodology_schemas() -> Vec<(&'static str, &'static str)> {
     vec![
         (
@@ -128,6 +152,27 @@ fn methodology_protocols() -> Vec<&'static str> {
 
 fn implement_only_methodology_protocols() -> Vec<&'static str> {
     vec!["implement"]
+}
+
+fn required_choice_methodology_schemas() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "constraints",
+            r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+        ),
+        (
+            "approved",
+            r#"{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"}}}"#,
+        ),
+        (
+            "needs-revision",
+            r#"{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"}}}"#,
+        ),
+    ]
+}
+
+fn required_choice_methodology_protocols() -> Vec<&'static str> {
+    vec!["review"]
 }
 
 fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) {
@@ -274,6 +319,30 @@ fn write_no_output_agent(dir: &Path) -> std::path::PathBuf {
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
+fn write_choice_approved_agent(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("choice-approved-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\ncat > /dev/null\nmkdir -p .runa/workspace/approved\nprintf '%s\\n' '{\"summary\":\"approved\"}' > .runa/workspace/approved/result.json\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+fn write_choice_conflict_agent(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("choice-conflict-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\ncat > /dev/null\nmkdir -p .runa/workspace/approved .runa/workspace/needs-revision\nprintf '%s\\n' '{\"summary\":\"approved\"}' > .runa/workspace/approved/result.json\nprintf '%s\\n' '{\"summary\":\"revise\"}' > .runa/workspace/needs-revision/result.json\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
 fn write_second_run_fails_agent(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -400,7 +469,7 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["version"], 4);
+    assert_eq!(value["version"], 5);
     assert_eq!(value["methodology"], "groundwork");
     assert_eq!(value["scan_warnings"], serde_json::json!([]));
     assert!(value.get("cycle").is_none(), "{value:#}");
@@ -444,7 +513,8 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
         execution_plan[0]["context"]["expected_outputs"],
         serde_json::json!({
             "produces": ["implementation"],
-            "may_produce": []
+            "may_produce": [],
+            "required_output_choices": []
         })
     );
     assert_eq!(
@@ -1832,6 +1902,136 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert!(captured.contains("# Protocol: implement"), "{captured}");
     assert!(!workspace.join("implementation/impl-1.json").exists());
 }
+
+#[test]
+fn step_without_dry_run_satisfies_required_output_choice_with_exactly_one_member() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        required_choice_manifest_toml(),
+        &required_choice_methodology_schemas(),
+        &required_choice_methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"review this"}"#,
+    )
+    .unwrap();
+
+    let agent_path = write_choice_approved_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path()]);
+
+    let output = runa_bin()
+        .arg("step")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(workspace.join("approved/result.json").is_file());
+    assert!(
+        !workspace.join("needs-revision").exists(),
+        "only one choice member should be produced"
+    );
+}
+
+#[test]
+fn step_without_dry_run_fails_when_required_output_choice_is_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        required_choice_manifest_toml(),
+        &required_choice_methodology_schemas(),
+        &required_choice_methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"review this"}"#,
+    )
+    .unwrap();
+
+    let payload_path = dir.path().join("captured-payload.txt");
+    let agent_path = write_no_output_agent(dir.path());
+    append_agent_command_config(
+        &project_dir,
+        &[agent_path.as_path(), payload_path.as_path()],
+    );
+
+    let output = runa_bin()
+        .arg("step")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(5), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("required output choice 'disposition' is missing after execution"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("exactly one of [approved, needs-revision] must be produced"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn step_without_dry_run_fails_when_required_output_choice_has_multiple_members() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        required_choice_manifest_toml(),
+        &required_choice_methodology_schemas(),
+        &required_choice_methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"review this"}"#,
+    )
+    .unwrap();
+
+    let agent_path = write_choice_conflict_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path()]);
+
+    let output = runa_bin()
+        .arg("step")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(5), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("required output choice 'disposition' produced multiple members"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("[approved, needs-revision]"),
+        "stderr: {stderr}"
+    );
+}
+
 #[test]
 fn step_without_dry_run_returns_exit_4_when_no_actionable_work_is_ready() {
     let dir = tempfile::tempdir().unwrap();

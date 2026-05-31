@@ -197,11 +197,26 @@ fn protocol_is_current(
     projection: &ProjectionState<'_>,
     work_unit: Option<&str>,
 ) -> bool {
-    if protocol.produces.is_empty() && protocol.may_produce.is_empty() {
+    if protocol.produces.is_empty()
+        && protocol.may_produce.is_empty()
+        && protocol.required_output_choices.is_empty()
+    {
         return false;
     }
 
     if protocol.produces.iter().any(|artifact_type| {
+        projection
+            .store
+            .scan_gap_affects_work_unit(artifact_type, work_unit)
+            || (projection
+                .partially_scanned_types
+                .contains(artifact_type.as_str())
+                && !projection.store.has_any_scan_gap_for_type(artifact_type))
+    }) {
+        return false;
+    }
+
+    if protocol.required_choice_members().any(|artifact_type| {
         projection
             .store
             .scan_gap_affects_work_unit(artifact_type, work_unit)
@@ -245,11 +260,12 @@ fn derived_completion_timestamp(
     projection: &ProjectionState<'_>,
     work_unit: Option<&str>,
 ) -> Option<u64> {
-    if protocol.produces.is_empty() {
+    let completion_outputs = completion_output_types(protocol, projection, work_unit)?;
+    if completion_outputs.is_empty() {
         return None;
     }
 
-    if protocol.produces.iter().any(|artifact_type| {
+    if completion_outputs.iter().any(|artifact_type| {
         projection
             .store
             .scan_gap_affects_work_unit(artifact_type, work_unit)
@@ -262,11 +278,32 @@ fn derived_completion_timestamp(
         return None;
     }
 
-    protocol
-        .produces
+    completion_outputs
         .iter()
         .filter_map(|artifact_type| projection.latest_modification_ms(artifact_type, work_unit))
         .min()
+}
+
+fn completion_output_types<'a>(
+    protocol: &'a ProtocolDeclaration,
+    projection: &ProjectionState<'_>,
+    work_unit: Option<&str>,
+) -> Option<Vec<&'a String>> {
+    let mut output_types: Vec<&String> = protocol.produces.iter().collect();
+
+    for choice in &protocol.required_output_choices {
+        let produced_members: Vec<&String> = choice
+            .members
+            .iter()
+            .filter(|artifact_type| projection.type_has_any_recorded(artifact_type, work_unit))
+            .collect();
+        match produced_members.as_slice() {
+            [member] => output_types.push(member),
+            _ => return None,
+        }
+    }
+
+    Some(output_types)
 }
 
 fn trigger_is_satisfied(
@@ -438,6 +475,14 @@ impl<'a> ProjectionState<'a> {
             })
     }
 
+    fn type_has_any_recorded(&self, artifact_type: &str, work_unit: Option<&str>) -> bool {
+        !self.store.instances_of(artifact_type, work_unit).is_empty()
+            || self.projected_outputs.iter().any(|output| {
+                output.artifact_type == artifact_type
+                    && matches_projected_work_unit(output.work_unit.as_deref(), work_unit)
+            })
+    }
+
     fn type_is_fully_valid(&self, artifact_type: &str, work_unit: Option<&str>) -> bool {
         let real_instances = self.store.instances_of(artifact_type, work_unit);
         let has_real_invalid = real_instances
@@ -569,6 +614,7 @@ mod tests {
             accepts: Vec::new(),
             produces: produces.iter().map(|value| value.to_string()).collect(),
             may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger,
             instructions: None,

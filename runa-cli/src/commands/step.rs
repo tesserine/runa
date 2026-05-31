@@ -879,7 +879,7 @@ fn run_internal(
 
     if json_output {
         let payload = StepJson {
-            version: 4,
+            version: 5,
             methodology: &loaded.manifest.name,
             scan_warnings: warnings.clone(),
             cycle: evaluated.cycle.as_ref().map(|cycle| cycle.path.clone()),
@@ -1261,6 +1261,7 @@ mod tests {
                 expected_outputs: libagent::context::ExpectedOutputs {
                     produces: vec!["claim".to_string()],
                     may_produce: Vec::new(),
+                    required_output_choices: Vec::new(),
                 },
             },
             execution_record: ExecutionRecord {
@@ -1873,6 +1874,7 @@ cat >/dev/null
                 expected_outputs: libagent::context::ExpectedOutputs {
                     produces: vec!["implementation".to_string()],
                     may_produce: Vec::new(),
+                    required_output_choices: Vec::new(),
                 },
             },
             execution_record: ExecutionRecord {

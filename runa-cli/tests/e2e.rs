@@ -286,7 +286,8 @@ fn e2e_progression_exercises_cli_pipeline_with_real_methodology() {
         first_plan[0]["context"]["expected_outputs"],
         serde_json::json!({
             "produces": ["design-doc"],
-            "may_produce": ["notes"]
+            "may_produce": ["notes"],
+            "required_output_choices": []
         })
     );
     assert_context_inputs(

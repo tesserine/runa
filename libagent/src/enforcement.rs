@@ -21,6 +21,7 @@ pub enum Relationship {
     Requires,
     Produces,
     MayProduce,
+    RequiredOutputChoice,
 }
 
 /// Why a single artifact type failed enforcement.
@@ -47,6 +48,16 @@ pub enum ArtifactFailure {
         artifact_type: String,
         relationship: Relationship,
         stale_count: usize,
+    },
+    /// None of the members of a required output choice group exist.
+    RequiredChoiceMissing {
+        choice: String,
+        members: Vec<String>,
+    },
+    /// More than one member of a required output choice group exists.
+    RequiredChoiceConflict {
+        choice: String,
+        produced_members: Vec<String>,
     },
 }
 
@@ -95,6 +106,11 @@ impl fmt::Display for ArtifactFailure {
                          absent may_produce is skipped, not an enforcement failure"
                     )
                 }
+                Relationship::RequiredOutputChoice => {
+                    unreachable!(
+                        "required output choice members use RequiredChoiceMissing for absence"
+                    )
+                }
             },
             ArtifactFailure::Invalid {
                 artifact_type,
@@ -112,6 +128,10 @@ impl fmt::Display for ArtifactFailure {
                     ),
                     Relationship::MayProduce => format!(
                         "may_produce artifact type '{artifact_type}' \
+                         which exists but is invalid"
+                    ),
+                    Relationship::RequiredOutputChoice => format!(
+                        "required output choice artifact type '{artifact_type}' \
                          which exists but is invalid"
                     ),
                 };
@@ -136,12 +156,32 @@ impl fmt::Display for ArtifactFailure {
                     Relationship::MayProduce => {
                         format!("may_produce artifact type '{artifact_type}' which is stale")
                     }
+                    Relationship::RequiredOutputChoice => format!(
+                        "required output choice artifact type '{artifact_type}' which is stale"
+                    ),
                 };
                 write!(
                     f,
                     "{prefix} ({stale_count} instance{} need{} revalidation)",
                     if *stale_count == 1 { "" } else { "s" },
                     if *stale_count == 1 { "s" } else { "" },
+                )
+            }
+            ArtifactFailure::RequiredChoiceMissing { choice, members } => {
+                write!(
+                    f,
+                    "required output choice '{choice}' is missing after execution; exactly one of [{}] must be produced",
+                    members.join(", ")
+                )
+            }
+            ArtifactFailure::RequiredChoiceConflict {
+                choice,
+                produced_members,
+            } => {
+                write!(
+                    f,
+                    "required output choice '{choice}' produced multiple members [{}]; exactly one must be produced",
+                    produced_members.join(", ")
                 )
             }
         }
@@ -315,6 +355,36 @@ pub fn enforce_postconditions(
         }
     }
 
+    for choice in &protocol.required_output_choices {
+        let produced_members: Vec<String> = choice
+            .members
+            .iter()
+            .filter(|artifact_type| !store.instances_of(artifact_type, work_unit).is_empty())
+            .cloned()
+            .collect();
+
+        match produced_members.as_slice() {
+            [] => failures.push(ArtifactFailure::RequiredChoiceMissing {
+                choice: choice.name.clone(),
+                members: choice.members.clone(),
+            }),
+            [artifact_type] => {
+                if let Some(failure) = check_output_artifact(
+                    store,
+                    artifact_type,
+                    Relationship::RequiredOutputChoice,
+                    work_unit,
+                ) {
+                    failures.push(failure);
+                }
+            }
+            _ => failures.push(ArtifactFailure::RequiredChoiceConflict {
+                choice: choice.name.clone(),
+                produced_members,
+            }),
+        }
+    }
+
     if failures.is_empty() {
         Ok(())
     } else {
@@ -348,6 +418,7 @@ mod tests {
             accepts: accepts.iter().map(|s| s.to_string()).collect(),
             produces: produces.iter().map(|s| s.to_string()).collect(),
             may_produce: may_produce.iter().map(|s| s.to_string()).collect(),
+            required_output_choices: Vec::new(),
             scoped: false,
             trigger: TriggerCondition::OnChange { name: name.into() },
             instructions: None,
@@ -615,6 +686,94 @@ mod tests {
             &err.failures[0],
             ArtifactFailure::Stale { artifact_type, relationship: Relationship::MayProduce, stale_count: 1 }
             if artifact_type == "notes"
+        ));
+    }
+
+    #[test]
+    fn postconditions_required_output_choice_passes_with_exactly_one_valid_member() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["change-approved", "change-needs-revision"],
+        );
+        store
+            .record(
+                "change-approved",
+                "outcome",
+                Path::new("approved.json"),
+                &json!({"title": "approved"}),
+            )
+            .unwrap();
+
+        let mut protocol = make_protocol("review", &[], &[], &[], &[]);
+        protocol.required_output_choices = vec![crate::model::RequiredOutputChoice {
+            name: "review-disposition".into(),
+            members: vec!["change-approved".into(), "change-needs-revision".into()],
+        }];
+
+        assert!(enforce_postconditions(&protocol, &store, None).is_ok());
+    }
+
+    #[test]
+    fn postconditions_required_output_choice_fails_when_no_member_is_produced() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(
+            &tmp.path().join("s"),
+            vec!["change-approved", "change-needs-revision"],
+        );
+
+        let mut protocol = make_protocol("review", &[], &[], &[], &[]);
+        protocol.required_output_choices = vec![crate::model::RequiredOutputChoice {
+            name: "review-disposition".into(),
+            members: vec!["change-approved".into(), "change-needs-revision".into()],
+        }];
+
+        let err = enforce_postconditions(&protocol, &store, None).unwrap_err();
+        assert_eq!(err.phase, Phase::Post);
+        assert!(matches!(
+            &err.failures[0],
+            ArtifactFailure::RequiredChoiceMissing { choice, members }
+            if choice == "review-disposition"
+                && members == &vec!["change-approved".to_string(), "change-needs-revision".to_string()]
+        ));
+    }
+
+    #[test]
+    fn postconditions_required_output_choice_fails_when_multiple_members_are_produced() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["change-approved", "change-needs-revision"],
+        );
+        store
+            .record(
+                "change-approved",
+                "outcome",
+                Path::new("approved.json"),
+                &json!({"title": "approved"}),
+            )
+            .unwrap();
+        store
+            .record(
+                "change-needs-revision",
+                "outcome",
+                Path::new("revision.json"),
+                &json!({"title": "revision"}),
+            )
+            .unwrap();
+
+        let mut protocol = make_protocol("review", &[], &[], &[], &[]);
+        protocol.required_output_choices = vec![crate::model::RequiredOutputChoice {
+            name: "review-disposition".into(),
+            members: vec!["change-approved".into(), "change-needs-revision".into()],
+        }];
+
+        let err = enforce_postconditions(&protocol, &store, None).unwrap_err();
+        assert!(matches!(
+            &err.failures[0],
+            ArtifactFailure::RequiredChoiceConflict { choice, produced_members }
+            if choice == "review-disposition"
+                && produced_members == &vec!["change-approved".to_string(), "change-needs-revision".to_string()]
         ));
     }
 

@@ -40,7 +40,7 @@ pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use logging::{LoggingError, ResolvedLoggingConfig, configure_tracing, resolve_logging_config};
 pub use manifest::ManifestError;
 pub use model::{
-    ArtifactType, Manifest, ProtocolDeclaration, TriggerCondition,
+    ArtifactType, Manifest, ProtocolDeclaration, RequiredOutputChoice, TriggerCondition,
     UnscopedOutputRequiresWorkUnitError, validate_output_scope,
 };
 pub use project::{Config, LoadedProject, LogFormat, LoggingConfig, ProjectError, State};

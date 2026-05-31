@@ -100,7 +100,7 @@ A missing workspace directory is an error unless the store is still empty.
 runa list [--config <PATH>]
 ```
 
-Displays protocols in topological (execution) order after an implicit scan. For each protocol, shows non-empty relationship fields (requires, accepts, produces, may_produce), the trigger condition, and a `BLOCKED` indicator when required artifacts have no valid instance or when scan trust is incomplete. Invalid, malformed, or stale siblings still appear in health reporting, but they do not block a protocol that already has a valid required instance. On cycle detection, falls back to manifest order with a warning.
+Displays protocols in topological (execution) order after an implicit scan. For each protocol, shows non-empty relationship fields (requires, accepts, produces, may_produce, required_output_choice), the trigger condition, and a `BLOCKED` indicator when required artifacts have no valid instance or when scan trust is incomplete. Invalid, malformed, or stale siblings still appear in health reporting, but they do not block a protocol that already has a valid required instance. On cycle detection, falls back to manifest order with a warning.
 
 **Exit codes:** 0 on success. 6 on failure.
 
@@ -149,14 +149,14 @@ Selects at most one `(protocol, work_unit)` candidate after an implicit scan: th
 
 Without `--work-unit`, `step` considers only unscoped protocols. With `--work-unit <ID>`, it considers only scoped protocols for that exact delegated work unit.
 
-With `--dry-run`, text output prints the next execution plus the grouped READY/BLOCKED/WAITING status view. The execution entry includes the protocol name, optional work unit, the trigger that activated it, an MCP server config, and the serialized agent-facing context payload (protocol name, optional work unit, instruction content, valid required and available accepted inputs with display paths and content hashes, and expected outputs split into `produces` and `may_produce`). Dry-run does not require a discoverable `runa-mcp` binary. If the in-scope graph contains a hard dependency cycle, `step` reports it as a warning, exposes the scope-filtered cycle in JSON, and keeps those participants out of `READY`.
+With `--dry-run`, text output prints the next execution plus the grouped READY/BLOCKED/WAITING status view. The execution entry includes the protocol name, optional work unit, the trigger that activated it, an MCP server config, and the serialized agent-facing context payload (protocol name, optional work unit, instruction content, valid required and available accepted inputs with display paths and content hashes, and expected outputs split into `produces`, `may_produce`, and `required_output_choices`). Dry-run does not require a discoverable `runa-mcp` binary. If the in-scope graph contains a hard dependency cycle, `step` reports it as a warning, exposes the scope-filtered cycle in JSON, and keeps those participants out of `READY`.
 
 Without `--dry-run`, `step` requires `[agent].command` in the config and a Linux host. If the initial scan finds no READY work, `step` performs one final re-scan and re-evaluates readiness before returning a no-work outcome. If that refreshed state exposes a READY candidate, the same invocation executes that one protocol. Only when the refreshed state still has no actionable work does it print `No READY protocols.` and exit without requiring `runa-mcp`: exit `3` when work remains blocked, waiting, or trapped in a cycle, and exit `4` when no actionable work remains because outputs are already current. Otherwise, it resolves `runa-mcp` (preferring a sibling binary next to the running `runa` executable, falling back to `PATH`), executes the candidate, re-scans the workspace, enforces postconditions, and prints the refreshed status view.
 
 **Flags:**
 
 - `--dry-run` — Preview only. Does not execute the agent.
-- `--json` — Dry-run only. Emits a versioned JSON envelope: `{ "version": 4, "methodology": "...", "scan_warnings": [...], "cycle": [...] | null, "execution_plan": [...], "protocols": [...] }`. The `execution_plan` array contains at most one entry. The `protocols` array reuses the same status entries as `runa state --json`.
+- `--json` — Dry-run only. Emits a versioned JSON envelope: `{ "version": 5, "methodology": "...", "scan_warnings": [...], "cycle": [...] | null, "execution_plan": [...], "protocols": [...] }`. The `execution_plan` array contains at most one entry. The `protocols` array reuses the same status entries as `runa state --json`.
 - `--work-unit <ID>` — Plan or execute only scoped protocols for the delegated work unit `<ID>`.
 
 **Exit codes** (the same `3` / `4` distinction applies to `--dry-run` when no execution plan is available):
@@ -180,7 +180,7 @@ The cascade command. Walks the READY frontier repeatedly until quiescence instea
 
 Without `--work-unit`, `run` considers only unscoped protocols. With `--work-unit <ID>`, it considers only scoped protocols for that exact delegated work unit.
 
-With `--dry-run`, projects the full optimistic cascade from the same scope-filtered execution order used by evaluation and planning, plus declared `produces` outputs, dependency edges, and the caller-supplied evaluation scope. `may_produce` outputs do not advance the projection unless they already exist on disk. Initially ready entries include MCP config and full context on first emission; downstream projected entries carry only protocol name, optional work unit, trigger, and projection kind. The projection never synthesizes artifact values, forks the store, bypasses schema validation, or discovers sibling work units from artifact state.
+With `--dry-run`, projects the full optimistic cascade from the same scope-filtered execution order used by evaluation and planning, plus declared `produces` outputs, dependency edges, and the caller-supplied evaluation scope. `may_produce` outputs do not advance the projection unless they already exist on disk. Required output choice members are branch-dependent, so projection uses an already-present single member when one exists and otherwise does not synthesize a choice branch. Initially ready entries include MCP config and full context on first emission; downstream projected entries carry only protocol name, optional work unit, trigger, and projection kind. The projection never synthesizes artifact values, forks the store, bypasses schema validation, or discovers sibling work units from artifact state.
 
 Without `--dry-run`, requires a Linux host plus an effective agent command. `run` resolves that command in this order: `--agent-command -- <argv tokens>` when supplied, otherwise `[agent].command` from config, otherwise the existing `AgentCommandNotConfigured` error. If `--agent-command` is present but no usable argv tokens follow the `--`, `run` fails with `AgentCommandNotConfigured` and does not fall back to config. If no READY protocol is ever dispatched, `run` exits `4` (`nothing_ready`) instead of treating that invocation as `success`. Failed candidates are skipped for the rest of the invocation; any artifacts emitted before failure are still reconciled into workspace state for downstream readiness. Previously exhausted work reopens when a later reconciliation changes relevant inputs.
 
@@ -189,7 +189,7 @@ Without `--dry-run`, requires a Linux host plus an effective agent command. `run
 **Flags:**
 
 - `--dry-run` — Preview the projected cascade. Does not execute agents.
-- `--json` — Dry-run only. Same envelope structure as `runa step --json`, but `execution_plan` may contain multiple entries including projected downstream work.
+- `--json` — Dry-run only. Emits version `2` and otherwise uses the same envelope structure as `runa step --json`, but `execution_plan` may contain multiple entries including projected downstream work.
 - `--work-unit <ID>` — Plan or execute only scoped protocols for the delegated work unit `<ID>`.
 - `--agent-command -- <argv tokens>` — Override `[agent].command` for this live `run` invocation. Pass the agent argv after `--` so hyphen-prefixed tokens are forwarded unchanged.
 
@@ -213,7 +213,7 @@ Without `--dry-run`, requires a Linux host plus an effective agent command. `run
 runa-mcp --protocol <name> [--work-unit <name>]
 ```
 
-On startup, the server loads the project, resolves the named protocol from the manifest, validates that its declared scope matches the presence or absence of `--work-unit`, validates that its output types can be served as MCP tools, and serves an MCP session over stdio. Each output artifact type (`produces` and `may_produce`) becomes one MCP tool. The tool input schema is the artifact type's JSON Schema with the `work_unit` field removed — the server injects `work_unit` automatically from the `--work-unit` argument.
+On startup, the server loads the project, resolves the named protocol from the manifest, validates that its declared scope matches the presence or absence of `--work-unit`, validates that its required output types can be served as MCP tools, and serves an MCP session over stdio. Each output artifact type (`produces`, required output choice members, and viable `may_produce`) becomes one MCP tool. The tool input schema is the artifact type's JSON Schema with the `work_unit` field removed — the server injects `work_unit` automatically from the `--work-unit` argument.
 
 `runa step` does not spawn `runa-mcp` directly. For direct Claude Code commands, it writes the resolved `runa-mcp` command, arguments, and environment into a temporary `mcpServers.runa` config and passes that config to Claude. For other agent runtimes, it exports the same data as a `RUNA_MCP_CONFIG` JSON payload so an adapter can launch the server as its own child process. The exported command and environment paths are absolute whenever runa resolves them from the local filesystem, so adapters do not depend on child process cwd to launch `runa-mcp`. Transcript environment variables are forwarded into the MCP config when transcript capture is enabled, which lets the MCP server append tool events to the same transcript stream as the CLI execution events.
 

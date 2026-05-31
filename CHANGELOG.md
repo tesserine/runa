@@ -7,6 +7,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Methodology manifests can declare `required_output_choices`: named output
+  groups where each protocol execution must produce exactly one valid member
+  artifact type. Choice members are exposed as MCP tools, included in agent
+  context, enforced after live execution, and reported by `runa list`.
+
 ## [0.1.2] — 2026-05-17
 
 ### Changed

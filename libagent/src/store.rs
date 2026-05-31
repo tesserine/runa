@@ -412,6 +412,7 @@ pub fn execution_contract_hash(manifest: &Manifest) -> String {
                 "accepts": protocol.accepts,
                 "produces": protocol.produces,
                 "may_produce": protocol.may_produce,
+                "required_output_choices": protocol.required_output_choices,
                 "scoped": protocol.scoped,
                 "trigger": protocol.trigger,
                 "instructions": protocol.instructions,
