@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{ProtocolDeclaration, TriggerCondition};
+use crate::model::{ProtocolDeclaration, RequiredOutputChoice, TriggerCondition};
 use crate::selection::{
     Candidate, EvaluationScope, FreshnessInputMode, candidate_work_units_for_scope,
     collect_satisfied_execution_record_inputs, execution_input_snapshot_for_freshness_inputs,
@@ -398,10 +398,11 @@ impl<'a> ProjectionState<'a> {
         self.projected_execution_records
             .insert(producer.clone(), execution_record);
         let mut changes = Vec::new();
-        for artifact_type in &protocol.produces {
+        let output_types = self.projected_protocol_output_types(protocol, work_unit);
+        for artifact_type in output_types {
             let scoped_work_unit = work_unit.map(str::to_owned);
             self.projected_outputs.retain(|output| {
-                !(output.artifact_type == *artifact_type
+                !(output.artifact_type == artifact_type
                     && output.producer == producer
                     && output.work_unit == scoped_work_unit)
             });
@@ -411,7 +412,7 @@ impl<'a> ProjectionState<'a> {
                 work_unit: scoped_work_unit.clone(),
                 producer: producer.clone(),
                 input: ExecutionInput {
-                    instance_id: projected_instance_id(&producer, artifact_type),
+                    instance_id: projected_instance_id(&producer, &artifact_type),
                     content_hash: raw_content_hash(
                         format!(
                             "{}:{}:{:?}:{}",
@@ -424,11 +425,50 @@ impl<'a> ProjectionState<'a> {
             });
             self.next_timestamp_ms += 1;
             changes.push(ProjectedChange {
-                artifact_type: artifact_type.clone(),
+                artifact_type,
                 work_unit: scoped_work_unit,
             });
         }
         changes
+    }
+
+    fn projected_protocol_output_types(
+        &self,
+        protocol: &ProtocolDeclaration,
+        work_unit: Option<&str>,
+    ) -> Vec<String> {
+        let mut output_types = protocol.produces.clone();
+        output_types.extend(self.selected_required_choice_members(protocol, work_unit));
+        output_types
+    }
+
+    fn selected_required_choice_members(
+        &self,
+        protocol: &ProtocolDeclaration,
+        work_unit: Option<&str>,
+    ) -> Vec<String> {
+        protocol
+            .required_output_choices
+            .iter()
+            .filter_map(|choice| self.selected_required_choice_member(choice, work_unit))
+            .cloned()
+            .collect()
+    }
+
+    fn selected_required_choice_member<'b>(
+        &self,
+        choice: &'b RequiredOutputChoice,
+        work_unit: Option<&str>,
+    ) -> Option<&'b String> {
+        let produced_members: Vec<&String> = choice
+            .members
+            .iter()
+            .filter(|artifact_type| self.type_has_any_recorded(artifact_type, work_unit))
+            .collect();
+        match produced_members.as_slice() {
+            [member] => Some(member),
+            _ => None,
+        }
     }
 
     fn latest_modification_ms(&self, artifact_type: &str, work_unit: Option<&str>) -> Option<u64> {
@@ -1055,6 +1095,97 @@ mod tests {
                 protocol_name: "publish".into(),
                 work_unit: Some("wu-a".into()),
             }]
+        );
+    }
+
+    #[test]
+    fn projection_advances_existing_selected_required_output_choice_member() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("store"),
+            vec![
+                "review-request",
+                "approved",
+                "needs-revision",
+                "announcement",
+            ],
+        );
+        store
+            .record_with_timestamp(
+                "approved",
+                "decision",
+                Path::new("approved.json"),
+                &json!({"title":"approved"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "announcement",
+                "old",
+                Path::new("announcement.json"),
+                &json!({"title":"old"}),
+                1500,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "review-request",
+                "request",
+                Path::new("request.json"),
+                &json!({"title":"changed"}),
+                2000,
+            )
+            .unwrap();
+
+        let mut review = protocol(
+            "review",
+            &["review-request"],
+            &[],
+            TriggerCondition::OnChange {
+                name: "review-request".into(),
+            },
+        );
+        review.required_output_choices = vec![RequiredOutputChoice {
+            name: "disposition".into(),
+            members: vec!["approved".into(), "needs-revision".into()],
+        }];
+        let announce = protocol(
+            "announce",
+            &["approved"],
+            &["announcement"],
+            TriggerCondition::OnChange {
+                name: "approved".into(),
+            },
+        );
+        let protocols = vec![review, announce];
+
+        let plan = project_cascade(
+            &protocols,
+            &store,
+            &["review", "announce"],
+            &[Candidate {
+                protocol_name: "review".into(),
+                work_unit: None,
+            }],
+            &HashSet::new(),
+            EvaluationScope::Unscoped,
+        );
+
+        assert_eq!(
+            plan,
+            vec![
+                ProjectionCandidate {
+                    protocol_name: "review".into(),
+                    work_unit: None,
+                    projection: ProjectionClass::Current,
+                },
+                ProjectionCandidate {
+                    protocol_name: "announce".into(),
+                    work_unit: None,
+                    projection: ProjectionClass::Projected,
+                },
+            ]
         );
     }
 }

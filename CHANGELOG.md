@@ -14,6 +14,12 @@ Semantic Versioning.
   artifact type. Choice members are exposed as MCP tools, included in agent
   context, enforced after live execution, and reported by `runa list`.
 
+### Fixed
+
+- Required output choice freshness and dry-run projection now stay conservative
+  when choice-member scans are incomplete, while still projecting downstream
+  cascades through an already-present exactly-one choice member.
+
 ## [0.1.2] — 2026-05-17
 
 ### Changed

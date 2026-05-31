@@ -131,7 +131,8 @@ pub(crate) fn derived_completion_timestamp(
         return None;
     }
 
-    if completion_outputs.iter().any(|artifact_type| {
+    let completion_scan_gap_types = completion_scan_gap_types(protocol, &completion_outputs);
+    if completion_scan_gap_types.iter().any(|artifact_type| {
         store.scan_gap_affects_work_unit(artifact_type, work_unit)
             || (partially_scanned_types.contains(artifact_type.as_str())
                 && !store.has_any_scan_gap_for_type(artifact_type))
@@ -175,6 +176,15 @@ fn completion_output_types<'a>(
     }
 
     Some(output_types)
+}
+
+fn completion_scan_gap_types<'a>(
+    protocol: &'a ProtocolDeclaration,
+    completion_outputs: &[&'a String],
+) -> Vec<&'a String> {
+    let mut output_types = completion_outputs.to_vec();
+    output_types.extend(protocol.required_choice_members());
+    output_types
 }
 
 #[cfg(test)]
@@ -662,6 +672,86 @@ mod tests {
         assert_eq!(
             derived_completion_timestamp(&protocol, &store, None, &HashSet::new()),
             Some(1000)
+        );
+    }
+
+    #[test]
+    fn derived_completion_timestamp_is_none_when_non_selected_choice_member_has_scan_gap() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(&tmp.path().join("s"), vec!["approved", "needs-revision"]);
+        store
+            .record_with_timestamp(
+                "approved",
+                "result",
+                Path::new("approved.json"),
+                &json!({"title": "approved"}),
+                1000,
+            )
+            .unwrap();
+        store.mark_instance_scan_gap("needs-revision", "hidden");
+
+        let mut protocol = make_protocol(
+            TriggerCondition::OnChange {
+                name: "unused".into(),
+            },
+            &[],
+            &[],
+        );
+        protocol.required_output_choices = vec![RequiredOutputChoice {
+            name: "disposition".into(),
+            members: vec!["approved".into(), "needs-revision".into()],
+        }];
+
+        assert_eq!(
+            derived_completion_timestamp(&protocol, &store, None, &HashSet::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn on_change_required_output_choice_rerun_is_not_suppressed_by_non_selected_member_scan_gap() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("s"),
+            vec!["review-request", "approved", "needs-revision"],
+        );
+        store
+            .record_with_timestamp(
+                "review-request",
+                "request",
+                Path::new("request.json"),
+                &json!({"title": "request"}),
+                1000,
+            )
+            .unwrap();
+        store
+            .record_with_timestamp(
+                "approved",
+                "result",
+                Path::new("approved.json"),
+                &json!({"title": "approved"}),
+                2000,
+            )
+            .unwrap();
+        store.mark_instance_scan_gap("needs-revision", "hidden");
+
+        let cond = TriggerCondition::OnChange {
+            name: "review-request".into(),
+        };
+        let mut protocol = make_protocol(cond.clone(), &[], &[]);
+        protocol.required_output_choices = vec![RequiredOutputChoice {
+            name: "disposition".into(),
+            members: vec!["approved".into(), "needs-revision".into()],
+        }];
+        let ctx = TriggerContext {
+            store: &store,
+            work_unit: None,
+            partially_scanned_types: empty_partials(),
+        };
+
+        assert_eq!(
+            super::evaluate(&cond, &protocol, &ctx),
+            TriggerResult::Satisfied
         );
     }
 
