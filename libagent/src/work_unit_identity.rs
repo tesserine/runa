@@ -102,8 +102,10 @@ pub fn validate_scoped_work_unit_identity(
     store: &ArtifactStore,
     work_unit: &str,
 ) -> Result<(), WorkUnitIdentityError> {
+    let mut recorded_instance_ids = Vec::new();
     let mut delivered = Vec::new();
     for (instance_id, state) in store.instances_of("work-unit", None) {
+        recorded_instance_ids.push(instance_id.to_string());
         if !matches!(state.status, ValidationStatus::Valid) {
             continue;
         }
@@ -123,23 +125,26 @@ pub fn validate_scoped_work_unit_identity(
         });
     }
 
-    if delivered.is_empty() {
+    if recorded_instance_ids.is_empty() {
         return Ok(());
+    }
+
+    recorded_instance_ids.sort();
+    if !recorded_instance_ids
+        .iter()
+        .any(|instance_id| instance_id == work_unit)
+    {
+        return Err(WorkUnitIdentityError::NonExactWorkUnitScope {
+            supplied_work_unit: work_unit.to_string(),
+            canonical_instance_ids: recorded_instance_ids,
+        });
     }
 
     let Some(selected) = delivered
         .iter()
         .find(|candidate| candidate.instance_id == work_unit)
     else {
-        let mut canonical_instance_ids: Vec<String> = delivered
-            .iter()
-            .map(|candidate| candidate.instance_id.clone())
-            .collect();
-        canonical_instance_ids.sort();
-        return Err(WorkUnitIdentityError::NonExactWorkUnitScope {
-            supplied_work_unit: work_unit.to_string(),
-            canonical_instance_ids,
-        });
+        return Ok(());
     };
     let selected_instance_id = selected.instance_id.clone();
     let Some(selected_identity) = selected.identity.clone() else {
@@ -250,6 +255,39 @@ mod tests {
             .unwrap();
     }
 
+    fn record_invalid_work_unit(
+        store: &mut ArtifactStore,
+        tmp: &TempDir,
+        instance_id: &str,
+        handle: Option<Value>,
+    ) {
+        let mut data = json!({"invalid": "missing required title"});
+        if let Some(handle) = handle {
+            data.as_object_mut()
+                .unwrap()
+                .insert("handle".to_string(), handle);
+        }
+        let path = tmp.path().join(format!("{instance_id}.json"));
+        std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
+        store
+            .record("work-unit", instance_id, Path::new(&path), &data)
+            .unwrap();
+    }
+
+    fn record_malformed_work_unit(store: &mut ArtifactStore, tmp: &TempDir, instance_id: &str) {
+        let path = tmp.path().join(format!("{instance_id}.json"));
+        std::fs::write(&path, b"{ not json").unwrap();
+        store
+            .record_malformed(
+                "work-unit",
+                instance_id,
+                Path::new(&path),
+                b"{ not json",
+                "expected value at line 1 column 3",
+            )
+            .unwrap();
+    }
+
     fn github_handle(number: u64) -> Value {
         json!({
             "forge_tag": "github",
@@ -340,6 +378,44 @@ mod tests {
 
         assert!(rendered.contains("work-unit-missing"), "error: {rendered}");
         assert!(rendered.contains("work-unit-freeform"), "error: {rendered}");
+    }
+
+    #[test]
+    fn non_exact_scopes_reject_when_only_invalid_work_unit_roots_exist() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = test_store(&tmp);
+        record_invalid_work_unit(
+            &mut store,
+            &tmp,
+            "work-unit-363-invalid-ticket-handle",
+            Some(github_handle(363)),
+        );
+
+        let error = validate_scoped_work_unit_identity(&store, "issue-363").unwrap_err();
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("issue-363"), "error: {rendered}");
+        assert!(
+            rendered.contains("work-unit-363-invalid-ticket-handle"),
+            "error: {rendered}"
+        );
+    }
+
+    #[test]
+    fn exact_recorded_invalid_or_malformed_work_unit_roots_are_accepted_without_content_checks() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = test_store(&tmp);
+        record_invalid_work_unit(
+            &mut store,
+            &tmp,
+            "work-unit-363-invalid-ticket-handle",
+            Some(github_handle(999)),
+        );
+        record_malformed_work_unit(&mut store, &tmp, "work-unit-364-malformed-ticket-handle");
+
+        validate_scoped_work_unit_identity(&store, "work-unit-363-invalid-ticket-handle").unwrap();
+        validate_scoped_work_unit_identity(&store, "work-unit-364-malformed-ticket-handle")
+            .unwrap();
     }
 
     #[test]

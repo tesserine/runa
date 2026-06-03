@@ -18,7 +18,7 @@ A **trigger condition** is the activation rule that defines when runa activates 
 
 A **methodology** is a plugin configuration that registers with runa through a TOML manifest file. The manifest declares the methodology's artifact types, protocols, and trigger conditions. A directory layout convention places JSON Schemas at `schemas/{name}.schema.json` and protocol instruction files at `protocols/{name}/PROTOCOL.md`, both relative to the manifest. Runa derives these paths from declared names; the manifest contains no explicit path fields.
 
-Scope is methodology-owned metadata, not something runa infers from schemas or artifact contents. Unscoped commands evaluate only unscoped protocols. `runa state --work-unit <ID>`, `runa step --work-unit <ID>`, and `runa run --work-unit <ID>` evaluate only `scoped = true` protocols for that delegated work unit. When valid `work-unit` artifacts exist, `<ID>` must exactly match one delivered work-unit instance id; non-exact values are rejected.
+Scope is methodology-owned metadata, not something runa infers from schemas or artifact contents. Unscoped commands evaluate only unscoped protocols. `runa state --work-unit <ID>`, `runa step --work-unit <ID>`, and `runa run --work-unit <ID>` evaluate only `scoped = true` protocols for that delegated work unit. When any `work-unit` artifacts are recorded, `<ID>` must exactly match one delivered work-unit instance id; non-exact values are rejected. Tracker-backed handle agreement is checked only for valid work-unit artifacts.
 
 ## Quick Start
 

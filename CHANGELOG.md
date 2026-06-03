@@ -17,8 +17,9 @@ Semantic Versioning.
 ### Fixed
 
 - Scoped work-unit validation now rejects any non-exact `--work-unit` value
-  when valid delivered work-unit artifacts exist, while keeping tracker-backed
-  handle agreement and duplicate full-ticket-identity checks for exact scopes.
+  when delivered work-unit artifacts are recorded, including invalid or
+  malformed roots, while keeping tracker-backed handle agreement and duplicate
+  full-ticket-identity checks limited to valid exact scopes.
 - Required output choice freshness and dry-run projection now stay conservative
   when choice-member scans are incomplete, while still projecting downstream
   cascades through an already-present exactly-one choice member.
