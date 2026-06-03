@@ -306,7 +306,7 @@ fn mcp_rejects_unscanned_ticket_backed_work_unit_when_instance_id_disagrees_with
 }
 
 #[test]
-fn mcp_rejects_unscanned_ticket_backed_work_unit_alias() {
+fn mcp_rejects_unscanned_non_exact_ticket_backed_work_unit_scope() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = write_methodology(
         dir.path(),
@@ -323,14 +323,14 @@ fn mcp_rejects_unscanned_ticket_backed_work_unit_alias() {
         .arg("--protocol")
         .arg("take")
         .arg("--work-unit")
-        .arg("issue-363")
+        .arg("ticket-handle")
         .current_dir(&project_dir)
         .output()
         .unwrap();
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("issue-363"), "stderr: {stderr}");
+    assert!(stderr.contains("ticket-handle"), "stderr: {stderr}");
     assert!(
         stderr.contains("work-unit-363-ticket-handle"),
         "stderr: {stderr}"

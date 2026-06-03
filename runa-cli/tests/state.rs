@@ -318,24 +318,8 @@ fn state_rejects_duplicate_ticket_backed_work_unit_roots() {
 }
 
 #[test]
-fn state_preserves_scoped_behavior_for_no_handle_work_units_and_no_matching_artifact() {
-    let (_dir, project_dir) = setup_ticket_backed_work_unit_project(&[(
-        "work-unit-freeform",
-        r#"{"title":"No handle","description":"A non-tracker unit.","acceptance_criteria":["existing behavior remains"]}"#,
-    )]);
-
-    let no_handle = runa_bin()
-        .arg("state")
-        .arg("--work-unit")
-        .arg("work-unit-freeform")
-        .current_dir(&project_dir)
-        .output()
-        .unwrap();
-    assert!(
-        no_handle.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&no_handle.stderr)
-    );
+fn state_preserves_scoped_behavior_when_no_work_unit_artifacts_exist() {
+    let (_dir, project_dir) = setup_ticket_backed_work_unit_project(&[]);
 
     let no_matching_artifact = runa_bin()
         .arg("state")
@@ -352,7 +336,40 @@ fn state_preserves_scoped_behavior_for_no_handle_work_units_and_no_matching_arti
 }
 
 #[test]
-fn state_accepts_exact_no_handle_work_unit_before_same_number_tracker_aliases() {
+fn state_rejects_non_exact_scope_when_no_handle_work_units_exist() {
+    let (_dir, project_dir) = setup_ticket_backed_work_unit_project(&[(
+        "work-unit-freeform",
+        r#"{"title":"No handle","description":"A non-tracker unit.","acceptance_criteria":["exact id remains authoritative"]}"#,
+    )]);
+
+    let exact_no_handle = runa_bin()
+        .arg("state")
+        .arg("--work-unit")
+        .arg("work-unit-freeform")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        exact_no_handle.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&exact_no_handle.stderr)
+    );
+
+    let no_matching_artifact = runa_bin()
+        .arg("state")
+        .arg("--work-unit")
+        .arg("work-unit-missing")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(!no_matching_artifact.status.success());
+    let stderr = String::from_utf8_lossy(&no_matching_artifact.stderr);
+    assert!(stderr.contains("work-unit-missing"), "stderr: {stderr}");
+    assert!(stderr.contains("work-unit-freeform"), "stderr: {stderr}");
+}
+
+#[test]
+fn state_accepts_exact_no_handle_work_unit_before_non_exact_same_number_scopes() {
     let (_dir, project_dir) = setup_ticket_backed_work_unit_project(&[
         (
             "work-unit-363-freeform",
@@ -390,8 +407,13 @@ fn state_accepts_exact_no_handle_work_unit_before_same_number_tracker_aliases() 
         String::from_utf8_lossy(&exact_tracker.stderr)
     );
 
-    for supplied in ["363", "work-unit-363"] {
-        let alias = runa_bin()
+    for supplied in [
+        "363",
+        "work-unit-363",
+        "ticket-handle",
+        "work-unit-363-ticket",
+    ] {
+        let non_exact_scope = runa_bin()
             .arg("state")
             .arg("--work-unit")
             .arg(supplied)
@@ -399,8 +421,11 @@ fn state_accepts_exact_no_handle_work_unit_before_same_number_tracker_aliases() 
             .output()
             .unwrap();
 
-        assert!(!alias.status.success(), "scope {supplied} should fail");
-        let stderr = String::from_utf8_lossy(&alias.stderr);
+        assert!(
+            !non_exact_scope.status.success(),
+            "scope {supplied} should fail"
+        );
+        let stderr = String::from_utf8_lossy(&non_exact_scope.stderr);
         assert!(stderr.contains(supplied), "stderr: {stderr}");
         assert!(
             stderr.contains("work-unit-363-ticket-handle"),

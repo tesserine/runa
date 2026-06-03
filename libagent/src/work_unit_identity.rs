@@ -19,7 +19,7 @@ pub enum WorkUnitIdentityError {
         instance_id: String,
         handle_number: u64,
     },
-    NonExactTrackerWorkUnitScope {
+    NonExactWorkUnitScope {
         supplied_work_unit: String,
         canonical_instance_ids: Vec<String>,
     },
@@ -53,12 +53,12 @@ impl fmt::Display for WorkUnitIdentityError {
                 f,
                 "work-unit identity conflict: instance id '{instance_id}' disagrees with handle ticket number {handle_number}"
             ),
-            WorkUnitIdentityError::NonExactTrackerWorkUnitScope {
+            WorkUnitIdentityError::NonExactWorkUnitScope {
                 supplied_work_unit,
                 canonical_instance_ids,
             } => write!(
                 f,
-                "work-unit identity conflict: scoped work-unit '{supplied_work_unit}' does not exactly match a delivered tracker-backed work-unit root; available canonical id(s): {}",
+                "work-unit identity conflict: scoped work-unit '{supplied_work_unit}' does not exactly match a delivered work-unit root; available canonical id(s): {}",
                 canonical_instance_ids.join(", ")
             ),
             WorkUnitIdentityError::DuplicateTicketRoots {
@@ -79,7 +79,7 @@ impl std::error::Error for WorkUnitIdentityError {
             WorkUnitIdentityError::Io { source, .. } => Some(source),
             WorkUnitIdentityError::Json { source, .. } => Some(source),
             WorkUnitIdentityError::HandleDisagreesWithInstanceId { .. }
-            | WorkUnitIdentityError::NonExactTrackerWorkUnitScope { .. }
+            | WorkUnitIdentityError::NonExactWorkUnitScope { .. }
             | WorkUnitIdentityError::DuplicateTicketRoots { .. } => None,
         }
     }
@@ -123,33 +123,23 @@ pub fn validate_scoped_work_unit_identity(
         });
     }
 
+    if delivered.is_empty() {
+        return Ok(());
+    }
+
     let Some(selected) = delivered
         .iter()
         .find(|candidate| candidate.instance_id == work_unit)
     else {
-        // Numeric and conventional-prefix aliases are tracker intent when they
-        // resolve to a delivered ticket-backed root. They must not bypass the
-        // exact artifact id used to thread scoped execution.
-        if let Some(supplied_number) = scope_ticket_number(work_unit) {
-            let mut canonical_instance_ids: Vec<String> = delivered
-                .iter()
-                .filter(|candidate| {
-                    candidate
-                        .identity
-                        .as_ref()
-                        .is_some_and(|identity| identity.number == supplied_number)
-                })
-                .map(|candidate| candidate.instance_id.clone())
-                .collect();
-            canonical_instance_ids.sort();
-            if !canonical_instance_ids.is_empty() {
-                return Err(WorkUnitIdentityError::NonExactTrackerWorkUnitScope {
-                    supplied_work_unit: work_unit.to_string(),
-                    canonical_instance_ids,
-                });
-            }
-        }
-        return Ok(());
+        let mut canonical_instance_ids: Vec<String> = delivered
+            .iter()
+            .map(|candidate| candidate.instance_id.clone())
+            .collect();
+        canonical_instance_ids.sort();
+        return Err(WorkUnitIdentityError::NonExactWorkUnitScope {
+            supplied_work_unit: work_unit.to_string(),
+            canonical_instance_ids,
+        });
     };
     let selected_instance_id = selected.instance_id.clone();
     let Some(selected_identity) = selected.identity.clone() else {
@@ -206,38 +196,6 @@ fn handle_identity(value: &Value) -> Option<TicketIdentity> {
     })
 }
 
-fn scope_ticket_number(work_unit: &str) -> Option<u64> {
-    let bytes = work_unit.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if !bytes[index].is_ascii_digit() {
-            index += 1;
-            continue;
-        }
-
-        let start = index;
-        while index < bytes.len() && bytes[index].is_ascii_digit() {
-            index += 1;
-        }
-        let end = index;
-
-        if scope_number_boundary(
-            start
-                .checked_sub(1)
-                .and_then(|index| bytes.get(index))
-                .copied(),
-        ) && scope_number_boundary(bytes.get(end).copied())
-        {
-            return work_unit[start..end].parse().ok();
-        }
-    }
-    None
-}
-
-fn scope_number_boundary(byte: Option<u8>) -> bool {
-    byte.is_none_or(|byte| !byte.is_ascii_alphanumeric())
-}
-
 fn instance_ticket_number(instance_id: &str) -> Option<u64> {
     let rest = instance_id.strip_prefix("work-unit-")?;
     let digits: String = rest
@@ -257,8 +215,7 @@ fn instance_ticket_number(instance_id: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        WorkUnitIdentityError, instance_ticket_number, scope_ticket_number,
-        validate_scoped_work_unit_identity,
+        WorkUnitIdentityError, instance_ticket_number, validate_scoped_work_unit_identity,
     };
     use crate::store::ArtifactStore;
     use crate::test_helpers::{make_artifact_type, simple_schema};
@@ -320,18 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_ticket_number_extracts_prefix_agnostic_delimited_candidate_number() {
-        assert_eq!(Some(363), scope_ticket_number("363"));
-        assert_eq!(Some(363), scope_ticket_number("issue-363"));
-        assert_eq!(Some(363), scope_ticket_number("work-unit-363"));
-        assert_eq!(Some(363), scope_ticket_number("foreign-prefix-363"));
-        assert_eq!(Some(363), scope_ticket_number("foreign-prefix-363-extra"));
-        assert_eq!(None, scope_ticket_number("foreign-prefix363"));
-        assert_eq!(None, scope_ticket_number("foreign-prefix-363extra"));
-    }
-
-    #[test]
-    fn non_exact_tracker_scopes_reject_prefix_agnostic_ticket_aliases() {
+    fn non_exact_scopes_reject_when_delivered_work_units_exist() {
         let tmp = TempDir::new().unwrap();
         let mut store = test_store(&tmp);
         record_work_unit(
@@ -341,7 +287,14 @@ mod tests {
             Some(github_handle(363)),
         );
 
-        for supplied in ["issue-363", "work-unit-363", "363", "foreign-prefix-363"] {
+        for supplied in [
+            "issue-363",
+            "work-unit-363",
+            "363",
+            "ticket-handle",
+            "foreign-prefix-363",
+            "work-unit-363-ticket",
+        ] {
             let error = validate_scoped_work_unit_identity(&store, supplied).unwrap_err();
             let rendered = error.to_string();
 
@@ -368,17 +321,38 @@ mod tests {
     }
 
     #[test]
-    fn true_non_tracker_scope_keeps_pass_through_behavior() {
+    fn exact_delivered_no_handle_scope_is_accepted() {
         let tmp = TempDir::new().unwrap();
         let mut store = test_store(&tmp);
         record_work_unit(&mut store, &tmp, "work-unit-freeform", None);
 
         validate_scoped_work_unit_identity(&store, "work-unit-freeform").unwrap();
-        validate_scoped_work_unit_identity(&store, "work-unit-missing").unwrap();
     }
 
     #[test]
-    fn exact_delivered_no_handle_scope_wins_before_same_number_tracker_aliases() {
+    fn non_exact_scope_rejects_when_only_no_handle_work_units_exist() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = test_store(&tmp);
+        record_work_unit(&mut store, &tmp, "work-unit-freeform", None);
+
+        let error = validate_scoped_work_unit_identity(&store, "work-unit-missing").unwrap_err();
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("work-unit-missing"), "error: {rendered}");
+        assert!(rendered.contains("work-unit-freeform"), "error: {rendered}");
+    }
+
+    #[test]
+    fn scoped_identity_guard_is_inert_without_delivered_work_units() {
+        let tmp = TempDir::new().unwrap();
+        let store = test_store(&tmp);
+
+        validate_scoped_work_unit_identity(&store, "work-unit-missing").unwrap();
+        validate_scoped_work_unit_identity(&store, "ticket-handle").unwrap();
+    }
+
+    #[test]
+    fn exact_delivered_no_handle_scope_wins_before_non_exact_same_number_scopes() {
         let tmp = TempDir::new().unwrap();
         let mut store = test_store(&tmp);
         record_work_unit(&mut store, &tmp, "work-unit-363-freeform", None);
@@ -392,7 +366,14 @@ mod tests {
         validate_scoped_work_unit_identity(&store, "work-unit-363-freeform").unwrap();
         validate_scoped_work_unit_identity(&store, "work-unit-363-ticket-handle").unwrap();
 
-        for supplied in ["issue-363", "work-unit-363", "363", "foreign-prefix-363"] {
+        for supplied in [
+            "issue-363",
+            "work-unit-363",
+            "363",
+            "ticket-handle",
+            "foreign-prefix-363",
+            "work-unit-363-ticket",
+        ] {
             let error = validate_scoped_work_unit_identity(&store, supplied).unwrap_err();
             let rendered = error.to_string();
 
