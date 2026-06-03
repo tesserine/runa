@@ -148,6 +148,89 @@ trigger = { type = "on_artifact", name = "work-unit" }
 }
 
 #[test]
+fn state_accepts_exact_tracker_backed_work_unit_without_slug() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        common::scoped_work_unit_manifest_toml(),
+        common::scoped_work_unit_schemas(),
+        &["take"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-163.json"),
+        common::github_work_unit_json(163),
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("state")
+        .arg("--work-unit")
+        .arg("work-unit-163")
+        .env_remove("GROUNDWORK_FORGE_TYPE")
+        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+        .env("GROUNDWORK_FORGE_NAME", "runa")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("take"), "stdout: {stdout}");
+    assert!(stdout.contains("work-unit-163"), "stdout: {stdout}");
+}
+
+#[test]
+fn state_rejects_exact_tracker_backed_work_unit_with_number_disagreement() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        common::scoped_work_unit_manifest_toml(),
+        common::scoped_work_unit_schemas(),
+        &["take"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-163.json"),
+        common::github_work_unit_json(164),
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("state")
+        .arg("--work-unit")
+        .arg("work-unit-163")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("work-unit-163"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("disagrees with tracker handle number 164"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
 fn state_filters_protocols_by_declared_scope() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(

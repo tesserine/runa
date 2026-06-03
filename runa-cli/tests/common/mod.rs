@@ -33,3 +33,44 @@ pub fn write_methodology(
 
     manifest_path
 }
+
+#[allow(dead_code)]
+pub fn scoped_work_unit_manifest_toml() -> &'static str {
+    r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "claim"
+
+[[protocols]]
+name = "take"
+requires = ["work-unit"]
+produces = ["claim"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+"#
+}
+
+#[allow(dead_code)]
+pub fn scoped_work_unit_schemas() -> &'static [(&'static str, &'static str)] {
+    &[
+        (
+            "work-unit",
+            r#"{"type":"object","required":["title","description","acceptance_criteria"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"handle":{"type":"object"}}}"#,
+        ),
+        (
+            "claim",
+            r#"{"type":"object","required":["work_unit","scope"],"properties":{"work_unit":{"type":"string"},"scope":{"type":"string"}}}"#,
+        ),
+    ]
+}
+
+#[allow(dead_code)]
+pub fn github_work_unit_json(number: u64) -> String {
+    format!(
+        r#"{{"title":"Scope","description":"Enforce canonical scope","acceptance_criteria":["Reject aliases"],"handle":{{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/{number}","number":{number}}}}}"#
+    )
+}

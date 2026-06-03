@@ -11,6 +11,9 @@ pub enum ScopedWorkUnitError {
         supplied: String,
         available: Vec<String>,
     },
+    TrackerNumberParseFailure {
+        instance_id: String,
+    },
     TrackerNumberDisagreement {
         instance_id: String,
         handle_number: u64,
@@ -40,6 +43,10 @@ impl fmt::Display for ScopedWorkUnitError {
                 f,
                 "scoped work unit '{supplied}' is not a recorded canonical work-unit id; available canonical work-unit ids: {}",
                 available.join(", ")
+            ),
+            ScopedWorkUnitError::TrackerNumberParseFailure { instance_id } => write!(
+                f,
+                "work-unit instance id '{instance_id}' does not contain a parseable tracker number"
             ),
             ScopedWorkUnitError::TrackerNumberDisagreement {
                 instance_id,
@@ -127,7 +134,12 @@ fn validate_tracker_content(
         let Some(handle_number) = handle.get("number").and_then(Value::as_u64) else {
             continue;
         };
-        if instance_work_unit_number(instance_id) != Some(handle_number) {
+        let instance_number = instance_work_unit_number(instance_id).ok_or_else(|| {
+            ScopedWorkUnitError::TrackerNumberParseFailure {
+                instance_id: instance_id.to_string(),
+            }
+        })?;
+        if instance_number != handle_number {
             return Err(ScopedWorkUnitError::TrackerNumberDisagreement {
                 instance_id: instance_id.to_string(),
                 handle_number,
@@ -262,7 +274,7 @@ fn github_repository(url: &str) -> Option<&str> {
 
 fn instance_work_unit_number(instance_id: &str) -> Option<u64> {
     let rest = instance_id.strip_prefix("work-unit-")?;
-    let number = rest.split_once('-')?.0;
+    let number = rest.split_once('-').map_or(rest, |(number, _)| number);
     number.parse().ok()
 }
 
@@ -342,6 +354,26 @@ mod tests {
     }
 
     #[test]
+    fn exact_work_unit_id_without_slug_accepts_matching_github_deployment() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = work_unit_store(&tmp);
+        let artifact = github_work_unit(163);
+        let artifact_path = tmp.path().join("work-unit-163.json");
+        std::fs::write(&artifact_path, artifact.to_string()).unwrap();
+        store
+            .record_with_timestamp("work-unit", "work-unit-163", &artifact_path, &artifact, 1)
+            .unwrap();
+
+        let result = validate_scoped_work_unit_with_env(
+            &store,
+            "work-unit-163",
+            &github_environment("tesserine/runa"),
+        );
+
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
     fn exact_work_unit_id_rejects_tracker_number_disagreement() {
         let tmp = TempDir::new().unwrap();
         let mut store = work_unit_store(&tmp);
@@ -359,7 +391,34 @@ mod tests {
 
         let result = validate_scoped_work_unit(&store, "work-unit-163-scope");
 
-        assert!(result.is_err());
+        assert_eq!(
+            result,
+            Err(ScopedWorkUnitError::TrackerNumberDisagreement {
+                instance_id: "work-unit-163-scope".to_string(),
+                handle_number: 164,
+            })
+        );
+    }
+
+    #[test]
+    fn exact_work_unit_id_rejects_unparseable_tracker_number_without_disagreement() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = work_unit_store(&tmp);
+        let artifact = github_work_unit(163);
+        let artifact_path = tmp.path().join("work-unit-scope.json");
+        std::fs::write(&artifact_path, artifact.to_string()).unwrap();
+        store
+            .record_with_timestamp("work-unit", "work-unit-scope", &artifact_path, &artifact, 1)
+            .unwrap();
+
+        let result = validate_scoped_work_unit(&store, "work-unit-scope");
+
+        assert_eq!(
+            result,
+            Err(ScopedWorkUnitError::TrackerNumberParseFailure {
+                instance_id: "work-unit-scope".to_string(),
+            })
+        );
     }
 
     #[test]
