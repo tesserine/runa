@@ -26,6 +26,10 @@ Semantic Versioning.
   cascades through an already-present exactly-one choice member.
 - Choice-only protocols with unsupported optional outputs now start `runa-mcp`
   correctly instead of being rejected as optional-output-only sessions.
+- Direct `runa-mcp` startup now refreshes `.runa/store/` from
+  `.runa/workspace/` before scoped work-unit identity validation, matching the
+  CLI entry points and preventing stale persisted state from bypassing or
+  misapplying tracker-backed work-unit checks.
 
 ## [0.1.2] — 2026-05-17
 

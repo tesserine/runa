@@ -184,6 +184,24 @@ fn scan_project(project_dir: &Path) {
     libagent::scan(&loaded.workspace_dir, &mut loaded.store).unwrap();
 }
 
+fn write_ticket_backed_work_unit(
+    project_dir: &Path,
+    instance_id: &str,
+    handle_number: u64,
+) -> PathBuf {
+    let work_unit_dir = project_dir.join(".runa/workspace/work-unit");
+    fs::create_dir_all(&work_unit_dir).unwrap();
+    let path = work_unit_dir.join(format!("{instance_id}.json"));
+    fs::write(
+        &path,
+        format!(
+            r#"{{"title":"Ticket handle","description":"A tracker-backed unit.","acceptance_criteria":["identity is current"],"handle":{{"forge_tag":"github","url":"https://github.com/tesserine/groundwork/issues/{handle_number}","number":{handle_number}}}}}"#
+        ),
+    )
+    .unwrap();
+    path
+}
+
 #[test]
 fn missing_protocol_argument_fails_clearly() {
     let dir = tempfile::tempdir().unwrap();
@@ -253,6 +271,112 @@ fn mcp_rejects_ticket_backed_work_unit_when_instance_id_disagrees_with_handle_nu
         "stderr: {stderr}"
     );
     assert!(stderr.contains("363"), "stderr: {stderr}");
+}
+
+#[test]
+fn mcp_rejects_unscanned_ticket_backed_work_unit_when_instance_id_disagrees_with_handle_number() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        ticket_backed_manifest_toml(),
+        &ticket_backed_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    write_ticket_backed_work_unit(&project_dir, "work-unit-364-ticket-handle", 363);
+
+    let output = StdCommand::new(env!("CARGO_BIN_EXE_runa-mcp"))
+        .arg("--protocol")
+        .arg("take")
+        .arg("--work-unit")
+        .arg("work-unit-364-ticket-handle")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("work-unit-364-ticket-handle"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("363"), "stderr: {stderr}");
+}
+
+#[test]
+fn mcp_rejects_unscanned_ticket_backed_work_unit_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        ticket_backed_manifest_toml(),
+        &ticket_backed_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    write_ticket_backed_work_unit(&project_dir, "work-unit-363-ticket-handle", 363);
+
+    let output = StdCommand::new(env!("CARGO_BIN_EXE_runa-mcp"))
+        .arg("--protocol")
+        .arg("take")
+        .arg("--work-unit")
+        .arg("issue-363")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("issue-363"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("work-unit-363-ticket-handle"),
+        "stderr: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_refreshes_deleted_ticket_backed_work_unit_before_identity_validation() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        ticket_backed_manifest_toml(),
+        &ticket_backed_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    let path = write_ticket_backed_work_unit(&project_dir, "work-unit-363-ticket-handle", 363);
+    scan_project(&project_dir);
+    fs::remove_file(path).unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("take")
+                        .arg("--work-unit")
+                        .arg("issue-363")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let tools = service.list_all_tools().await.unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name.as_ref(), "claim");
+
+    service.cancel().await.unwrap();
+
+    let loaded = libagent::project::load(&project_dir, None).unwrap();
+    assert!(loaded.store.instances_of("work-unit", None).is_empty());
 }
 
 #[tokio::test]
