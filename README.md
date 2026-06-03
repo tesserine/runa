@@ -20,6 +20,12 @@ A **methodology** is a plugin configuration that registers with runa through a T
 
 Scope is methodology-owned metadata, not something runa infers from schemas or artifact contents. Unscoped commands evaluate only unscoped protocols. `runa state --work-unit <ID>`, `runa step --work-unit <ID>`, and `runa run --work-unit <ID>` evaluate only `scoped = true` protocols for that delegated work unit.
 
+When a methodology records `work-unit` artifacts, scoped entry points require
+`<ID>` to exactly match one recorded `work-unit` instance id. Tracker-looking
+aliases such as ticket numbers or partial ids are rejected and the diagnostic
+lists the available canonical ids. If no `work-unit` artifacts are recorded,
+scoped evaluation remains inert and accepts the caller-supplied id as before.
+
 ## Quick Start
 
 A methodology needs a manifest file, a JSON Schema for each artifact type, and an instruction file for each protocol. Here is a minimal example with one protocol that consumes a `spec` artifact and produces a `report`.

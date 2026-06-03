@@ -114,6 +114,14 @@ Evaluates protocols after an implicit scan and classifies each as `READY`, `BLOC
 
 Without `--work-unit`, `state` evaluates only unscoped protocols (`scoped = false`) and each protocol appears at most once with no `work_unit`. With `--work-unit <ID>`, `state` evaluates only scoped protocols (`scoped = true`) for that exact delegated work unit. It does not enumerate sibling work units from artifact state.
 
+If any `work-unit` artifacts are recorded, `<ID>` must exactly equal one recorded
+`work-unit` instance id. Non-exact values fail before readiness evaluation and
+the error names the supplied value plus the available canonical ids. Invalid or
+malformed recorded `work-unit` artifacts still establish canonical ids, but
+tracker-handle consistency checks run only for valid, parseable roots. A
+methodology with no recorded `work-unit` artifacts has no canonical ids to
+enforce, so scoped behavior remains unchanged.
+
 Text output groups protocols in READY, BLOCKED, then WAITING order, preserving scope-filtered topological protocol order within each group. READY entries list valid required and accepted artifact instances. BLOCKED entries list required-artifact failures (missing, invalid, stale, scan_incomplete). WAITING entries list the trigger condition and the specific reason execution cannot proceed, including explicit cycle conditions for in-scope hard-cycle participants. For `on_artifact`, those reasons are phrased in terms of the absence of valid instances rather than the presence of unhealthy siblings.
 
 When scan reconciliation is partial, `state` surfaces scan warnings and blocks protocols whose required artifact types could not be fully reconciled. Partially scanned accepted types are omitted from reported inputs.
@@ -149,6 +157,10 @@ Selects at most one `(protocol, work_unit)` candidate after an implicit scan: th
 
 Without `--work-unit`, `step` considers only unscoped protocols. With `--work-unit <ID>`, it considers only scoped protocols for that exact delegated work unit.
 
+When recorded `work-unit` artifacts exist, `<ID>` must be the exact canonical
+`work-unit` instance id, with the same rejection behavior described for
+`runa state`.
+
 With `--dry-run`, text output prints the next execution plus the grouped READY/BLOCKED/WAITING status view. The execution entry includes the protocol name, optional work unit, the trigger that activated it, an MCP server config, and the serialized agent-facing context payload (protocol name, optional work unit, instruction content, valid required and available accepted inputs with display paths and content hashes, and expected outputs split into `produces`, `may_produce`, and `required_output_choices`). Dry-run does not require a discoverable `runa-mcp` binary. If the in-scope graph contains a hard dependency cycle, `step` reports it as a warning, exposes the scope-filtered cycle in JSON, and keeps those participants out of `READY`.
 
 Without `--dry-run`, `step` requires `[agent].command` in the config and a Linux host. If the initial scan finds no READY work, `step` performs one final re-scan and re-evaluates readiness before returning a no-work outcome. If that refreshed state exposes a READY candidate, the same invocation executes that one protocol. Only when the refreshed state still has no actionable work does it print `No READY protocols.` and exit without requiring `runa-mcp`: exit `3` when work remains blocked, waiting, or trapped in a cycle, and exit `4` when no actionable work remains because outputs are already current. Otherwise, it resolves `runa-mcp` (preferring a sibling binary next to the running `runa` executable, falling back to `PATH`), executes the candidate, re-scans the workspace, enforces postconditions, and prints the refreshed status view.
@@ -179,6 +191,10 @@ runa run [--dry-run] [--json] [--work-unit <ID>] [--agent-command -- <argv token
 The cascade command. Walks the READY frontier repeatedly until quiescence instead of stopping after one execution.
 
 Without `--work-unit`, `run` considers only unscoped protocols. With `--work-unit <ID>`, it considers only scoped protocols for that exact delegated work unit.
+
+When recorded `work-unit` artifacts exist, `<ID>` must be the exact canonical
+`work-unit` instance id, with the same rejection behavior described for
+`runa state`.
 
 With `--dry-run`, projects the full optimistic cascade from the same scope-filtered execution order used by evaluation and planning, plus declared `produces` outputs, dependency edges, and the caller-supplied evaluation scope. `may_produce` outputs do not advance the projection unless they already exist on disk. Required output choice members are branch-dependent, so projection uses an already-present single member when one exists and otherwise does not synthesize a choice branch. Initially ready entries include MCP config and full context on first emission; downstream projected entries carry only protocol name, optional work unit, trigger, and projection kind. The projection never synthesizes artifact values, forks the store, bypasses schema validation, or discovers sibling work units from artifact state.
 
@@ -213,7 +229,7 @@ Without `--dry-run`, requires a Linux host plus an effective agent command. `run
 runa-mcp --protocol <name> [--work-unit <name>]
 ```
 
-On startup, the server loads the project, resolves the named protocol from the manifest, validates that its declared scope matches the presence or absence of `--work-unit`, validates that its required output types can be served as MCP tools, and serves an MCP session over stdio. Each output artifact type (`produces`, required output choice members, and viable `may_produce`) becomes one MCP tool. The tool input schema is the artifact type's JSON Schema with the `work_unit` field removed — the server injects `work_unit` automatically from the `--work-unit` argument.
+On startup, the server loads the project, scans the workspace, resolves the named protocol from the manifest, validates that its declared scope matches the presence or absence of `--work-unit`, validates canonical `work-unit` identity for scoped sessions, validates that its required output types can be served as MCP tools, and serves an MCP session over stdio. Each output artifact type (`produces`, required output choice members, and viable `may_produce`) becomes one MCP tool. The tool input schema is the artifact type's JSON Schema with the `work_unit` field removed — the server injects `work_unit` automatically from the `--work-unit` argument.
 
 `runa step` does not spawn `runa-mcp` directly. For direct Claude Code commands, it writes the resolved `runa-mcp` command, arguments, and environment into a temporary `mcpServers.runa` config and passes that config to Claude. For other agent runtimes, it exports the same data as a `RUNA_MCP_CONFIG` JSON payload so an adapter can launch the server as its own child process. The exported command and environment paths are absolute whenever runa resolves them from the local filesystem, so adapters do not depend on child process cwd to launch `runa-mcp`. Transcript environment variables are forwarded into the MCP config when transcript capture is enabled, which lets the MCP server append tool events to the same transcript stream as the CLI execution events.
 

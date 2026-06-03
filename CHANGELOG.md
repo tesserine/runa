@@ -13,6 +13,12 @@ Semantic Versioning.
   groups where each protocol execution must produce exactly one valid member
   artifact type. Choice members are exposed as MCP tools, included in agent
   context, enforced after live execution, and reported by `runa list`.
+- Scoped `state`, `step`, `run`, and `runa-mcp` invocations now enforce
+  canonical `work-unit` identity when recorded work-unit roots exist. The
+  supplied `--work-unit` must exactly match a recorded `work-unit` instance id,
+  and valid tracker-backed roots are checked for handle-number agreement,
+  duplicate tracker identity, and active `GROUNDWORK_*` deployment agreement
+  against Groundwork's released handle contract.
 
 ### Fixed
 

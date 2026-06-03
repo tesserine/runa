@@ -450,6 +450,9 @@ pub fn run(
     let (mut loaded, scan_result) = super::load_and_scan(working_dir, config_override)
         .map_err(StepError::from)
         .map_err(RunError::from)?;
+    super::validate_scoped_work_unit(&loaded, work_unit)
+        .map_err(StepError::from)
+        .map_err(RunError::from)?;
     let scope = match work_unit {
         Some(work_unit) => libagent::EvaluationScope::Scoped(work_unit),
         None => libagent::EvaluationScope::Unscoped,

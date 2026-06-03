@@ -13,6 +13,7 @@
 //! - [`completion`] — Shared completion evidence checks for live and projected readiness
 //! - [`trigger`] — Trigger condition evaluation against runtime state
 //! - [`enforcement`] — Pre/post-execution enforcement of protocol contracts
+//! - [`scoped_identity`] — Canonical work-unit id validation for scoped entry points
 //!
 //! See `ARCHITECTURE.md` in the repository root for data flow and design details.
 
@@ -26,6 +27,7 @@ pub mod model;
 pub mod project;
 pub mod projection;
 pub mod scan;
+pub mod scoped_identity;
 pub mod selection;
 pub mod store;
 #[cfg(test)]
@@ -51,6 +53,7 @@ pub use scan::{
     ArtifactRef, InvalidArtifact, MalformedArtifact, PartiallyScannedType, ScanError, ScanResult,
     UnreadableArtifact, scan,
 };
+pub use scoped_identity::{ScopedWorkUnitError, validate_scoped_work_unit};
 pub use selection::{
     Candidate, CandidateStatus, ClassifiedCandidate, EvaluationScope, EvaluationTopology,
     ScanTrust, WaitingReason, classify_candidates, collect_unsatisfied_conditions,

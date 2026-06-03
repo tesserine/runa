@@ -191,6 +191,152 @@ fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) 
 }
 
 #[test]
+fn step_rejects_noncanonical_work_unit_when_roots_are_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "claim"
+
+[[protocols]]
+name = "take"
+requires = ["work-unit"]
+produces = ["claim"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+"#,
+        &[
+            (
+                "work-unit",
+                r#"{"type":"object","required":["title","description","acceptance_criteria"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}}}}"#,
+            ),
+            (
+                "claim",
+                r#"{"type":"object","required":["work_unit","scope"],"properties":{"work_unit":{"type":"string"},"scope":{"type":"string"}}}"#,
+            ),
+        ],
+        &["take"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-163-scope.json"),
+        r#"{"title":"Scope","description":"Enforce canonical scope","acceptance_criteria":["Reject aliases"]}"#,
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--work-unit")
+        .arg("163")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("163"), "stderr: {stderr}");
+    assert!(stderr.contains("work-unit-163-scope"), "stderr: {stderr}");
+}
+
+#[test]
+fn step_dry_run_accepts_exact_tracker_backed_work_unit_without_slug() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        common::scoped_work_unit_manifest_toml(),
+        common::scoped_work_unit_schemas(),
+        &["take"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-163.json"),
+        common::github_work_unit_json(163),
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--work-unit")
+        .arg("work-unit-163")
+        .env_remove("GROUNDWORK_FORGE_TYPE")
+        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+        .env("GROUNDWORK_FORGE_NAME", "runa")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("take"), "stdout: {stdout}");
+    assert!(stdout.contains("work-unit-163"), "stdout: {stdout}");
+}
+
+#[test]
+fn step_dry_run_rejects_exact_tracker_backed_work_unit_with_number_disagreement() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        common::scoped_work_unit_manifest_toml(),
+        common::scoped_work_unit_schemas(),
+        &["take"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-163.json"),
+        common::github_work_unit_json(164),
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("step")
+        .arg("--dry-run")
+        .arg("--work-unit")
+        .arg("work-unit-163")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("work-unit-163"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("disagrees with tracker handle number 164"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
 fn step_dry_run_filters_execution_plan_by_declared_scope() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
