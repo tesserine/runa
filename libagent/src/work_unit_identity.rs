@@ -207,13 +207,35 @@ fn handle_identity(value: &Value) -> Option<TicketIdentity> {
 }
 
 fn scope_ticket_number(work_unit: &str) -> Option<u64> {
-    if work_unit
-        .chars()
-        .all(|character| character.is_ascii_digit())
-    {
-        return work_unit.parse().ok();
+    let bytes = work_unit.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !bytes[index].is_ascii_digit() {
+            index += 1;
+            continue;
+        }
+
+        let start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        let end = index;
+
+        if scope_number_boundary(
+            start
+                .checked_sub(1)
+                .and_then(|index| bytes.get(index))
+                .copied(),
+        ) && scope_number_boundary(bytes.get(end).copied())
+        {
+            return work_unit[start..end].parse().ok();
+        }
     }
-    instance_ticket_number(work_unit)
+    None
+}
+
+fn scope_number_boundary(byte: Option<u8>) -> bool {
+    byte.is_none_or(|byte| !byte.is_ascii_alphanumeric())
 }
 
 fn instance_ticket_number(instance_id: &str) -> Option<u64> {
@@ -235,7 +257,8 @@ fn instance_ticket_number(instance_id: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        WorkUnitIdentityError, instance_ticket_number, validate_scoped_work_unit_identity,
+        WorkUnitIdentityError, instance_ticket_number, scope_ticket_number,
+        validate_scoped_work_unit_identity,
     };
     use crate::store::ArtifactStore;
     use crate::test_helpers::{make_artifact_type, simple_schema};
@@ -297,7 +320,18 @@ mod tests {
     }
 
     #[test]
-    fn non_exact_tracker_scopes_are_rejected_with_the_available_canonical_id() {
+    fn scope_ticket_number_extracts_prefix_agnostic_delimited_candidate_number() {
+        assert_eq!(Some(363), scope_ticket_number("363"));
+        assert_eq!(Some(363), scope_ticket_number("issue-363"));
+        assert_eq!(Some(363), scope_ticket_number("work-unit-363"));
+        assert_eq!(Some(363), scope_ticket_number("foreign-prefix-363"));
+        assert_eq!(Some(363), scope_ticket_number("foreign-prefix-363-extra"));
+        assert_eq!(None, scope_ticket_number("foreign-prefix363"));
+        assert_eq!(None, scope_ticket_number("foreign-prefix-363extra"));
+    }
+
+    #[test]
+    fn non_exact_tracker_scopes_reject_prefix_agnostic_ticket_aliases() {
         let tmp = TempDir::new().unwrap();
         let mut store = test_store(&tmp);
         record_work_unit(
@@ -307,7 +341,7 @@ mod tests {
             Some(github_handle(363)),
         );
 
-        for supplied in ["work-unit-363", "363"] {
+        for supplied in ["issue-363", "work-unit-363", "363", "foreign-prefix-363"] {
             let error = validate_scoped_work_unit_identity(&store, supplied).unwrap_err();
             let rendered = error.to_string();
 
@@ -358,7 +392,7 @@ mod tests {
         validate_scoped_work_unit_identity(&store, "work-unit-363-freeform").unwrap();
         validate_scoped_work_unit_identity(&store, "work-unit-363-ticket-handle").unwrap();
 
-        for supplied in ["work-unit-363", "363"] {
+        for supplied in ["issue-363", "work-unit-363", "363", "foreign-prefix-363"] {
             let error = validate_scoped_work_unit_identity(&store, supplied).unwrap_err();
             let rendered = error.to_string();
 
