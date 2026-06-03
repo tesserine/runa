@@ -352,6 +352,64 @@ fn state_preserves_scoped_behavior_for_no_handle_work_units_and_no_matching_arti
 }
 
 #[test]
+fn state_accepts_exact_no_handle_work_unit_before_same_number_tracker_aliases() {
+    let (_dir, project_dir) = setup_ticket_backed_work_unit_project(&[
+        (
+            "work-unit-363-freeform",
+            r#"{"title":"No handle","description":"A non-tracker unit.","acceptance_criteria":["exact id remains authoritative"]}"#,
+        ),
+        (
+            "work-unit-363-ticket-handle",
+            r#"{"title":"Ticket handle","description":"A tracker-backed unit.","acceptance_criteria":["identity agrees"],"handle":{"forge_tag":"github","url":"https://github.com/tesserine/groundwork/issues/363","number":363}}"#,
+        ),
+    ]);
+
+    let exact_no_handle = runa_bin()
+        .arg("state")
+        .arg("--work-unit")
+        .arg("work-unit-363-freeform")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        exact_no_handle.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&exact_no_handle.stderr)
+    );
+
+    let exact_tracker = runa_bin()
+        .arg("state")
+        .arg("--work-unit")
+        .arg("work-unit-363-ticket-handle")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        exact_tracker.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&exact_tracker.stderr)
+    );
+
+    for supplied in ["363", "work-unit-363"] {
+        let alias = runa_bin()
+            .arg("state")
+            .arg("--work-unit")
+            .arg(supplied)
+            .current_dir(&project_dir)
+            .output()
+            .unwrap();
+
+        assert!(!alias.status.success(), "scope {supplied} should fail");
+        let stderr = String::from_utf8_lossy(&alias.stderr);
+        assert!(stderr.contains(supplied), "stderr: {stderr}");
+        assert!(
+            stderr.contains("work-unit-363-ticket-handle"),
+            "stderr: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn state_scoped_ignores_unscoped_cycle_participants() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(

@@ -86,9 +86,9 @@ impl std::error::Error for WorkUnitIdentityError {
 }
 
 #[derive(Debug, Clone)]
-struct TicketBackedWorkUnit {
+struct DeliveredWorkUnit {
     instance_id: String,
-    identity: TicketIdentity,
+    identity: Option<TicketIdentity>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -102,7 +102,7 @@ pub fn validate_scoped_work_unit_identity(
     store: &ArtifactStore,
     work_unit: &str,
 ) -> Result<(), WorkUnitIdentityError> {
-    let mut ticket_backed = Vec::new();
+    let mut delivered = Vec::new();
     for (instance_id, state) in store.instances_of("work-unit", None) {
         if !matches!(state.status, ValidationStatus::Valid) {
             continue;
@@ -117,16 +117,13 @@ pub fn validate_scoped_work_unit_identity(
                 instance_id: instance_id.to_string(),
                 source,
             })?;
-        let Some(identity) = handle_identity(&value) else {
-            continue;
-        };
-        ticket_backed.push(TicketBackedWorkUnit {
+        delivered.push(DeliveredWorkUnit {
             instance_id: instance_id.to_string(),
-            identity,
+            identity: handle_identity(&value),
         });
     }
 
-    let Some(selected) = ticket_backed
+    let Some(selected) = delivered
         .iter()
         .find(|candidate| candidate.instance_id == work_unit)
     else {
@@ -134,9 +131,14 @@ pub fn validate_scoped_work_unit_identity(
         // resolve to a delivered ticket-backed root. They must not bypass the
         // exact artifact id used to thread scoped execution.
         if let Some(supplied_number) = scope_ticket_number(work_unit) {
-            let mut canonical_instance_ids: Vec<String> = ticket_backed
+            let mut canonical_instance_ids: Vec<String> = delivered
                 .iter()
-                .filter(|candidate| candidate.identity.number == supplied_number)
+                .filter(|candidate| {
+                    candidate
+                        .identity
+                        .as_ref()
+                        .is_some_and(|identity| identity.number == supplied_number)
+                })
                 .map(|candidate| candidate.instance_id.clone())
                 .collect();
             canonical_instance_ids.sort();
@@ -150,7 +152,9 @@ pub fn validate_scoped_work_unit_identity(
         return Ok(());
     };
     let selected_instance_id = selected.instance_id.clone();
-    let selected_identity = selected.identity.clone();
+    let Some(selected_identity) = selected.identity.clone() else {
+        return Ok(());
+    };
 
     if instance_ticket_number(&selected_instance_id) != Some(selected_identity.number) {
         return Err(WorkUnitIdentityError::HandleDisagreesWithInstanceId {
@@ -160,13 +164,15 @@ pub fn validate_scoped_work_unit_identity(
     }
 
     let mut by_ticket_identity: BTreeMap<TicketIdentity, Vec<String>> = BTreeMap::new();
-    for candidate in ticket_backed {
+    for candidate in delivered {
         // Duplicate roots are only conflicts for the same forge ticket. The
         // numeric id alone is not unique across forges or SourceHut trackers.
-        by_ticket_identity
-            .entry(candidate.identity)
-            .or_default()
-            .push(candidate.instance_id);
+        if let Some(identity) = candidate.identity {
+            by_ticket_identity
+                .entry(identity)
+                .or_default()
+                .push(candidate.instance_id);
+        }
     }
     if let Some(mut instance_ids) = by_ticket_identity.remove(&selected_identity)
         && instance_ids.len() > 1
@@ -335,6 +341,33 @@ mod tests {
 
         validate_scoped_work_unit_identity(&store, "work-unit-freeform").unwrap();
         validate_scoped_work_unit_identity(&store, "work-unit-missing").unwrap();
+    }
+
+    #[test]
+    fn exact_delivered_no_handle_scope_wins_before_same_number_tracker_aliases() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = test_store(&tmp);
+        record_work_unit(&mut store, &tmp, "work-unit-363-freeform", None);
+        record_work_unit(
+            &mut store,
+            &tmp,
+            "work-unit-363-ticket-handle",
+            Some(github_handle(363)),
+        );
+
+        validate_scoped_work_unit_identity(&store, "work-unit-363-freeform").unwrap();
+        validate_scoped_work_unit_identity(&store, "work-unit-363-ticket-handle").unwrap();
+
+        for supplied in ["work-unit-363", "363"] {
+            let error = validate_scoped_work_unit_identity(&store, supplied).unwrap_err();
+            let rendered = error.to_string();
+
+            assert!(rendered.contains(supplied), "error: {rendered}");
+            assert!(
+                rendered.contains("work-unit-363-ticket-handle"),
+                "error: {rendered}"
+            );
+        }
     }
 
     #[test]
