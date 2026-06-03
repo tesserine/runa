@@ -16,6 +16,9 @@ Semantic Versioning.
 
 ### Fixed
 
+- Tracker-backed work-unit scope validation now rejects non-exact numeric or
+  conventional-prefix aliases and compares duplicate roots by full ticket
+  identity instead of ticket number alone.
 - Required output choice freshness and dry-run projection now stay conservative
   when choice-member scans are incomplete, while still projecting downstream
   cascades through an already-present exactly-one choice member.
