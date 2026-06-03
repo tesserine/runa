@@ -20,6 +20,9 @@ Semantic Versioning.
   when delivered work-unit artifacts are recorded, including invalid or
   malformed roots, while keeping tracker-backed handle agreement and duplicate
   full-ticket-identity checks limited to valid exact scopes.
+- GitHub ticket-backed work-unit duplicate detection now keys issue handles by
+  repository plus issue number, so equal issue numbers in different repositories
+  no longer conflict.
 - Required output choice freshness and dry-run projection now stay conservative
   when choice-member scans are incomplete, while still projecting downstream
   cascades through an already-present exactly-one choice member.

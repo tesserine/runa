@@ -92,10 +92,31 @@ struct DeliveredWorkUnit {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
-struct TicketIdentity {
-    forge_tag: String,
-    sourcehut_tracker_id: Option<u64>,
-    number: u64,
+enum TicketIdentity {
+    Github {
+        forge_tag: String,
+        repository: String,
+        number: u64,
+    },
+    Sourcehut {
+        forge_tag: String,
+        tracker_id: u64,
+        number: u64,
+    },
+    Other {
+        forge_tag: String,
+        number: u64,
+    },
+}
+
+impl TicketIdentity {
+    fn number(&self) -> u64 {
+        match self {
+            TicketIdentity::Github { number, .. }
+            | TicketIdentity::Sourcehut { number, .. }
+            | TicketIdentity::Other { number, .. } => *number,
+        }
+    }
 }
 
 pub fn validate_scoped_work_unit_identity(
@@ -151,17 +172,18 @@ pub fn validate_scoped_work_unit_identity(
         return Ok(());
     };
 
-    if instance_ticket_number(&selected_instance_id) != Some(selected_identity.number) {
+    if instance_ticket_number(&selected_instance_id) != Some(selected_identity.number()) {
         return Err(WorkUnitIdentityError::HandleDisagreesWithInstanceId {
             instance_id: selected_instance_id,
-            handle_number: selected_identity.number,
+            handle_number: selected_identity.number(),
         });
     }
 
     let mut by_ticket_identity: BTreeMap<TicketIdentity, Vec<String>> = BTreeMap::new();
     for candidate in delivered {
         // Duplicate roots are only conflicts for the same forge ticket. The
-        // numeric id alone is not unique across forges or SourceHut trackers.
+        // numeric id alone is not unique across forges, GitHub repositories,
+        // or SourceHut trackers.
         if let Some(identity) = candidate.identity {
             by_ticket_identity
                 .entry(identity)
@@ -174,7 +196,7 @@ pub fn validate_scoped_work_unit_identity(
     {
         instance_ids.sort();
         return Err(WorkUnitIdentityError::DuplicateTicketRoots {
-            handle_number: selected_identity.number,
+            handle_number: selected_identity.number(),
             instance_ids,
         });
     }
@@ -189,16 +211,40 @@ fn handle_identity(value: &Value) -> Option<TicketIdentity> {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let sourcehut_tracker_id = if forge_tag == "sourcehut" {
-        handle.get("tracker_id").and_then(Value::as_u64)
-    } else {
-        None
+    let number = handle.get("number")?.as_u64()?;
+    match forge_tag.as_str() {
+        "github" => Some(TicketIdentity::Github {
+            forge_tag,
+            repository: github_repository_identity(handle.get("url")?.as_str()?),
+            number,
+        }),
+        "sourcehut" => Some(TicketIdentity::Sourcehut {
+            forge_tag,
+            tracker_id: handle.get("tracker_id")?.as_u64()?,
+            number,
+        }),
+        _ => Some(TicketIdentity::Other { forge_tag, number }),
+    }
+}
+
+fn github_repository_identity(url: &str) -> String {
+    let Some(rest) = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+    else {
+        return url.to_string();
     };
-    Some(TicketIdentity {
-        forge_tag,
-        sourcehut_tracker_id,
-        number: handle.get("number")?.as_u64()?,
-    })
+    let mut segments = rest.split('/');
+    let Some(owner) = segments.next() else {
+        return url.to_string();
+    };
+    let Some(repo) = segments.next() else {
+        return url.to_string();
+    };
+    if owner.is_empty() || repo.is_empty() {
+        return url.to_string();
+    }
+    format!("{owner}/{repo}")
 }
 
 fn instance_ticket_number(instance_id: &str) -> Option<u64> {
@@ -289,9 +335,13 @@ mod tests {
     }
 
     fn github_handle(number: u64) -> Value {
+        github_repository_handle("tesserine/groundwork", number)
+    }
+
+    fn github_repository_handle(repository: &str, number: u64) -> Value {
         json!({
             "forge_tag": "github",
-            "url": format!("https://github.com/tesserine/groundwork/issues/{number}"),
+            "url": format!("https://github.com/{repository}/issues/{number}"),
             "number": number
         })
     }
@@ -480,6 +530,53 @@ mod tests {
 
         validate_scoped_work_unit_identity(&store, "work-unit-5-github-ticket").unwrap();
         validate_scoped_work_unit_identity(&store, "work-unit-5-sourcehut-ticket").unwrap();
+    }
+
+    #[test]
+    fn same_number_on_different_github_repositories_is_not_a_duplicate_ticket_root() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = test_store(&tmp);
+        record_work_unit(
+            &mut store,
+            &tmp,
+            "work-unit-5-groundwork-ticket",
+            Some(github_repository_handle("tesserine/groundwork", 5)),
+        );
+        record_work_unit(
+            &mut store,
+            &tmp,
+            "work-unit-5-runa-ticket",
+            Some(github_repository_handle("tesserine/runa", 5)),
+        );
+
+        validate_scoped_work_unit_identity(&store, "work-unit-5-groundwork-ticket").unwrap();
+        validate_scoped_work_unit_identity(&store, "work-unit-5-runa-ticket").unwrap();
+    }
+
+    #[test]
+    fn same_number_on_same_github_repository_is_a_duplicate_ticket_root() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = test_store(&tmp);
+        record_work_unit(
+            &mut store,
+            &tmp,
+            "work-unit-5-groundwork-ticket",
+            Some(github_repository_handle("tesserine/groundwork", 5)),
+        );
+        record_work_unit(
+            &mut store,
+            &tmp,
+            "work-unit-5-renamed-groundwork-ticket",
+            Some(github_repository_handle("tesserine/groundwork", 5)),
+        );
+
+        let error = validate_scoped_work_unit_identity(&store, "work-unit-5-groundwork-ticket")
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            WorkUnitIdentityError::DuplicateTicketRoots { .. }
+        ));
     }
 
     #[test]
