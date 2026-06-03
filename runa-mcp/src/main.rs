@@ -56,7 +56,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         configure_tracing(Some(&config.logging))?;
     }
 
-    let loaded = project::load(&working_dir, config_ref)?;
+    let mut loaded = project::load(&working_dir, config_ref)?;
+    libagent::scan(&loaded.workspace_dir, &mut loaded.store)?;
+    if let Some(work_unit) = cli.work_unit.as_deref() {
+        libagent::validate_scoped_work_unit(&loaded.store, work_unit)?;
+    }
     let protocol = loaded
         .manifest
         .protocols

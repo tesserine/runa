@@ -51,6 +51,7 @@ pub fn run(
     work_unit: Option<&str>,
 ) -> Result<(), StateError> {
     let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
+    super::validate_scoped_work_unit(&loaded, work_unit)?;
     let scan_findings = protocol_eval::collect_scan_findings(&scan_result, &loaded.workspace_dir);
     let scope = match work_unit {
         Some(work_unit) => libagent::EvaluationScope::Scoped(work_unit),

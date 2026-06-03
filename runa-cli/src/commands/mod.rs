@@ -18,6 +18,7 @@ pub mod step;
 pub enum CommandError {
     Project(ProjectError),
     Scan(libagent::ScanError),
+    WorkUnitScope(libagent::ScopedWorkUnitError),
 }
 
 impl fmt::Display for CommandError {
@@ -25,6 +26,7 @@ impl fmt::Display for CommandError {
         match self {
             CommandError::Project(err) => write!(f, "{err}"),
             CommandError::Scan(err) => write!(f, "{err}"),
+            CommandError::WorkUnitScope(err) => write!(f, "{err}"),
         }
     }
 }
@@ -34,6 +36,7 @@ impl std::error::Error for CommandError {
         match self {
             CommandError::Project(err) => Some(err),
             CommandError::Scan(err) => Some(err),
+            CommandError::WorkUnitScope(err) => Some(err),
         }
     }
 }
@@ -50,6 +53,12 @@ impl From<libagent::ScanError> for CommandError {
     }
 }
 
+impl From<libagent::ScopedWorkUnitError> for CommandError {
+    fn from(err: libagent::ScopedWorkUnitError) -> Self {
+        CommandError::WorkUnitScope(err)
+    }
+}
+
 pub fn load_and_scan(
     working_dir: &Path,
     config_override: Option<&Path>,
@@ -57,4 +66,14 @@ pub fn load_and_scan(
     let mut loaded = project::load(working_dir, config_override)?;
     let scan_result = libagent::scan(&loaded.workspace_dir, &mut loaded.store)?;
     Ok((loaded, scan_result))
+}
+
+pub fn validate_scoped_work_unit(
+    loaded: &LoadedProject,
+    work_unit: Option<&str>,
+) -> Result<(), CommandError> {
+    if let Some(work_unit) = work_unit {
+        libagent::validate_scoped_work_unit(&loaded.store, work_unit)?;
+    }
+    Ok(())
 }
