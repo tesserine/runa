@@ -175,6 +175,182 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert_eq!(scoped_protocols[0]["work_unit"], "wu-a");
 }
 
+fn setup_ticket_backed_work_unit_project(
+    work_units: &[(&str, &str)],
+) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "claim"
+
+[[protocols]]
+name = "take"
+requires = ["work-unit"]
+produces = ["claim"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+"#,
+        &[
+            (
+                "work-unit",
+                r#"{"type":"object","required":["title","description","acceptance_criteria"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"handle":{"oneOf":[{"type":"object","required":["forge_tag","url","number"],"properties":{"forge_tag":{"const":"github"},"url":{"type":"string"},"number":{"type":"integer"}}},{"type":"object","required":["forge_tag","tracker_id","number"],"properties":{"forge_tag":{"const":"sourcehut"},"tracker_id":{"type":"integer"},"number":{"type":"integer"}}}]}}}"#,
+            ),
+            (
+                "claim",
+                r#"{"type":"object","required":["scope","work_unit"],"properties":{"scope":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+            ),
+        ],
+        &["take"],
+    );
+
+    let project_dir = dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let work_unit_dir = project_dir.join(".runa/workspace/work-unit");
+    std::fs::create_dir_all(&work_unit_dir).unwrap();
+    for (instance_id, body) in work_units {
+        std::fs::write(work_unit_dir.join(format!("{instance_id}.json")), body).unwrap();
+    }
+
+    (dir, project_dir)
+}
+
+#[test]
+fn state_accepts_ticket_backed_work_unit_when_instance_id_agrees_with_handle_number() {
+    let (_dir, project_dir) = setup_ticket_backed_work_unit_project(&[(
+        "work-unit-363-ticket-handle",
+        r#"{"title":"Ticket handle","description":"A tracker-backed unit.","acceptance_criteria":["identity agrees"],"handle":{"forge_tag":"github","url":"https://github.com/tesserine/groundwork/issues/363","number":363}}"#,
+    )]);
+
+    let output = runa_bin()
+        .arg("state")
+        .arg("--work-unit")
+        .arg("work-unit-363-ticket-handle")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn scoped_cli_commands_reject_ticket_backed_work_unit_when_instance_id_disagrees_with_handle_number()
+ {
+    let (_dir, project_dir) = setup_ticket_backed_work_unit_project(&[(
+        "work-unit-364-ticket-handle",
+        r#"{"title":"Ticket handle","description":"A tracker-backed unit.","acceptance_criteria":["identity disagrees"],"handle":{"forge_tag":"github","url":"https://github.com/tesserine/groundwork/issues/363","number":363}}"#,
+    )]);
+
+    for command in [
+        vec!["state", "--work-unit", "work-unit-364-ticket-handle"],
+        vec![
+            "step",
+            "--dry-run",
+            "--work-unit",
+            "work-unit-364-ticket-handle",
+        ],
+        vec![
+            "run",
+            "--dry-run",
+            "--work-unit",
+            "work-unit-364-ticket-handle",
+        ],
+    ] {
+        let output = runa_bin()
+            .args(command)
+            .current_dir(&project_dir)
+            .output()
+            .unwrap();
+
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("work-unit-364-ticket-handle"),
+            "stderr: {stderr}"
+        );
+        assert!(stderr.contains("363"), "stderr: {stderr}");
+    }
+}
+
+#[test]
+fn state_rejects_duplicate_ticket_backed_work_unit_roots() {
+    let (_dir, project_dir) = setup_ticket_backed_work_unit_project(&[
+        (
+            "work-unit-363-ticket-handle",
+            r#"{"title":"Ticket handle","description":"A tracker-backed unit.","acceptance_criteria":["identity agrees"],"handle":{"forge_tag":"github","url":"https://github.com/tesserine/groundwork/issues/363","number":363}}"#,
+        ),
+        (
+            "work-unit-363-renamed-ticket-handle",
+            r#"{"title":"Renamed ticket handle","description":"A duplicate tracker-backed unit.","acceptance_criteria":["identity agrees"],"handle":{"forge_tag":"github","url":"https://github.com/tesserine/groundwork/issues/363","number":363}}"#,
+        ),
+    ]);
+
+    let output = runa_bin()
+        .arg("state")
+        .arg("--work-unit")
+        .arg("work-unit-363-renamed-ticket-handle")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("work-unit-363-ticket-handle"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("work-unit-363-renamed-ticket-handle"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn state_preserves_scoped_behavior_for_no_handle_work_units_and_no_matching_artifact() {
+    let (_dir, project_dir) = setup_ticket_backed_work_unit_project(&[(
+        "work-unit-freeform",
+        r#"{"title":"No handle","description":"A non-tracker unit.","acceptance_criteria":["existing behavior remains"]}"#,
+    )]);
+
+    let no_handle = runa_bin()
+        .arg("state")
+        .arg("--work-unit")
+        .arg("work-unit-freeform")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        no_handle.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&no_handle.stderr)
+    );
+
+    let no_matching_artifact = runa_bin()
+        .arg("state")
+        .arg("--work-unit")
+        .arg("work-unit-missing")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        no_matching_artifact.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&no_matching_artifact.stderr)
+    );
+}
+
 #[test]
 fn state_scoped_ignores_unscoped_cycle_participants() {
     let dir = tempfile::tempdir().unwrap();

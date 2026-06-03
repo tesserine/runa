@@ -57,6 +57,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let loaded = project::load(&working_dir, config_ref)?;
+    if let Some(work_unit) = cli.work_unit.as_deref() {
+        libagent::validate_scoped_work_unit_identity(&loaded.store, work_unit)?;
+    }
     let protocol = loaded
         .manifest
         .protocols

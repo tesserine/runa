@@ -34,6 +34,7 @@ pub mod transcript;
 pub mod trigger;
 pub(crate) mod util;
 pub mod validation;
+pub mod work_unit_identity;
 pub use enforcement::{
     ArtifactFailure, EnforcementError, Phase, Relationship, enforce_postconditions,
     enforce_preconditions,
@@ -63,6 +64,7 @@ pub use store::{
 };
 pub use trigger::{TriggerContext, TriggerResult, evaluate as evaluate_trigger};
 pub use validation::{ValidationError, Violation};
+pub use work_unit_identity::{WorkUnitIdentityError, validate_scoped_work_unit_identity};
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

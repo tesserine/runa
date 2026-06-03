@@ -147,6 +147,43 @@ fn setup_project() -> tempfile::TempDir {
     dir
 }
 
+fn ticket_backed_manifest_toml() -> &'static str {
+    r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "claim"
+
+[[protocols]]
+name = "take"
+requires = ["work-unit"]
+produces = ["claim"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+"#
+}
+
+fn ticket_backed_schemas() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "work-unit",
+            r#"{"type":"object","required":["title","description","acceptance_criteria"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"handle":{"oneOf":[{"type":"object","required":["forge_tag","url","number"],"properties":{"forge_tag":{"const":"github"},"url":{"type":"string"},"number":{"type":"integer"}}},{"type":"object","required":["forge_tag","tracker_id","number"],"properties":{"forge_tag":{"const":"sourcehut"},"tracker_id":{"type":"integer"},"number":{"type":"integer"}}}]}}}"#,
+        ),
+        (
+            "claim",
+            r#"{"type":"object","required":["scope","work_unit"],"properties":{"scope":{"type":"string"},"work_unit":{"type":"string"}}}"#,
+        ),
+    ]
+}
+
+fn scan_project(project_dir: &Path) {
+    let mut loaded = libagent::project::load(project_dir, None).unwrap();
+    libagent::scan(&loaded.workspace_dir, &mut loaded.store).unwrap();
+}
+
 #[test]
 fn missing_protocol_argument_fails_clearly() {
     let dir = tempfile::tempdir().unwrap();
@@ -177,6 +214,45 @@ fn unknown_protocol_name_references_manifest() {
     assert!(stderr.contains("missing"), "stderr: {stderr}");
     assert!(stderr.contains("manifest"), "stderr: {stderr}");
     assert!(stderr.contains("groundwork"), "stderr: {stderr}");
+}
+
+#[test]
+fn mcp_rejects_ticket_backed_work_unit_when_instance_id_disagrees_with_handle_number() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        ticket_backed_manifest_toml(),
+        &ticket_backed_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    let work_unit_dir = project_dir.join(".runa/workspace/work-unit");
+    fs::create_dir_all(&work_unit_dir).unwrap();
+    fs::write(
+        work_unit_dir.join("work-unit-364-ticket-handle.json"),
+        r#"{"title":"Ticket handle","description":"A tracker-backed unit.","acceptance_criteria":["identity disagrees"],"handle":{"forge_tag":"github","url":"https://github.com/tesserine/groundwork/issues/363","number":363}}"#,
+    )
+    .unwrap();
+    scan_project(&project_dir);
+
+    let output = StdCommand::new(env!("CARGO_BIN_EXE_runa-mcp"))
+        .arg("--protocol")
+        .arg("take")
+        .arg("--work-unit")
+        .arg("work-unit-364-ticket-handle")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("work-unit-364-ticket-handle"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("363"), "stderr: {stderr}");
 }
 
 #[tokio::test]
