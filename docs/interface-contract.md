@@ -1,6 +1,11 @@
 # runa Interface Contract
 
-This document defines the boundary between runa (the runtime) and methodology plugins. Everything inside this boundary, runa sees and enforces. Everything outside, methodologies own entirely.
+This document defines the boundary between runa (the runtime) and methodology
+plugins. Everything inside this boundary, runa sees and enforces. Everything
+outside, methodologies own entirely.
+
+For the companion boundary between runa and the drivers or agents that operate
+a session, see the [Session Surface Contract](session-surface-contract.md).
 
 ## Three Primitives
 

@@ -144,6 +144,7 @@ Both projects are in early development.
 - [CLI Reference](docs/cli-reference.md) — Commands, configuration, and MCP server
 - [Methodology Authoring Guide](docs/methodology-authoring-guide.md) — Building a first methodology from scratch
 - [Interface Contract](docs/interface-contract.md) — The three primitives defining the methodology-runtime boundary
+- [Session Surface Contract](docs/session-surface-contract.md) — The mode-agnostic driver/agent boundary for session invocation and lifecycle movement
 - [Architecture](ARCHITECTURE.md) — Workspace structure, data flow, module descriptions, disk layout
 - [Contributing](CONTRIBUTING.md) — Conventions for landing PRs
 - [Releasing](RELEASING.md) — Repository release operation and verification
