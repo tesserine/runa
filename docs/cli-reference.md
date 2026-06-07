@@ -249,9 +249,11 @@ and current-step output tools in the same connection:
 - `readiness` — rescans and reports scoped protocol readiness using the same
   evaluation path as `runa state`.
 - `next-protocol-context` — returns the current step's structured context view
-  plus the exact prompt text produced by `context::render_context_prompt`.
+  plus the exact prompt text produced by `context::render_context_prompt`; the
+  context and readiness in the response come from the same rescan.
 - `advance` — enforces postconditions for the current step, records execution
-  metadata for that same step, and selects the next ready step.
+  metadata for that same step, and selects the next ready step, skipping a
+  candidate already executed in the session unless its relevant inputs changed.
 
 Read driver tools do not retire or replace the current step. Only `advance`
 can retire it. After `advance`, output tools are regenerated from the new

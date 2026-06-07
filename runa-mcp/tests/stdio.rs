@@ -161,6 +161,36 @@ trigger = { type = "on_artifact", name = "claim" }
 "#
 }
 
+fn scoped_may_produce_then_step_manifest_toml() -> &'static str {
+    r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "notes"
+
+[[artifact_types]]
+name = "claim"
+
+[[protocols]]
+name = "alpha_prepare"
+requires = ["work-unit"]
+may_produce = ["notes"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+
+[[protocols]]
+name = "beta_claim"
+requires = ["work-unit"]
+accepts = ["notes"]
+produces = ["claim"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+"#
+}
+
 fn scoped_work_unit_schemas() -> Vec<(&'static str, &'static str)> {
     vec![
         (
@@ -178,6 +208,15 @@ fn scoped_two_step_schemas() -> Vec<(&'static str, &'static str)> {
     let mut schemas = scoped_work_unit_schemas();
     schemas.push((
         "implementation",
+        r#"{"type":"object","required":["work_unit","summary"],"properties":{"work_unit":{"type":"string"},"summary":{"type":"string"}}}"#,
+    ));
+    schemas
+}
+
+fn scoped_may_produce_then_step_schemas() -> Vec<(&'static str, &'static str)> {
+    let mut schemas = scoped_work_unit_schemas();
+    schemas.push((
+        "notes",
         r#"{"type":"object","required":["work_unit","summary"],"properties":{"work_unit":{"type":"string"},"summary":{"type":"string"}}}"#,
     ));
     schemas
@@ -242,6 +281,19 @@ fn expected_take_prompt(project_dir: &Path) -> String {
         .unwrap();
     let context = libagent::context::build_context(protocol, &loaded.store, Some("work-unit-166"));
     libagent::context::render_context_prompt(&context)
+}
+
+fn expected_take_context(project_dir: &Path) -> serde_json::Value {
+    let mut loaded = libagent::project::load(project_dir, None).unwrap();
+    libagent::scan(&loaded.workspace_dir, &mut loaded.store).unwrap();
+    let protocol = loaded
+        .manifest
+        .protocols
+        .iter()
+        .find(|protocol| protocol.name == "take")
+        .unwrap();
+    let context = libagent::context::build_context(protocol, &loaded.store, Some("work-unit-166"));
+    serde_json::to_value(libagent::context::ContextInjectionView::from(&context)).unwrap()
 }
 
 fn expected_readiness(project_dir: &Path) -> serde_json::Value {
@@ -540,6 +592,45 @@ async fn next_protocol_context_returns_structured_context_and_verbatim_prompt() 
 }
 
 #[tokio::test]
+async fn next_protocol_context_returns_context_from_the_rescan() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_work_unit_manifest_toml(),
+        &scoped_work_unit_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    write_work_unit(&project_dir);
+
+    let service = ().serve(session_command(&project_dir, "interactive")).await.unwrap();
+
+    fs::write(
+        project_dir.join(".runa/workspace/work-unit/work-unit-166.json"),
+        r#"{"title":"Changed scope","description":"Re-read the file","acceptance_criteria":["Fresh context"],"handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/166","number":166}}"#,
+    )
+    .unwrap();
+
+    let payload = tool_result_json(
+        service
+            .call_tool(CallToolRequestParam {
+                name: "next-protocol-context".into(),
+                arguments: Some(serde_json::Map::new()),
+            })
+            .await
+            .unwrap(),
+    );
+
+    assert_eq!(payload["current_step"]["protocol"], "take");
+    assert_eq!(payload["context"], expected_take_context(&project_dir));
+    assert_eq!(payload["readiness"], expected_readiness(&project_dir));
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn session_surface_is_caller_agnostic_for_tools_readiness_and_context() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = write_methodology(
@@ -713,6 +804,47 @@ async fn advance_regenerates_output_tools_for_the_new_current_step() {
             "advance",
             "implementation"
         ]
+    );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn advance_skips_may_produce_only_current_step_already_executed_this_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_may_produce_then_step_manifest_toml(),
+        &scoped_may_produce_then_step_schemas(),
+        &["alpha_prepare", "beta_claim"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    write_work_unit(&project_dir);
+
+    let service = ().serve(session_command(&project_dir, "interactive")).await.unwrap();
+
+    assert_eq!(
+        tool_names(&service.list_all_tools().await.unwrap()),
+        vec!["readiness", "next-protocol-context", "advance", "notes"]
+    );
+
+    let advance = tool_result_json(
+        service
+            .call_tool(CallToolRequestParam {
+                name: "advance".into(),
+                arguments: Some(serde_json::Map::new()),
+            })
+            .await
+            .unwrap(),
+    );
+
+    assert_eq!(advance["advanced_step"]["protocol"], "alpha_prepare");
+    assert_eq!(advance["current_step"]["protocol"], "beta_claim");
+    assert_eq!(
+        tool_names(&service.list_all_tools().await.unwrap()),
+        vec!["readiness", "next-protocol-context", "advance", "claim"]
     );
 
     service.cancel().await.unwrap();

@@ -15,6 +15,7 @@ use crate::{
     ArtifactFailure, EvaluationScope, ExecutionRecord, ProtocolDeclaration, ScanResult,
     ValidationStatus,
 };
+use crate::{CandidateKey, candidate_key, retain_exhausted_candidates};
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -194,11 +195,18 @@ pub struct AdvanceReport {
     pub readiness: ReadinessReport,
 }
 
+pub struct NextContextReport {
+    pub current_step: Option<StepSummary>,
+    pub context: Option<ContextInjection>,
+    pub readiness: ReadinessReport,
+}
+
 pub struct Session {
     loaded: LoadedProject,
     working_dir: PathBuf,
     work_unit: String,
     current_step: Option<PlannedEntry>,
+    exhausted: HashSet<CandidateKey>,
     last_readiness: ReadinessReport,
 }
 
@@ -487,6 +495,7 @@ impl Session {
             working_dir,
             work_unit,
             current_step,
+            exhausted: HashSet::new(),
             last_readiness,
         })
     }
@@ -517,9 +526,18 @@ impl Session {
         Ok(&self.last_readiness)
     }
 
-    pub fn next_context(&mut self) -> Result<Option<ContextInjection>, SessionError> {
-        let _ = self.readiness()?;
-        Ok(self.current_step.as_ref().map(|step| step.context.clone()))
+    pub fn next_context(&mut self) -> Result<NextContextReport, SessionError> {
+        let state = self.scan_and_evaluate()?;
+        self.refresh_current_step_context(&state);
+        self.last_readiness = readiness_report(&self.loaded.manifest.name, &state);
+
+        Ok(NextContextReport {
+            current_step: self.current_step.as_ref().map(StepSummary::from),
+            context: self.current_step.as_ref().and_then(|step| {
+                find_matching_step(&state.planned_entries, step).map(|fresh| fresh.context.clone())
+            }),
+            readiness: self.last_readiness.clone(),
+        })
     }
 
     pub fn advance<F>(&mut self, validate_current: F) -> Result<AdvanceReport, SessionError>
@@ -546,10 +564,12 @@ impl Session {
                     step.execution_record.clone(),
                 )
                 .map_err(SessionError::Store)?;
+            self.exhausted
+                .insert(candidate_key(&step.protocol, step.work_unit.as_deref()));
         }
 
         let state = self.scan_and_evaluate()?;
-        let next_step = state.planned_entries.first().cloned();
+        let next_step = first_unexhausted_step(&state.planned_entries, &self.exhausted);
         if let Some(step) = &next_step {
             validate_current(step, &self.loaded).map_err(|reason| {
                 SessionError::UnservableStep {
@@ -572,12 +592,26 @@ impl Session {
     fn scan_and_evaluate(&mut self) -> Result<ExecutionState, SessionError> {
         let scan_result = crate::scan(&self.loaded.workspace_dir, &mut self.loaded.store)
             .map_err(SessionError::Scan)?;
+        retain_exhausted_candidates(
+            &self.loaded.manifest.protocols,
+            &mut self.exhausted,
+            &scan_result,
+        );
         Ok(evaluate_execution_state(
             &self.loaded,
             &self.working_dir,
             &scan_result,
             EvaluationScope::Scoped(&self.work_unit),
         ))
+    }
+
+    fn refresh_current_step_context(&mut self, state: &ExecutionState) {
+        let Some(current) = &self.current_step else {
+            return;
+        };
+        if let Some(fresh) = find_matching_step(&state.planned_entries, current) {
+            self.current_step = Some(fresh.clone());
+        }
     }
 }
 
@@ -587,6 +621,28 @@ fn readiness_report(methodology: &str, state: &ExecutionState) -> ReadinessRepor
         scan_warnings: state.scan_findings.warnings.clone(),
         protocols: state.evaluated.json_protocols(),
     }
+}
+
+fn first_unexhausted_step(
+    planned_entries: &[PlannedEntry],
+    exhausted: &HashSet<CandidateKey>,
+) -> Option<PlannedEntry> {
+    planned_entries
+        .iter()
+        .find(|entry| {
+            let key = candidate_key(&entry.protocol, entry.work_unit.as_deref());
+            !exhausted.contains(&key)
+        })
+        .cloned()
+}
+
+fn find_matching_step<'a>(
+    planned_entries: &'a [PlannedEntry],
+    current: &PlannedEntry,
+) -> Option<&'a PlannedEntry> {
+    planned_entries
+        .iter()
+        .find(|entry| entry.protocol == current.protocol && entry.work_unit == current.work_unit)
 }
 
 fn collect_inputs(

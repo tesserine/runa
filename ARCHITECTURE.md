@@ -106,9 +106,11 @@ Shared readiness and session-state layer. Converts scan results into the
 ordered READY/BLOCKED/WAITING report shape, builds next-step execution context
 and execution records, and holds the current step for MCP session mode. Read
 operations may rescan and report readiness, but they do not change the current
-step. `advance` enforces postconditions for the current step, records execution
-metadata for that same step, retires it, and selects the next ready step from a
-fresh scan.
+step; `next-protocol-context` refreshes the current step's cached context from
+the same scan used for its readiness report. `advance` enforces postconditions
+for the current step, records execution metadata for that same step, retires
+it, and selects the next ready step from a fresh scan while skipping candidates
+already executed in the session unless their relevant inputs changed.
 
 ### `scoped_identity.rs`
 

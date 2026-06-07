@@ -36,7 +36,7 @@ The required session verbs are:
 | Verb | Semantics |
 | --- | --- |
 | `readiness` | Reconcile current artifact state and evaluate the methodology graph for the session scope. The result classifies protocols with the same ready, blocked, waiting, currentness, scan-gap, and scope rules runa applies everywhere else. |
-| `next context` | Deliver the execution context for a ready protocol from runa's validated input set: protocol instructions, scoped work unit when present, valid required inputs, available accepted inputs, and expected outputs. The client does not query the store directly or synthesize context. |
+| `next context` | Deliver the execution context for a ready protocol from runa's validated input set: protocol instructions, scoped work unit when present, valid required inputs, available accepted inputs, and expected outputs. If the read reconciles artifact state, the returned context and readiness are derived from that same scan. The client does not query the store directly or synthesize context. |
 | `record output` | Accept an output artifact only through the protocol's declared output contract. Runa validates the artifact against the methodology schema, applies scoped session metadata where the runtime owns it, rejects invalid output, and records only valid output as runtime state. |
 | `advance` | Re-evaluate lifecycle progress from the validated artifact state. Advancement follows the methodology dependency graph, trigger rules, preconditions, postconditions, and required disposition artifacts. It is not a separate approval operation. |
 
@@ -82,6 +82,11 @@ That loop ownership difference does not change the lifecycle. Both clients
 observe the same readiness, receive the same context for the same ready
 protocol, record outputs through the same validation gate, and advance only
 through the same graph and typed dispositions.
+
+Within one session, advancement does not re-select a candidate already executed
+by that session unless that candidate's relevant inputs have changed. This keeps
+outputless and optional-output-only protocols from looping ahead of later ready
+work while preserving reopening when new input state makes rerun meaningful.
 
 Any driver path that hand-rolls readiness, context construction, artifact
 recording, or lifecycle transition logic is outside this contract. The valid

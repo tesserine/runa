@@ -18,6 +18,33 @@ use crate::trigger::{
     TriggerContext, TriggerResult, derived_completion_timestamp, evaluate as evaluate_trigger,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CandidateKey {
+    pub protocol: String,
+    pub work_unit: Option<String>,
+}
+
+pub fn candidate_key(protocol: &str, work_unit: Option<&str>) -> CandidateKey {
+    CandidateKey {
+        protocol: protocol.to_string(),
+        work_unit: work_unit.map(str::to_owned),
+    }
+}
+
+pub fn retain_exhausted_candidates(
+    protocols: &[ProtocolDeclaration],
+    exhausted: &mut HashSet<CandidateKey>,
+    scan_result: &crate::ScanResult,
+) {
+    exhausted.retain(|candidate| {
+        let protocol = protocols
+            .iter()
+            .find(|protocol| protocol.name == candidate.protocol)
+            .expect("planned protocol must exist in manifest");
+        !protocol_relevant_inputs_changed(protocol, candidate.work_unit.as_deref(), scan_result)
+    });
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvaluationScope<'a> {
     Unscoped,

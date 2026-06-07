@@ -8,6 +8,7 @@ use std::sync::{
 };
 
 use libagent::context::ContextInjectionView;
+use libagent::{CandidateKey, candidate_key};
 use serde::{Serialize, Serializer};
 use tracing::info;
 
@@ -157,12 +158,6 @@ struct RunPlanJson {
     context: Option<libagent::context::ContextInjection>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct CandidateKey {
-    protocol: String,
-    work_unit: Option<String>,
-}
-
 fn serialize_optional_context<S>(
     context: &Option<libagent::context::ContextInjection>,
     serializer: S,
@@ -173,13 +168,6 @@ where
     match context {
         Some(context) => ContextInjectionView::from(context).serialize(serializer),
         None => serializer.serialize_none(),
-    }
-}
-
-fn candidate_key(protocol: &str, work_unit: Option<&str>) -> CandidateKey {
-    CandidateKey {
-        protocol: protocol.to_string(),
-        work_unit: work_unit.map(str::to_owned),
     }
 }
 
@@ -417,19 +405,7 @@ fn refresh_state_after_scan(
     scan_result: &libagent::ScanResult,
     scope: libagent::EvaluationScope<'_>,
 ) -> ExecutionState {
-    exhausted.retain(|candidate| {
-        let protocol = loaded
-            .manifest
-            .protocols
-            .iter()
-            .find(|protocol| protocol.name == candidate.protocol)
-            .expect("planned protocol must exist in manifest");
-        !libagent::protocol_relevant_inputs_changed(
-            protocol,
-            candidate.work_unit.as_deref(),
-            scan_result,
-        )
-    });
+    libagent::retain_exhausted_candidates(&loaded.manifest.protocols, exhausted, scan_result);
 
     evaluate_execution_state(loaded, working_dir, scan_result, scope)
 }

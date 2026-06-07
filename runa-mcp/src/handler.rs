@@ -545,21 +545,17 @@ fn call_driver_tool(
             })
         }
         "next-protocol-context" => {
-            let current_step = state
-                .session
-                .current_step()
-                .map(libagent::StepSummary::from);
-            let context = state.session.next_context().map_err(session_mcp_error)?;
-            let prompt = context
+            let report = state.session.next_context().map_err(session_mcp_error)?;
+            let prompt = report
+                .context
                 .as_ref()
                 .map(libagent::context::render_context_prompt);
-            let context_view = context.as_ref().map(ContextInjectionView::from);
-            let readiness = state.session.readiness().map_err(session_mcp_error)?;
+            let context_view = report.context.as_ref().map(ContextInjectionView::from);
             serde_json::json!({
-                "current_step": current_step,
+                "current_step": report.current_step,
                 "context": context_view,
                 "prompt": prompt,
-                "readiness": readiness,
+                "readiness": report.readiness,
             })
         }
         "advance" => {

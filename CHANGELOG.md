@@ -29,6 +29,12 @@ Semantic Versioning.
 
 ### Fixed
 
+- `next-protocol-context` now returns current-step context evaluated from the
+  same rescan as its readiness report, instead of mixing fresh readiness with a
+  cached context.
+- Session `advance` now skips a candidate already executed in that session when
+  its relevant inputs have not changed, so outputless and `may_produce`-only
+  steps do not loop ahead of later ready work.
 - Required output choice freshness and dry-run projection now stay conservative
   when choice-member scans are incomplete, while still projecting downstream
   cascades through an already-present exactly-one choice member.
