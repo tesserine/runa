@@ -37,6 +37,9 @@ Semantic Versioning.
 - Session-mode `runa-mcp` now keeps output tools aligned with the current
   pending protocol after `advance` and rejects unsatisfiable required-output
   schemas before serving.
+- Session-mode `runa-mcp` now honors startup scan gaps before the first
+  refresh verb and rejects pending output artifact names that collide with
+  reserved session driver verbs.
 
 ## [0.1.2] — 2026-05-17
 

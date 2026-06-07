@@ -89,8 +89,10 @@ impl SessionHandler {
         working_dir: PathBuf,
         work_unit: String,
         workspace_dir: PathBuf,
+        scan_result: libagent::ScanResult,
     ) -> Result<Self, String> {
-        let session_state = evaluate_loaded_session(&loaded, &working_dir, &work_unit);
+        let session_state =
+            evaluate_loaded_session(&loaded, &working_dir, &work_unit, &scan_result);
         let pending = session_state.planned_entries.into_iter().next();
         validate_session_pending(&loaded, pending.as_ref(), &work_unit)?;
 
@@ -264,12 +266,12 @@ fn evaluate_loaded_session(
     loaded: &LoadedProject,
     working_dir: &Path,
     work_unit: &str,
+    scan_result: &libagent::ScanResult,
 ) -> libagent::SessionState {
-    let scan_result = libagent::ScanResult::default();
     libagent::evaluate_session_state(
         loaded,
         working_dir,
-        &scan_result,
+        scan_result,
         libagent::EvaluationScope::Scoped(work_unit),
     )
 }
@@ -289,6 +291,12 @@ fn validate_session_pending(
         .find(|protocol| protocol.name == entry.protocol)
         .ok_or_else(|| format!("planned protocol '{}' is missing", entry.protocol))?;
     validate_output_types(protocol, &loaded.store, Some(work_unit)).map_err(|error| {
+        format!(
+            "protocol '{}' cannot be served via MCP tools: {error}",
+            protocol.name
+        )
+    })?;
+    validate_session_output_tool_names(protocol).map_err(|error| {
         format!(
             "protocol '{}' cannot be served via MCP tools: {error}",
             protocol.name
@@ -325,6 +333,15 @@ fn session_tools_and_schemas(
                 None,
             )
         })?;
+        validate_session_output_tool_names(protocol).map_err(|error| {
+            McpError::internal_error(
+                format!(
+                    "protocol '{}' cannot be served via MCP tools: {error}",
+                    protocol.name
+                ),
+                None,
+            )
+        })?;
         let (output_tools, output_schemas) =
             build_output_tools(protocol, Some(work_unit), &state.loaded.store);
         tools.extend(output_tools);
@@ -336,16 +353,38 @@ fn session_tools_and_schemas(
 
 fn driver_tools() -> Vec<Tool> {
     vec![
-        driver_tool("readiness", "Report session readiness for the active scope"),
         driver_tool(
-            "next-protocol-context",
+            SESSION_DRIVER_TOOL_NAMES[0],
+            "Report session readiness for the active scope",
+        ),
+        driver_tool(
+            SESSION_DRIVER_TOOL_NAMES[1],
             "Return the next ready protocol context for the active scope",
         ),
         driver_tool(
-            "advance",
+            SESSION_DRIVER_TOOL_NAMES[2],
             "Reconcile produced outputs, record execution, and refresh readiness",
         ),
     ]
+}
+
+const SESSION_DRIVER_TOOL_NAMES: [&str; 3] = ["readiness", "next-protocol-context", "advance"];
+
+fn validate_session_output_tool_names(protocol: &ProtocolDeclaration) -> Result<(), String> {
+    for type_name in protocol
+        .produces
+        .iter()
+        .chain(protocol.required_choice_members())
+        .chain(protocol.may_produce.iter())
+    {
+        if SESSION_DRIVER_TOOL_NAMES.contains(&type_name.as_str()) {
+            return Err(format!(
+                "output type '{type_name}' conflicts with reserved session driver verb"
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn driver_tool(name: &'static str, description: &'static str) -> Tool {

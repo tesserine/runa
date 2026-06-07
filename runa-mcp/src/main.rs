@@ -61,7 +61,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut loaded = project::load(&working_dir, config_ref)?;
-    libagent::scan(&loaded.workspace_dir, &mut loaded.store)?;
+    let scan_result = libagent::scan(&loaded.workspace_dir, &mut loaded.store)?;
     if let Some(work_unit) = cli.work_unit.as_deref() {
         libagent::validate_scoped_work_unit(&loaded.store, work_unit)?;
     }
@@ -78,8 +78,14 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         );
 
         let workspace_dir = loaded.workspace_dir.clone();
-        let handler = SessionHandler::new(loaded, working_dir.clone(), work_unit, workspace_dir)
-            .map_err(|err| format!("session cannot be served via MCP tools: {err}"))?;
+        let handler = SessionHandler::new(
+            loaded,
+            working_dir.clone(),
+            work_unit,
+            workspace_dir,
+            scan_result,
+        )
+        .map_err(|err| format!("session cannot be served via MCP tools: {err}"))?;
 
         let (stdin, stdout) = io::stdio();
         let service = handler.serve((stdin, stdout)).await.inspect_err(|e| {
