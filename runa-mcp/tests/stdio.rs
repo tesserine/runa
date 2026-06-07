@@ -149,6 +149,16 @@ fn scoped_work_unit_schemas() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+fn scoped_work_unit_with_unsupported_claim_schemas() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "work-unit",
+            r#"{"type":"object","required":["title","description","acceptance_criteria"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"handle":{"type":"object"}}}"#,
+        ),
+        ("claim", r#"{"type":"array","items":{"type":"string"}}"#),
+    ]
+}
+
 fn two_step_session_manifest_toml() -> &'static str {
     r#"
 name = "groundwork"
@@ -1113,6 +1123,139 @@ async fn session_readiness_selects_later_ready_step_and_advertises_tools() {
 }
 
 #[tokio::test]
+async fn session_readiness_rejects_newly_ready_step_with_unservable_required_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_work_unit_manifest_toml(),
+        &scoped_work_unit_with_unsupported_claim_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--session")
+                        .arg("--work-unit")
+                        .arg("work-unit-166")
+                        .env_remove("GROUNDWORK_FORGE_TYPE")
+                        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                        .env("GROUNDWORK_FORGE_NAME", "runa")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    let readiness = service.call_tool(session_call("readiness")).await;
+    assert!(
+        readiness.is_err(),
+        "readiness unexpectedly entered an unservable step: {readiness:?}"
+    );
+
+    let tool_names = service
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec!["readiness", "next-protocol-context", "advance"]
+    );
+
+    let context = service
+        .call_tool(session_call("next-protocol-context"))
+        .await;
+    assert!(
+        context.is_err(),
+        "next-protocol-context unexpectedly found a current step: {context:?}"
+    );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn session_readiness_emits_tool_list_changed_when_current_step_becomes_ready() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        two_step_session_manifest_toml(),
+        &two_step_session_schemas(),
+        &["take", "implement"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    let tool_list_changed = Arc::new(Notify::new());
+    let service = ToolListChangeClient {
+        notify: tool_list_changed.clone(),
+    }
+    .serve(
+        TokioChildProcess::new(
+            Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                cmd.arg("--session")
+                    .arg("--work-unit")
+                    .arg("work-unit-166")
+                    .env_remove("GROUNDWORK_FORGE_TYPE")
+                    .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                    .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                    .env("GROUNDWORK_FORGE_NAME", "runa")
+                    .current_dir(&project_dir);
+            }),
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    service.call_tool(session_call("readiness")).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), tool_list_changed.notified())
+        .await
+        .expect("readiness should emit notifications/tools/list_changed");
+
+    let tool_names = service
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec!["readiness", "next-protocol-context", "advance", "claim"]
+    );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn session_advance_error_preserves_current_step_when_next_step_is_unservable() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = write_methodology(
@@ -1377,12 +1520,9 @@ trigger = { type = "on_artifact", name = "work-unit" }
         )
         .await;
 
-    match service {
-        Ok(service) => {
-            service.cancel().await.unwrap();
-            panic!("session unexpectedly started with reserved may_produce output");
-        }
-        Err(_) => {}
+    if let Ok(service) = service {
+        service.cancel().await.unwrap();
+        panic!("session unexpectedly started with reserved may_produce output");
     }
 }
 

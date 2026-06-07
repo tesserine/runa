@@ -58,8 +58,12 @@ impl RunaHandler {
         config_override: Option<&Path>,
         work_unit: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let session = SessionState::open(working_dir, config_override, work_unit)?;
-        validate_session_current_step(&session)?;
+        let session = SessionState::open_with_validator(
+            working_dir,
+            config_override,
+            work_unit,
+            validate_session_step_output_types,
+        )?;
 
         Ok(Self {
             protocol: None,
@@ -97,21 +101,34 @@ impl RunaHandler {
                 let result = {
                     let mut session = session.lock().unwrap();
                     session
-                        .readiness()
+                        .readiness(validate_session_step_output_types)
                         .map_err(|error| McpError::internal_error(error.to_string(), None))
-                        .and_then(|payload| json_tool_result_with_content(&payload))
                 };
                 return match result {
-                    Ok((result, content)) => {
-                        append_session_driver_event(
-                            "tool_result",
-                            current_step.as_ref(),
-                            tool_name,
-                            None,
-                            Some(&content),
-                        )?;
-                        Ok(result)
-                    }
+                    Ok(transition) => match complete_session_transition(transition, &context).await
+                    {
+                        Ok((result, content)) => {
+                            append_session_driver_event(
+                                "tool_result",
+                                current_step.as_ref(),
+                                tool_name,
+                                None,
+                                Some(&content),
+                            )?;
+                            Ok(result)
+                        }
+                        Err(error) => {
+                            let message = error.to_string();
+                            append_session_driver_event(
+                                "tool_result",
+                                current_step.as_ref(),
+                                tool_name,
+                                None,
+                                Some(&message),
+                            )?;
+                            Err(error)
+                        }
+                    },
                     Err(error) => {
                         let message = error.to_string();
                         append_session_driver_event(
@@ -189,29 +206,24 @@ impl RunaHandler {
                 )?;
                 let result = {
                     let mut session = session.lock().unwrap();
-                    let before_step = session.current_step().cloned();
                     session
-                        .advance_with_validator(|next_protocol, store| {
-                            if let Some(protocol) = next_protocol {
-                                validate_session_output_types(protocol, store, Some(""))
-                            } else {
-                                Ok(())
-                            }
-                        })
+                        .advance_with_validator(validate_session_step_output_types)
                         .map_err(|error| McpError::internal_error(error.to_string(), None))
-                        .and_then(|outcome| {
-                            let after_step = outcome.next_step.clone();
-                            let tool_list_changed = before_step != after_step;
-                            json_tool_result_with_content(&outcome)
-                                .map(|(result, content)| (result, content, tool_list_changed))
-                        })
                 };
                 return match result {
-                    Ok((result, content, tool_list_changed)) => {
-                        if tool_list_changed
-                            && let Err(error) = context.peer.notify_tool_list_changed().await
-                        {
-                            let error = McpError::internal_error(error.to_string(), None);
+                    Ok(transition) => match complete_session_transition(transition, &context).await
+                    {
+                        Ok((result, content)) => {
+                            append_session_driver_event(
+                                "tool_result",
+                                current_step.as_ref(),
+                                tool_name,
+                                None,
+                                Some(&content),
+                            )?;
+                            Ok(result)
+                        }
+                        Err(error) => {
                             let message = error.to_string();
                             append_session_driver_event(
                                 "tool_result",
@@ -220,17 +232,9 @@ impl RunaHandler {
                                 None,
                                 Some(&message),
                             )?;
-                            return Err(error);
+                            Err(error)
                         }
-                        append_session_driver_event(
-                            "tool_result",
-                            current_step.as_ref(),
-                            tool_name,
-                            None,
-                            Some(&content),
-                        )?;
-                        Ok(result)
-                    }
+                    },
                     Err(error) => {
                         let message = error.to_string();
                         append_session_driver_event(
@@ -339,6 +343,19 @@ fn json_tool_result_with_content(
         CallToolResult::success(vec![Content::text(json.clone())]),
         json,
     ))
+}
+
+async fn complete_session_transition<T: serde::Serialize>(
+    transition: libagent::SessionTransition<T>,
+    context: &RequestContext<RoleServer>,
+) -> Result<(CallToolResult, String), McpError> {
+    let result = json_tool_result_with_content(&transition.payload)?;
+    if transition.current_step_changed
+        && let Err(error) = context.peer.notify_tool_list_changed().await
+    {
+        return Err(McpError::internal_error(error.to_string(), None));
+    }
+    Ok(result)
 }
 
 fn extract_instance_id(data: &mut Value) -> Result<String, McpError> {
@@ -473,14 +490,15 @@ fn driver_tools() -> Vec<Tool> {
     ]
 }
 
-fn validate_session_current_step(session: &SessionState) -> Result<(), String> {
-    let Some(step) = session.current_step() else {
-        return Ok(());
-    };
-    let protocol = session
-        .current_protocol()
-        .map_err(|error| error.to_string())?;
-    validate_session_output_types(protocol, session.store(), step.work_unit.as_deref())
+fn validate_session_step_output_types(
+    protocol: Option<&ProtocolDeclaration>,
+    store: &ArtifactStore,
+) -> Result<(), String> {
+    if let Some(protocol) = protocol {
+        validate_session_output_types(protocol, store, Some(""))
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_session_output_types(

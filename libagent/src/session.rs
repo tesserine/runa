@@ -16,6 +16,7 @@ pub enum SessionError {
     NoCurrentStep,
     CurrentStepMissing(String),
     CurrentStepNotReady(String),
+    CurrentStepUnservable(String),
     Postcondition(crate::EnforcementError),
     Record(crate::StoreError),
 }
@@ -40,6 +41,9 @@ impl fmt::Display for SessionError {
                     "current session protocol '{protocol}' is no longer ready"
                 )
             }
+            SessionError::CurrentStepUnservable(message) => {
+                write!(f, "current session step cannot be served: {message}")
+            }
             SessionError::Postcondition(err) => write!(f, "{err}"),
             SessionError::Record(err) => write!(f, "{err}"),
         }
@@ -57,7 +61,8 @@ impl std::error::Error for SessionError {
             SessionError::MissingWorkUnit
             | SessionError::NoCurrentStep
             | SessionError::CurrentStepMissing(_)
-            | SessionError::CurrentStepNotReady(_) => None,
+            | SessionError::CurrentStepNotReady(_)
+            | SessionError::CurrentStepUnservable(_) => None,
         }
     }
 }
@@ -115,9 +120,9 @@ pub enum StepSelector {
 }
 
 #[derive(Serialize)]
-pub struct SessionReadiness<'a> {
+pub struct SessionReadiness {
     pub version: u32,
-    pub methodology: &'a str,
+    pub methodology: String,
     pub scan_warnings: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_step: Option<CurrentStep>,
@@ -125,12 +130,17 @@ pub struct SessionReadiness<'a> {
 }
 
 #[derive(Serialize)]
-pub struct AdvanceOutcome<'a> {
+pub struct AdvanceOutcome {
     pub version: u32,
     pub completed_step: CurrentStep,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_step: Option<CurrentStep>,
-    pub readiness: SessionReadiness<'a>,
+    pub readiness: SessionReadiness,
+}
+
+pub struct SessionTransition<T> {
+    pub payload: T,
+    pub current_step_changed: bool,
 }
 
 pub struct SessionState {
@@ -153,6 +163,23 @@ impl SessionState {
         config_override: Option<&Path>,
         work_unit: Option<String>,
     ) -> Result<Self, SessionError> {
+        Self::open_with_validator(
+            working_dir,
+            config_override,
+            work_unit,
+            |_next_protocol, _store| Ok(()),
+        )
+    }
+
+    pub fn open_with_validator<F>(
+        working_dir: PathBuf,
+        config_override: Option<&Path>,
+        work_unit: Option<String>,
+        validate_step: F,
+    ) -> Result<Self, SessionError>
+    where
+        F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
+    {
         let work_unit = work_unit.ok_or(SessionError::MissingWorkUnit)?;
         let mut loaded = crate::project::load(&working_dir, config_override)?;
         crate::scan(&loaded.workspace_dir, &mut loaded.store)?;
@@ -164,7 +191,8 @@ impl SessionState {
             current_step: None,
             exhausted: HashSet::new(),
         };
-        session.refresh_current_from_scan(StepSelector::FirstReady)?;
+        session
+            .refresh_current_from_scan_with_validator(StepSelector::FirstReady, validate_step)?;
         Ok(session)
     }
 
@@ -192,22 +220,41 @@ impl SessionState {
         self.protocol(&current.protocol)
     }
 
-    pub fn readiness(&mut self) -> Result<SessionReadiness<'_>, SessionError> {
+    pub fn readiness<F>(
+        &mut self,
+        validate_step: F,
+    ) -> Result<SessionTransition<SessionReadiness>, SessionError>
+    where
+        F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
+    {
+        let before_step = self.current_step.clone();
         let scan_result = crate::scan(&self.loaded.workspace_dir, &mut self.loaded.store)?;
         self.refresh_exhaustion_after_scan(&scan_result);
         let scan_findings = crate::collect_scan_findings(&scan_result, &self.loaded.workspace_dir);
         let evaluated = self.evaluate(&scan_findings);
         if self.current_step.is_none() {
-            self.current_step = self.select_next(&evaluated, &scan_findings, &self.exhausted)?;
+            let next_step = self.select_next(&evaluated, &scan_findings, &self.exhausted)?;
+            self.current_step = self.validate_selected_step(next_step, validate_step)?;
         }
-        Ok(self.readiness_from(scan_findings, evaluated))
+        let current_step_changed = before_step != self.current_step;
+        let payload = self.readiness_from(scan_findings, evaluated);
+        Ok(SessionTransition {
+            payload,
+            current_step_changed,
+        })
     }
 
     pub fn next_context(&mut self) -> Result<(ContextInjection, String), SessionError> {
         let scan_result = crate::scan(&self.loaded.workspace_dir, &mut self.loaded.store)?;
         self.refresh_exhaustion_after_scan(&scan_result);
         let scan_findings = crate::collect_scan_findings(&scan_result, &self.loaded.workspace_dir);
-        let protocol = self.current_protocol()?;
+        let current_step = self
+            .current_step
+            .clone()
+            .ok_or(SessionError::NoCurrentStep)?;
+        let evaluated = self.evaluate(&scan_findings);
+        self.ensure_current_step_can_complete(&current_step, &evaluated)?;
+        let protocol = self.protocol(&current_step.protocol)?;
         let mut context =
             crate::context::build_context(protocol, &self.loaded.store, Some(&self.work_unit));
         context.inputs.retain(|input| {
@@ -224,7 +271,7 @@ impl SessionState {
     pub fn advance_with_validator<F>(
         &mut self,
         validate_step: F,
-    ) -> Result<AdvanceOutcome<'_>, SessionError>
+    ) -> Result<SessionTransition<AdvanceOutcome>, SessionError>
     where
         F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
     {
@@ -240,7 +287,7 @@ impl SessionState {
         &mut self,
         select_next: S,
         validate_step: F,
-    ) -> Result<AdvanceOutcome<'_>, SessionError>
+    ) -> Result<SessionTransition<AdvanceOutcome>, SessionError>
     where
         S: FnOnce(
             &Self,
@@ -254,6 +301,7 @@ impl SessionState {
             .current_step
             .clone()
             .ok_or(SessionError::NoCurrentStep)?;
+        let before_step = self.current_step.clone();
         let scan_result = crate::scan(&self.loaded.workspace_dir, &mut self.loaded.store)?;
         let scan_findings = crate::collect_scan_findings(&scan_result, &self.loaded.workspace_dir);
         let current_evaluated = self.evaluate(&scan_findings);
@@ -310,30 +358,17 @@ impl SessionState {
                 return Err(error);
             }
         };
-        let next_protocol = match &next_step {
-            Some(step) => match self.protocol(&step.protocol) {
-                Ok(protocol) => Some(protocol),
-                Err(error) => {
-                    self.loaded.store.restore_execution_record(
-                        &completed_step.protocol,
-                        completed_step.work_unit.as_deref(),
-                        previous_record,
-                    );
-                    return Err(error);
-                }
-            },
-            None => None,
+        let next_step = match self.validate_selected_step(next_step, validate_step) {
+            Ok(next_step) => next_step,
+            Err(error) => {
+                self.loaded.store.restore_execution_record(
+                    &completed_step.protocol,
+                    completed_step.work_unit.as_deref(),
+                    previous_record,
+                );
+                return Err(error);
+            }
         };
-        if let Err(message) = validate_step(next_protocol, &self.loaded.store) {
-            self.loaded.store.restore_execution_record(
-                &completed_step.protocol,
-                completed_step.work_unit.as_deref(),
-                previous_record,
-            );
-            return Err(SessionError::Record(crate::StoreError::Serialization(
-                message,
-            )));
-        }
         if let Err(error) = self.loaded.store.persist_staged_execution_records() {
             self.loaded.store.restore_execution_record(
                 &completed_step.protocol,
@@ -346,21 +381,34 @@ impl SessionState {
         self.current_step = next_step;
         self.exhausted = staged_exhausted;
         let readiness = self.readiness_from(scan_findings, evaluated);
+        let current_step_changed = before_step != self.current_step;
 
-        Ok(AdvanceOutcome {
+        let payload = AdvanceOutcome {
             version: 1,
             completed_step,
             next_step: self.current_step.clone(),
             readiness,
+        };
+        Ok(SessionTransition {
+            payload,
+            current_step_changed,
         })
     }
 
-    fn refresh_current_from_scan(&mut self, _selector: StepSelector) -> Result<(), SessionError> {
+    fn refresh_current_from_scan_with_validator<F>(
+        &mut self,
+        _selector: StepSelector,
+        validate_step: F,
+    ) -> Result<(), SessionError>
+    where
+        F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
+    {
         let scan_result = crate::scan(&self.loaded.workspace_dir, &mut self.loaded.store)?;
         self.refresh_exhaustion_after_scan(&scan_result);
         let scan_findings = crate::collect_scan_findings(&scan_result, &self.loaded.workspace_dir);
         let evaluated = self.evaluate(&scan_findings);
-        self.current_step = self.select_next(&evaluated, &scan_findings, &self.exhausted)?;
+        let next_step = self.select_next(&evaluated, &scan_findings, &self.exhausted)?;
+        self.current_step = self.validate_selected_step(next_step, validate_step)?;
         Ok(())
     }
 
@@ -399,6 +447,22 @@ impl SessionState {
         }
 
         Ok(None)
+    }
+
+    fn validate_selected_step<F>(
+        &self,
+        step: Option<CurrentStep>,
+        validate_step: F,
+    ) -> Result<Option<CurrentStep>, SessionError>
+    where
+        F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
+    {
+        let protocol = match &step {
+            Some(step) => Some(self.protocol(&step.protocol)?),
+            None => None,
+        };
+        validate_step(protocol, &self.loaded.store).map_err(SessionError::CurrentStepUnservable)?;
+        Ok(step)
     }
 
     fn ensure_current_step_can_complete(
@@ -469,10 +533,10 @@ impl SessionState {
         &self,
         scan_findings: crate::ScanFindings,
         evaluated: crate::EvaluatedProtocols,
-    ) -> SessionReadiness<'_> {
+    ) -> SessionReadiness {
         SessionReadiness {
             version: 1,
-            methodology: &self.loaded.manifest.name,
+            methodology: self.loaded.manifest.name.clone(),
             scan_warnings: scan_findings.warnings,
             current_step: self.current_step.clone(),
             protocols: evaluated.json_protocols(),
@@ -629,5 +693,23 @@ trigger = { type = "on_artifact", name = "work-unit" }
                 "{execution_records}"
             );
         }
+    }
+
+    #[test]
+    fn next_context_refuses_current_step_after_required_input_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = write_session_project(dir.path());
+        let mut session =
+            SessionState::open(project_dir.clone(), None, Some("work-unit-166".to_string()))
+                .unwrap();
+
+        fs::remove_file(project_dir.join(".runa/workspace/work-unit/work-unit-166.json")).unwrap();
+
+        let context = session.next_context();
+
+        assert!(matches!(
+            context,
+            Err(SessionError::CurrentStepNotReady(protocol)) if protocol == "take"
+        ));
     }
 }

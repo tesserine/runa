@@ -31,8 +31,8 @@ Semantic Versioning.
 - Required output choice freshness and dry-run projection now stay conservative
   when choice-member scans are incomplete, while still projecting downstream
   cascades through an already-present exactly-one choice member.
-- Session-mode `advance` now emits the advertised MCP
-  `notifications/tools/list_changed` notification when it moves to a different
+- Session-mode driver verbs now emit the advertised MCP
+  `notifications/tools/list_changed` notification when they move to a different
   current step, so caching clients can rediscover the new step's output tools.
 - Session-mode execution records now preserve the input provenance delivered by
   `next-protocol-context` even when inputs change before `advance`.
@@ -40,8 +40,12 @@ Semantic Versioning.
   and does not persist a completed step's execution record until the next step
   has been selected and validated.
 - Session-mode `readiness` now selects a current step when blocked scoped work
-  later becomes ready, and `advance` now rejects completion if the current
-  step's trigger or required inputs are no longer ready.
+  later becomes ready, refuses unservable selected steps, and `advance` now
+  rejects completion if the current step's trigger or required inputs are no
+  longer ready.
+- Session-mode `next-protocol-context` now revalidates the current step's
+  readiness before serving context, refusing stale current steps whose trigger
+  or required inputs are no longer ready.
 - Session-mode MCP driver calls now append transcript tool events, including
   failed driver results, when `RUNA_TRANSCRIPT_DIR` is set.
 - Fixed-protocol `runa-mcp --protocol` servers now keep output tools whose
