@@ -34,6 +34,10 @@ Semantic Versioning.
 - Session-mode `advance` now emits the advertised MCP
   `notifications/tools/list_changed` notification when it moves to a different
   current step, so caching clients can rediscover the new step's output tools.
+- Session-mode execution records now preserve the input provenance delivered by
+  `next-protocol-context` even when inputs change before `advance`.
+- Session-mode MCP driver calls now append transcript tool events, including
+  failed driver results, when `RUNA_TRANSCRIPT_DIR` is set.
 - Fixed-protocol `runa-mcp --protocol` servers now keep output tools whose
   artifact type names match session driver verbs such as `advance`; those names
   are reserved only on the session surface.

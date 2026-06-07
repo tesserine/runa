@@ -83,29 +83,114 @@ impl RunaHandler {
     ) -> Result<CallToolResult, McpError> {
         match tool_name {
             "readiness" => {
-                let mut session = session.lock().unwrap();
-                let result = session
-                    .readiness()
-                    .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-                return json_tool_result(&result);
+                let current_step = session.lock().unwrap().current_step().cloned();
+                append_session_driver_event(
+                    "tool_call",
+                    current_step.as_ref(),
+                    tool_name,
+                    request
+                        .arguments
+                        .as_ref()
+                        .map(|arguments| Value::Object(arguments.clone())),
+                    None,
+                )?;
+                let result = {
+                    let mut session = session.lock().unwrap();
+                    session
+                        .readiness()
+                        .map_err(|error| McpError::internal_error(error.to_string(), None))
+                        .and_then(|payload| json_tool_result_with_content(&payload))
+                };
+                return match result {
+                    Ok((result, content)) => {
+                        append_session_driver_event(
+                            "tool_result",
+                            current_step.as_ref(),
+                            tool_name,
+                            None,
+                            Some(&content),
+                        )?;
+                        Ok(result)
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        append_session_driver_event(
+                            "tool_result",
+                            current_step.as_ref(),
+                            tool_name,
+                            None,
+                            Some(&message),
+                        )?;
+                        Err(error)
+                    }
+                };
             }
             "next-protocol-context" => {
-                let mut session = session.lock().unwrap();
-                let (context, rendered_prompt) = session
-                    .next_context()
-                    .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-                let payload = serde_json::json!({
-                    "version": 1,
-                    "context": ContextInjectionView::from(&context),
-                    "rendered_prompt": rendered_prompt,
-                });
-                return json_tool_result(&payload);
+                let current_step = session.lock().unwrap().current_step().cloned();
+                append_session_driver_event(
+                    "tool_call",
+                    current_step.as_ref(),
+                    tool_name,
+                    request
+                        .arguments
+                        .as_ref()
+                        .map(|arguments| Value::Object(arguments.clone())),
+                    None,
+                )?;
+                let result = {
+                    let mut session = session.lock().unwrap();
+                    session
+                        .next_context()
+                        .map(|(context, rendered_prompt)| {
+                            serde_json::json!({
+                                "version": 1,
+                                "context": ContextInjectionView::from(&context),
+                                "rendered_prompt": rendered_prompt,
+                            })
+                        })
+                        .map_err(|error| McpError::internal_error(error.to_string(), None))
+                };
+                return match result {
+                    Ok(payload) => {
+                        let (result, content) = json_tool_result_with_content(&payload)?;
+                        append_session_driver_event(
+                            "tool_result",
+                            current_step.as_ref(),
+                            tool_name,
+                            None,
+                            Some(&content),
+                        )?;
+                        Ok(result)
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        append_session_driver_event(
+                            "tool_result",
+                            current_step.as_ref(),
+                            tool_name,
+                            None,
+                            Some(&message),
+                        )?;
+                        Err(error)
+                    }
+                };
             }
             "advance" => {
-                let (result, tool_list_changed) = {
+                let current_step = session.lock().unwrap().current_step().cloned();
+                append_session_driver_event(
+                    "tool_call",
+                    current_step.as_ref(),
+                    tool_name,
+                    request
+                        .arguments
+                        .as_ref()
+                        .map(|arguments| Value::Object(arguments.clone())),
+                    None,
+                )?;
+                let result = {
                     let mut session = session.lock().unwrap();
                     let before_step = session.current_step().cloned();
-                    let outcome = session
+                    session
                         .advance_with_validator(|next_protocol, store| {
                             if let Some(protocol) = next_protocol {
                                 for type_name in protocol
@@ -124,18 +209,51 @@ impl RunaHandler {
                                 Ok(())
                             }
                         })
-                        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-                    let after_step = outcome.next_step.clone();
-                    (json_tool_result(&outcome)?, before_step != after_step)
+                        .map_err(|error| McpError::internal_error(error.to_string(), None))
+                        .and_then(|outcome| {
+                            let after_step = outcome.next_step.clone();
+                            let tool_list_changed = before_step != after_step;
+                            json_tool_result_with_content(&outcome)
+                                .map(|(result, content)| (result, content, tool_list_changed))
+                        })
                 };
-                if tool_list_changed {
-                    context
-                        .peer
-                        .notify_tool_list_changed()
-                        .await
-                        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-                }
-                return Ok(result);
+                return match result {
+                    Ok((result, content, tool_list_changed)) => {
+                        if tool_list_changed
+                            && let Err(error) = context.peer.notify_tool_list_changed().await
+                        {
+                            let error = McpError::internal_error(error.to_string(), None);
+                            let message = error.to_string();
+                            append_session_driver_event(
+                                "tool_result",
+                                current_step.as_ref(),
+                                tool_name,
+                                None,
+                                Some(&message),
+                            )?;
+                            return Err(error);
+                        }
+                        append_session_driver_event(
+                            "tool_result",
+                            current_step.as_ref(),
+                            tool_name,
+                            None,
+                            Some(&content),
+                        )?;
+                        Ok(result)
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        append_session_driver_event(
+                            "tool_result",
+                            current_step.as_ref(),
+                            tool_name,
+                            None,
+                            Some(&message),
+                        )?;
+                        Err(error)
+                    }
+                };
             }
             _ => {}
         }
@@ -223,10 +341,15 @@ impl RunaHandler {
     }
 }
 
-fn json_tool_result(payload: &impl serde::Serialize) -> Result<CallToolResult, McpError> {
+fn json_tool_result_with_content(
+    payload: &impl serde::Serialize,
+) -> Result<(CallToolResult, String), McpError> {
     let json = serde_json::to_string_pretty(payload)
         .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-    Ok(CallToolResult::success(vec![Content::text(json)]))
+    Ok((
+        CallToolResult::success(vec![Content::text(json.clone())]),
+        json,
+    ))
 }
 
 fn extract_instance_id(data: &mut Value) -> Result<String, McpError> {
@@ -768,10 +891,38 @@ fn append_tool_event(
     payload: Option<Value>,
     content: Option<&str>,
 ) -> Result<(), McpError> {
+    append_tool_event_with_context(kind, Some(protocol), work_unit, tool_name, payload, content)
+}
+
+fn append_session_driver_event(
+    kind: &'static str,
+    current_step: Option<&libagent::CurrentStep>,
+    tool_name: &str,
+    payload: Option<Value>,
+    content: Option<&str>,
+) -> Result<(), McpError> {
+    append_tool_event_with_context(
+        kind,
+        current_step.map(|step| step.protocol.as_str()),
+        current_step.and_then(|step| step.work_unit.as_deref()),
+        tool_name,
+        payload,
+        content,
+    )
+}
+
+fn append_tool_event_with_context(
+    kind: &'static str,
+    protocol: Option<&str>,
+    work_unit: Option<&str>,
+    tool_name: &str,
+    payload: Option<Value>,
+    content: Option<&str>,
+) -> Result<(), McpError> {
     libagent::transcript::append_event(libagent::transcript::TranscriptEvent {
         source: "runa-mcp",
         kind,
-        protocol: Some(protocol),
+        protocol,
         work_unit,
         tool_name: Some(tool_name),
         payload,

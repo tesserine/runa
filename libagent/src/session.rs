@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -77,10 +78,27 @@ impl From<crate::StoreError> for SessionError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CurrentStep {
     pub protocol: String,
     pub work_unit: Option<String>,
+    #[serde(skip)]
+    pub provenance_snapshot: Option<crate::ExecutionRecord>,
+}
+
+impl PartialEq for CurrentStep {
+    fn eq(&self, other: &Self) -> bool {
+        self.protocol == other.protocol && self.work_unit == other.work_unit
+    }
+}
+
+impl Eq for CurrentStep {}
+
+impl Hash for CurrentStep {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.protocol.hash(state);
+        self.work_unit.hash(state);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -180,6 +198,7 @@ impl SessionState {
                     .contains(input.artifact_type.as_str())
         });
         let rendered = render_context_prompt(&context);
+        self.refresh_current_provenance_snapshot(&scan_findings)?;
         Ok((context, rendered))
     }
 
@@ -204,12 +223,17 @@ impl SessionState {
             completed_step.work_unit.as_deref(),
         )
         .map_err(SessionError::Postcondition)?;
-        let execution_record = crate::protocol_execution_record(
-            protocol,
-            &self.loaded.store,
-            completed_step.work_unit.as_deref(),
-            &scan_findings.affected_types,
-        );
+        let execution_record = completed_step
+            .provenance_snapshot
+            .clone()
+            .unwrap_or_else(|| {
+                crate::protocol_execution_record(
+                    protocol,
+                    &self.loaded.store,
+                    completed_step.work_unit.as_deref(),
+                    &scan_findings.affected_types,
+                )
+            });
         self.loaded.store.record_execution(
             &completed_step.protocol,
             completed_step.work_unit.as_deref(),
@@ -218,7 +242,7 @@ impl SessionState {
 
         let mut evaluated = self.evaluate(&scan_findings);
         self.exhausted.insert(completed_step.clone());
-        let next_step = self.select_next(&evaluated);
+        let next_step = self.select_next(&evaluated, &scan_findings)?;
         let next_protocol = match &next_step {
             Some(step) => Some(self.protocol(&step.protocol)?),
             None => None,
@@ -244,7 +268,7 @@ impl SessionState {
         let scan_result = crate::scan(&self.loaded.workspace_dir, &mut self.loaded.store)?;
         let scan_findings = crate::collect_scan_findings(&scan_result, &self.loaded.workspace_dir);
         let evaluated = self.evaluate(&scan_findings);
-        self.current_step = self.select_next(&evaluated);
+        self.current_step = self.select_next(&evaluated, &scan_findings)?;
         Ok(())
     }
 
@@ -264,15 +288,51 @@ impl SessionState {
         evaluated
     }
 
-    fn select_next(&self, evaluated: &crate::EvaluatedProtocols) -> Option<CurrentStep> {
-        evaluated
-            .ready
-            .iter()
-            .map(|entry| CurrentStep {
+    fn select_next(
+        &self,
+        evaluated: &crate::EvaluatedProtocols,
+        scan_findings: &crate::ScanFindings,
+    ) -> Result<Option<CurrentStep>, SessionError> {
+        for entry in &evaluated.ready {
+            let mut step = CurrentStep {
                 protocol: entry.name.clone(),
                 work_unit: entry.work_unit.clone(),
-            })
-            .find(|step| !self.exhausted.contains(step))
+                provenance_snapshot: None,
+            };
+            if self.exhausted.contains(&step) {
+                continue;
+            }
+            let protocol = self.protocol(&step.protocol)?;
+            step.provenance_snapshot = Some(crate::protocol_execution_record(
+                protocol,
+                &self.loaded.store,
+                step.work_unit.as_deref(),
+                &scan_findings.affected_types,
+            ));
+            return Ok(Some(step));
+        }
+
+        Ok(None)
+    }
+
+    fn refresh_current_provenance_snapshot(
+        &mut self,
+        scan_findings: &crate::ScanFindings,
+    ) -> Result<(), SessionError> {
+        let Some(current) = self.current_step.clone() else {
+            return Ok(());
+        };
+        let protocol = self.protocol(&current.protocol)?;
+        let provenance_snapshot = crate::protocol_execution_record(
+            protocol,
+            &self.loaded.store,
+            current.work_unit.as_deref(),
+            &scan_findings.affected_types,
+        );
+        if let Some(current_step) = &mut self.current_step {
+            current_step.provenance_snapshot = Some(provenance_snapshot);
+        }
+        Ok(())
     }
 
     fn readiness_from(
@@ -296,5 +356,45 @@ impl SessionState {
             .iter()
             .find(|protocol| protocol.name == name)
             .ok_or_else(|| SessionError::CurrentStepMissing(name.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ExecutionInput, ExecutionInputMode, ExecutionInputSnapshot, ExecutionRecord};
+    use std::collections::{BTreeMap, HashSet};
+
+    #[test]
+    fn current_step_identity_ignores_provenance_snapshot() {
+        let step_without_snapshot = CurrentStep {
+            protocol: "take".to_string(),
+            work_unit: Some("work-unit-166".to_string()),
+            provenance_snapshot: None,
+        };
+        let step_with_snapshot = CurrentStep {
+            protocol: "take".to_string(),
+            work_unit: Some("work-unit-166".to_string()),
+            provenance_snapshot: Some(ExecutionRecord {
+                input_modes: BTreeMap::from([(
+                    "work-unit".to_string(),
+                    ExecutionInputMode::ValidOnly,
+                )]),
+                inputs: ExecutionInputSnapshot {
+                    artifact_types: BTreeMap::from([(
+                        "work-unit".to_string(),
+                        vec![ExecutionInput {
+                            instance_id: "work-unit-166".to_string(),
+                            content_hash: "sha256:context-time".to_string(),
+                        }],
+                    )]),
+                },
+            }),
+        };
+
+        let mut exhausted = HashSet::new();
+        exhausted.insert(step_without_snapshot);
+
+        assert!(exhausted.contains(&step_with_snapshot));
     }
 }
