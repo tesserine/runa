@@ -38,6 +38,22 @@ pub struct Candidate {
     pub work_unit: Option<String>,
 }
 
+/// Stable identity for a schedulable `(protocol, work_unit)` candidate.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CandidateKey {
+    pub protocol: String,
+    pub work_unit: Option<String>,
+}
+
+impl CandidateKey {
+    pub fn new(protocol: &str, work_unit: Option<&str>) -> Self {
+        Self {
+            protocol: protocol.to_string(),
+            work_unit: work_unit.map(str::to_owned),
+        }
+    }
+}
+
 /// Classification status for a (protocol, work_unit) candidate.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CandidateStatus {
@@ -251,6 +267,23 @@ pub fn protocol_relevant_inputs_changed(
             &relevant_types,
         )
     })
+}
+
+/// Remove exhausted candidates whose relevant inputs changed in the latest scan.
+pub fn refresh_exhausted_candidates_after_scan(
+    protocols: &[ProtocolDeclaration],
+    exhausted: &mut HashSet<CandidateKey>,
+    scan_result: &crate::ScanResult,
+) {
+    exhausted.retain(|candidate| {
+        let Some(protocol) = protocols
+            .iter()
+            .find(|protocol| protocol.name == candidate.protocol)
+        else {
+            return true;
+        };
+        !protocol_relevant_inputs_changed(protocol, candidate.work_unit.as_deref(), scan_result)
+    });
 }
 
 fn scan_change_affects_candidate(
@@ -1227,6 +1260,35 @@ mod tests {
             Some("wu-a"),
             &malformed_scan,
         ));
+    }
+
+    #[test]
+    fn exhausted_candidate_refresh_reopens_when_relevant_inputs_change() {
+        let protocol = make_protocol(
+            "take",
+            &["work-unit"],
+            &[],
+            &["claim"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        let scan_result = crate::ScanResult {
+            modified: vec![crate::ArtifactRef {
+                artifact_type: "work-unit".into(),
+                instance_id: "work-unit-166".into(),
+                path: Path::new("work-unit/work-unit-166.json").to_path_buf(),
+                work_unit: None,
+            }],
+            ..Default::default()
+        };
+        let mut exhausted =
+            HashSet::from([crate::CandidateKey::new("take", Some("work-unit-166"))]);
+
+        crate::refresh_exhausted_candidates_after_scan(&[protocol], &mut exhausted, &scan_result);
+
+        assert!(exhausted.is_empty());
     }
 
     #[test]

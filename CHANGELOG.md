@@ -36,6 +36,9 @@ Semantic Versioning.
   current step, so caching clients can rediscover the new step's output tools.
 - Session-mode execution records now preserve the input provenance delivered by
   `next-protocol-context` even when inputs change before `advance`.
+- Session-mode `advance` now reopens exhausted work when relevant inputs change
+  and does not persist a completed step's execution record until the next step
+  has been selected and validated.
 - Session-mode MCP driver calls now append transcript tool events, including
   failed driver results, when `RUNA_TRANSCRIPT_DIR` is set.
 - Fixed-protocol `runa-mcp --protocol` servers now keep output tools whose

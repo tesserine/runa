@@ -280,6 +280,17 @@ fn session_call(name: &str) -> CallToolRequestParam {
     }
 }
 
+fn assert_no_execution_record_for(project_dir: &Path, protocol: &str) {
+    let execution_record_path = project_dir.join(".runa/store/execution-records.json");
+    if execution_record_path.is_file() {
+        let execution_records = fs::read_to_string(&execution_record_path).unwrap();
+        assert!(
+            !execution_records.contains(&format!(r#""protocol": "{protocol}""#)),
+            "advance must not record execution for {protocol}: {execution_records}"
+        );
+    }
+}
+
 #[test]
 fn missing_protocol_argument_fails_clearly() {
     let dir = tempfile::tempdir().unwrap();
@@ -647,6 +658,95 @@ async fn session_advance_records_context_time_input_provenance() {
 }
 
 #[tokio::test]
+async fn session_advance_reopens_current_step_when_context_input_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        two_step_session_manifest_toml(),
+        &two_step_session_schemas(),
+        &["take", "implement"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--session")
+                        .arg("--work-unit")
+                        .arg("work-unit-166")
+                        .env_remove("GROUNDWORK_FORGE_TYPE")
+                        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                        .env("GROUNDWORK_FORGE_NAME", "runa")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    service
+        .call_tool(session_call("next-protocol-context"))
+        .await
+        .unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(167),
+    )
+    .unwrap();
+    service
+        .call_tool(CallToolRequestParam {
+            name: "claim".to_string().into(),
+            arguments: serde_json::json!({
+                "instance_id": "claim-1",
+                "scope": "claim this work"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+
+    let advance = service.call_tool(session_call("advance")).await.unwrap();
+    let advance: serde_json::Value = serde_json::from_str(&tool_result_text(&advance)).unwrap();
+    assert_eq!(advance["completed_step"]["protocol"], "take");
+    assert_eq!(advance["next_step"]["protocol"], "take");
+
+    let tool_names = service
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec!["readiness", "next-protocol-context", "advance", "claim"]
+    );
+
+    let context = service
+        .call_tool(session_call("next-protocol-context"))
+        .await
+        .unwrap();
+    let context: serde_json::Value = serde_json::from_str(&tool_result_text(&context)).unwrap();
+    assert_eq!(context["context"]["protocol"], "take");
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn session_advance_emits_tool_list_changed_when_current_step_changes() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = write_methodology(
@@ -851,6 +951,94 @@ async fn session_advance_error_preserves_current_step_when_next_step_is_unservab
         advance.is_err(),
         "advance unexpectedly succeeded: {advance:?}"
     );
+    assert_no_execution_record_for(&project_dir, "take");
+
+    let tool_names = service
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec!["readiness", "next-protocol-context", "advance", "claim"]
+    );
+
+    let context = service
+        .call_tool(session_call("next-protocol-context"))
+        .await
+        .unwrap();
+    let context: serde_json::Value = serde_json::from_str(&tool_result_text(&context)).unwrap();
+    assert_eq!(context["context"]["protocol"], "take");
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn session_advance_persistence_error_preserves_current_step_and_no_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        two_step_session_manifest_toml(),
+        &two_step_session_schemas(),
+        &["take", "implement"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--session")
+                        .arg("--work-unit")
+                        .arg("work-unit-166")
+                        .env_remove("GROUNDWORK_FORGE_TYPE")
+                        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                        .env("GROUNDWORK_FORGE_NAME", "runa")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    service
+        .call_tool(CallToolRequestParam {
+            name: "claim".to_string().into(),
+            arguments: serde_json::json!({
+                "instance_id": "claim-1",
+                "scope": "claim this work"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+    let execution_record_path = project_dir.join(".runa/store/execution-records.json");
+    if execution_record_path.is_file() {
+        fs::remove_file(&execution_record_path).unwrap();
+    }
+    fs::create_dir_all(&execution_record_path).unwrap();
+
+    let advance = service.call_tool(session_call("advance")).await;
+    assert!(
+        advance.is_err(),
+        "advance unexpectedly succeeded: {advance:?}"
+    );
+    assert_no_execution_record_for(&project_dir, "take");
 
     let tool_names = service
         .list_all_tools()

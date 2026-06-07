@@ -57,10 +57,11 @@ pub use scan::{
 };
 pub use scoped_identity::{ScopedWorkUnitError, validate_scoped_work_unit};
 pub use selection::{
-    Candidate, CandidateStatus, ClassifiedCandidate, EvaluationScope, EvaluationTopology,
-    ScanTrust, WaitingReason, classify_candidates, collect_unsatisfied_conditions,
-    discover_ready_candidates, protocol_execution_input_snapshot, protocol_execution_record,
-    protocol_relevant_input_types, protocol_relevant_inputs_changed, resolve_evaluation_topology,
+    Candidate, CandidateKey, CandidateStatus, ClassifiedCandidate, EvaluationScope,
+    EvaluationTopology, ScanTrust, WaitingReason, classify_candidates,
+    collect_unsatisfied_conditions, discover_ready_candidates, protocol_execution_input_snapshot,
+    protocol_execution_record, protocol_relevant_input_types, protocol_relevant_inputs_changed,
+    refresh_exhausted_candidates_after_scan, resolve_evaluation_topology,
 };
 pub use session::{
     AdvanceOutcome, CurrentStep, SessionError, SessionReadiness, SessionState, StepSelector,

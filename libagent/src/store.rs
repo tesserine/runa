@@ -590,6 +590,34 @@ impl ArtifactStore {
         self.persist_execution_records()
     }
 
+    pub(crate) fn stage_execution_record(
+        &mut self,
+        protocol: &str,
+        work_unit: Option<&str>,
+        record: ExecutionRecord,
+    ) -> Option<ExecutionRecord> {
+        self.execution_records
+            .insert((protocol.to_string(), work_unit.map(str::to_owned)), record)
+    }
+
+    pub(crate) fn restore_execution_record(
+        &mut self,
+        protocol: &str,
+        work_unit: Option<&str>,
+        previous: Option<ExecutionRecord>,
+    ) {
+        let key = (protocol.to_string(), work_unit.map(str::to_owned));
+        if let Some(previous) = previous {
+            self.execution_records.insert(key, previous);
+        } else {
+            self.execution_records.remove(&key);
+        }
+    }
+
+    pub(crate) fn persist_staged_execution_records(&self) -> Result<(), StoreError> {
+        self.persist_execution_records()
+    }
+
     pub fn sync_execution_contract_hash(
         &mut self,
         contract_hash: Option<String>,
