@@ -31,6 +31,12 @@ All session clients invoke the same runa surface. An interactive driver is a
 client of that surface, not a reimplementation of readiness, context delivery,
 lifecycle movement, or artifact recording.
 
+Every session verb that reconciles the workspace re-establishes the session's
+scoped work-unit identity before evaluating readiness, serving context, or
+advancing lifecycle state. Current-step readiness reconfirmation applies when a
+verb serves or completes that step; scoped identity revalidation is
+unconditional after a rescan.
+
 The required session verbs are:
 
 | Verb | Semantics |
@@ -39,6 +45,10 @@ The required session verbs are:
 | `next context` | Deliver the execution context for a ready protocol from runa's validated input set: protocol instructions, scoped work unit when present, valid required inputs, available accepted inputs, and expected outputs. The client does not query the store directly or synthesize context. |
 | `record output` | Accept an output artifact only through the protocol's declared output contract. Runa validates the artifact against the methodology schema, applies scoped session metadata where the runtime owns it, rejects invalid output, and records only valid output as runtime state. |
 | `advance` | Re-evaluate lifecycle progress from the validated artifact state. Advancement follows the methodology dependency graph, trigger rules, preconditions, postconditions, and required disposition artifacts. It is not a separate approval operation. |
+
+In MCP session mode, the concrete driver tool names `readiness`,
+`next-protocol-context`, and `advance` are reserved. A current step must not
+declare an output artifact type with one of those names.
 
 The semantics above are identical in autonomous and interactive modes. Caller
 identity, shell shape, launch path, or UI affordance must not create a second

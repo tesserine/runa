@@ -16,8 +16,12 @@ use handler::RunaHandler;
 #[command(name = "runa-mcp", version)]
 struct Cli {
     /// Name of the protocol to serve
+    #[arg(long, conflicts_with = "session", required_unless_present = "session")]
+    protocol: Option<String>,
+
+    /// Serve a scoped session surface instead of one fixed protocol
     #[arg(long)]
-    protocol: String,
+    session: bool,
 
     /// Optional work unit scope for tool serving
     #[arg(long)]
@@ -61,16 +65,32 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(work_unit) = cli.work_unit.as_deref() {
         libagent::validate_scoped_work_unit(&loaded.store, work_unit)?;
     }
+    if cli.session {
+        let handler = RunaHandler::new_session(working_dir.clone(), config_ref, cli.work_unit)?;
+        let (stdin, stdout) = io::stdio();
+        let service = handler.serve((stdin, stdout)).await.inspect_err(|e| {
+            error!(
+                operation = "mcp_server",
+                outcome = "init_failed",
+                error = %e,
+                "server initialization failed"
+            );
+        })?;
+        service.waiting().await?;
+        return Ok(());
+    }
+
+    let protocol_name = cli.protocol.expect("--protocol required without --session");
     let protocol = loaded
         .manifest
         .protocols
         .iter()
-        .find(|protocol| protocol.name == cli.protocol)
+        .find(|protocol| protocol.name == protocol_name)
         .cloned()
         .ok_or_else(|| {
             format!(
                 "protocol '{}' not found in manifest '{}'",
-                cli.protocol, loaded.manifest.name
+                protocol_name, loaded.manifest.name
             )
         })?;
 
