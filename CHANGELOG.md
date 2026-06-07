@@ -39,6 +39,9 @@ Semantic Versioning.
 - Session-mode `advance` now reopens exhausted work when relevant inputs change
   and does not persist a completed step's execution record until the next step
   has been selected and validated.
+- Session-mode `readiness` now selects a current step when blocked scoped work
+  later becomes ready, and `advance` now rejects completion if the current
+  step's trigger or required inputs are no longer ready.
 - Session-mode MCP driver calls now append transcript tool events, including
   failed driver results, when `RUNA_TRANSCRIPT_DIR` is set.
 - Fixed-protocol `runa-mcp --protocol` servers now keep output tools whose

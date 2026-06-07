@@ -15,6 +15,7 @@ pub enum SessionError {
     MissingWorkUnit,
     NoCurrentStep,
     CurrentStepMissing(String),
+    CurrentStepNotReady(String),
     Postcondition(crate::EnforcementError),
     Record(crate::StoreError),
 }
@@ -33,6 +34,12 @@ impl fmt::Display for SessionError {
                     "current session protocol '{protocol}' is no longer in the manifest"
                 )
             }
+            SessionError::CurrentStepNotReady(protocol) => {
+                write!(
+                    f,
+                    "current session protocol '{protocol}' is no longer ready"
+                )
+            }
             SessionError::Postcondition(err) => write!(f, "{err}"),
             SessionError::Record(err) => write!(f, "{err}"),
         }
@@ -49,7 +56,8 @@ impl std::error::Error for SessionError {
             SessionError::Record(err) => Some(err),
             SessionError::MissingWorkUnit
             | SessionError::NoCurrentStep
-            | SessionError::CurrentStepMissing(_) => None,
+            | SessionError::CurrentStepMissing(_)
+            | SessionError::CurrentStepNotReady(_) => None,
         }
     }
 }
@@ -189,6 +197,9 @@ impl SessionState {
         self.refresh_exhaustion_after_scan(&scan_result);
         let scan_findings = crate::collect_scan_findings(&scan_result, &self.loaded.workspace_dir);
         let evaluated = self.evaluate(&scan_findings);
+        if self.current_step.is_none() {
+            self.current_step = self.select_next(&evaluated, &scan_findings, &self.exhausted)?;
+        }
         Ok(self.readiness_from(scan_findings, evaluated))
     }
 
@@ -245,6 +256,8 @@ impl SessionState {
             .ok_or(SessionError::NoCurrentStep)?;
         let scan_result = crate::scan(&self.loaded.workspace_dir, &mut self.loaded.store)?;
         let scan_findings = crate::collect_scan_findings(&scan_result, &self.loaded.workspace_dir);
+        let current_evaluated = self.evaluate(&scan_findings);
+        self.ensure_current_step_can_complete(&completed_step, &current_evaluated)?;
 
         let protocol = self.protocol(&completed_step.protocol)?;
         crate::enforce_postconditions(
@@ -386,6 +399,29 @@ impl SessionState {
         }
 
         Ok(None)
+    }
+
+    fn ensure_current_step_can_complete(
+        &self,
+        step: &CurrentStep,
+        evaluated: &crate::EvaluatedProtocols,
+    ) -> Result<(), SessionError> {
+        let is_current_step = |entry: &crate::ProtocolEntry| {
+            entry.name == step.protocol && entry.work_unit == step.work_unit
+        };
+        if evaluated.ready.iter().any(&is_current_step) {
+            return Ok(());
+        }
+        if evaluated.waiting.iter().any(|entry| {
+            is_current_step(entry)
+                && matches!(
+                    entry.waiting_reason,
+                    Some(crate::WaitingReason::OutputsCurrent)
+                )
+        }) {
+            return Ok(());
+        }
+        Err(SessionError::CurrentStepNotReady(step.protocol.clone()))
     }
 
     fn current_inputs_match_provenance(
