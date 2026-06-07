@@ -17,7 +17,11 @@ use handler::RunaHandler;
 struct Cli {
     /// Name of the protocol to serve
     #[arg(long)]
-    protocol: String,
+    protocol: Option<String>,
+
+    /// Serve a graph-scoped session surface instead of one protocol
+    #[arg(long)]
+    session: bool,
 
     /// Optional work unit scope for tool serving
     #[arg(long)]
@@ -56,6 +60,51 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         configure_tracing(Some(&config.logging))?;
     }
 
+    match (cli.session, cli.protocol.as_deref()) {
+        (true, Some(_)) => {
+            return Err("--session and --protocol are mutually exclusive".into());
+        }
+        (false, None) => {
+            return Err("either --protocol <name> or --session is required".into());
+        }
+        _ => {}
+    }
+
+    if cli.session {
+        let work_unit = cli
+            .work_unit
+            .clone()
+            .ok_or("--session requires --work-unit in phase 1")?;
+        let loaded = project::load(&working_dir, config_ref)?;
+        let workspace_dir = loaded.workspace_dir.clone();
+        let session = libagent::Session::start(
+            loaded,
+            working_dir.clone(),
+            work_unit.clone(),
+            handler::validate_session_current_step,
+        )?;
+        let handler = RunaHandler::new_session(session, workspace_dir)?;
+
+        info!(
+            operation = "mcp_session",
+            outcome = "serving",
+            work_unit = ?cli.work_unit,
+            "serving session"
+        );
+
+        let (stdin, stdout) = io::stdio();
+        let service = handler.serve((stdin, stdout)).await.inspect_err(|e| {
+            error!(
+                operation = "mcp_server",
+                outcome = "init_failed",
+                error = %e,
+                "server initialization failed"
+            );
+        })?;
+        service.waiting().await?;
+        return Ok(());
+    }
+
     let mut loaded = project::load(&working_dir, config_ref)?;
     libagent::scan(&loaded.workspace_dir, &mut loaded.store)?;
     if let Some(work_unit) = cli.work_unit.as_deref() {
@@ -65,12 +114,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         .manifest
         .protocols
         .iter()
-        .find(|protocol| protocol.name == cli.protocol)
+        .find(|protocol| Some(protocol.name.as_str()) == cli.protocol.as_deref())
         .cloned()
         .ok_or_else(|| {
             format!(
                 "protocol '{}' not found in manifest '{}'",
-                cli.protocol, loaded.manifest.name
+                cli.protocol.as_deref().unwrap_or("<missing>"),
+                loaded.manifest.name
             )
         })?;
 

@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
-use rmcp::model::CallToolRequestParam;
+use rmcp::model::{CallToolRequestParam, CallToolResult};
 use rmcp::service::ServiceExt;
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use tokio::process::Command;
@@ -132,6 +132,35 @@ trigger = { type = "on_artifact", name = "work-unit" }
 "#
 }
 
+fn scoped_two_step_manifest_toml() -> &'static str {
+    r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "claim"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "take"
+requires = ["work-unit"]
+produces = ["claim"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+
+[[protocols]]
+name = "implement"
+requires = ["claim"]
+produces = ["implementation"]
+scoped = true
+trigger = { type = "on_artifact", name = "claim" }
+"#
+}
+
 fn scoped_work_unit_schemas() -> Vec<(&'static str, &'static str)> {
     vec![
         (
@@ -145,10 +174,90 @@ fn scoped_work_unit_schemas() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+fn scoped_two_step_schemas() -> Vec<(&'static str, &'static str)> {
+    let mut schemas = scoped_work_unit_schemas();
+    schemas.push((
+        "implementation",
+        r#"{"type":"object","required":["work_unit","summary"],"properties":{"work_unit":{"type":"string"},"summary":{"type":"string"}}}"#,
+    ));
+    schemas
+}
+
 fn github_work_unit_json(number: u64) -> String {
     format!(
         r#"{{"title":"Scope","description":"Enforce canonical scope","acceptance_criteria":["Reject aliases"],"handle":{{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/{number}","number":{number}}}}}"#
     )
+}
+
+fn session_command(project_dir: &Path, caller: &str) -> TokioChildProcess {
+    TokioChildProcess::new(
+        Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+            cmd.arg("--session")
+                .arg("--work-unit")
+                .arg("work-unit-166")
+                .env_remove("GROUNDWORK_FORGE_TYPE")
+                .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                .env("GROUNDWORK_FORGE_NAME", "runa")
+                .env("RUNA_TEST_CALLER", caller)
+                .current_dir(project_dir);
+        }),
+    )
+    .unwrap()
+}
+
+fn write_work_unit(project_dir: &Path) {
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+}
+
+fn tool_result_json(result: CallToolResult) -> serde_json::Value {
+    let value = serde_json::to_value(result).unwrap();
+    let text = value["content"][0]["text"]
+        .as_str()
+        .expect("tool result should contain text JSON");
+    serde_json::from_str(text).unwrap()
+}
+
+fn tool_names(tools: &[rmcp::model::Tool]) -> Vec<String> {
+    tools
+        .iter()
+        .map(|tool| tool.name.as_ref().to_string())
+        .collect()
+}
+
+fn expected_take_prompt(project_dir: &Path) -> String {
+    let mut loaded = libagent::project::load(project_dir, None).unwrap();
+    libagent::scan(&loaded.workspace_dir, &mut loaded.store).unwrap();
+    let protocol = loaded
+        .manifest
+        .protocols
+        .iter()
+        .find(|protocol| protocol.name == "take")
+        .unwrap();
+    let context = libagent::context::build_context(protocol, &loaded.store, Some("work-unit-166"));
+    libagent::context::render_context_prompt(&context)
+}
+
+fn expected_readiness(project_dir: &Path) -> serde_json::Value {
+    let mut loaded = libagent::project::load(project_dir, None).unwrap();
+    let scan_result = libagent::scan(&loaded.workspace_dir, &mut loaded.store).unwrap();
+    let state = libagent::evaluate_execution_state(
+        &loaded,
+        project_dir,
+        &scan_result,
+        libagent::EvaluationScope::Scoped("work-unit-166"),
+    );
+    serde_json::json!({
+        "methodology": loaded.manifest.name,
+        "scan_warnings": state.scan_findings.warnings,
+        "protocols": state.evaluated.json_protocols(),
+    })
 }
 
 fn init_project(project_dir: &Path, manifest_path: &Path) {
@@ -365,6 +474,355 @@ async fn mcp_accepts_exact_tracker_backed_work_unit_without_slug() {
     let tools = service.list_all_tools().await.unwrap();
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name.as_ref(), "claim");
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn session_mode_advertises_driver_tools_and_current_output_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_work_unit_manifest_toml(),
+        &scoped_work_unit_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    write_work_unit(&project_dir);
+
+    let service = ().serve(session_command(&project_dir, "interactive")).await.unwrap();
+
+    let tools = service.list_all_tools().await.unwrap();
+
+    assert_eq!(
+        tool_names(&tools),
+        vec!["readiness", "next-protocol-context", "advance", "claim"]
+    );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn next_protocol_context_returns_structured_context_and_verbatim_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_work_unit_manifest_toml(),
+        &scoped_work_unit_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    write_work_unit(&project_dir);
+
+    let service = ().serve(session_command(&project_dir, "interactive")).await.unwrap();
+
+    let payload = tool_result_json(
+        service
+            .call_tool(CallToolRequestParam {
+                name: "next-protocol-context".into(),
+                arguments: Some(serde_json::Map::new()),
+            })
+            .await
+            .unwrap(),
+    );
+
+    assert_eq!(payload["current_step"]["protocol"], "take");
+    assert_eq!(payload["context"]["protocol"], "take");
+    assert_eq!(payload["context"]["work_unit"], "work-unit-166");
+    assert_eq!(payload["prompt"], expected_take_prompt(&project_dir));
+    assert_eq!(payload["readiness"], expected_readiness(&project_dir));
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn session_surface_is_caller_agnostic_for_tools_readiness_and_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_work_unit_manifest_toml(),
+        &scoped_work_unit_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    write_work_unit(&project_dir);
+
+    let interactive = ().serve(session_command(&project_dir, "interactive")).await.unwrap();
+    let autonomous = ().serve(session_command(&project_dir, "autonomous")).await.unwrap();
+
+    assert_eq!(
+        tool_names(&interactive.list_all_tools().await.unwrap()),
+        tool_names(&autonomous.list_all_tools().await.unwrap())
+    );
+
+    let interactive_readiness = tool_result_json(
+        interactive
+            .call_tool(CallToolRequestParam {
+                name: "readiness".into(),
+                arguments: Some(serde_json::Map::new()),
+            })
+            .await
+            .unwrap(),
+    );
+    let autonomous_readiness = tool_result_json(
+        autonomous
+            .call_tool(CallToolRequestParam {
+                name: "readiness".into(),
+                arguments: Some(serde_json::Map::new()),
+            })
+            .await
+            .unwrap(),
+    );
+    assert_eq!(interactive_readiness, autonomous_readiness);
+
+    let interactive_context = tool_result_json(
+        interactive
+            .call_tool(CallToolRequestParam {
+                name: "next-protocol-context".into(),
+                arguments: Some(serde_json::Map::new()),
+            })
+            .await
+            .unwrap(),
+    );
+    let autonomous_context = tool_result_json(
+        autonomous
+            .call_tool(CallToolRequestParam {
+                name: "next-protocol-context".into(),
+                arguments: Some(serde_json::Map::new()),
+            })
+            .await
+            .unwrap(),
+    );
+    assert_eq!(interactive_context, autonomous_context);
+
+    interactive.cancel().await.unwrap();
+    autonomous.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn record_read_advance_records_execution_for_the_recorded_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_work_unit_manifest_toml(),
+        &scoped_work_unit_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    write_work_unit(&project_dir);
+
+    let service = ().serve(session_command(&project_dir, "interactive")).await.unwrap();
+
+    service
+        .call_tool(CallToolRequestParam {
+            name: "claim".into(),
+            arguments: serde_json::json!({
+                "instance_id": "claim-1",
+                "scope": "session surface"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+
+    let before_advance = tool_result_json(
+        service
+            .call_tool(CallToolRequestParam {
+                name: "readiness".into(),
+                arguments: Some(serde_json::Map::new()),
+            })
+            .await
+            .unwrap(),
+    );
+    assert_eq!(before_advance["current_step"]["protocol"], "take");
+
+    let advance = tool_result_json(
+        service
+            .call_tool(CallToolRequestParam {
+                name: "advance".into(),
+                arguments: Some(serde_json::Map::new()),
+            })
+            .await
+            .unwrap(),
+    );
+    assert_eq!(advance["advanced_step"]["protocol"], "take");
+
+    let execution_records =
+        fs::read_to_string(project_dir.join(".runa/store/execution-records.json")).unwrap();
+    assert!(execution_records.contains(r#""protocol": "take""#));
+    assert!(execution_records.contains(r#""work_unit": "work-unit-166""#));
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn advance_regenerates_output_tools_for_the_new_current_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_two_step_manifest_toml(),
+        &scoped_two_step_schemas(),
+        &["take", "implement"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    write_work_unit(&project_dir);
+
+    let service = ().serve(session_command(&project_dir, "interactive")).await.unwrap();
+
+    assert_eq!(
+        tool_names(&service.list_all_tools().await.unwrap()),
+        vec!["readiness", "next-protocol-context", "advance", "claim"]
+    );
+
+    service
+        .call_tool(CallToolRequestParam {
+            name: "claim".into(),
+            arguments: serde_json::json!({
+                "instance_id": "claim-1",
+                "scope": "session surface"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+    service
+        .call_tool(CallToolRequestParam {
+            name: "advance".into(),
+            arguments: Some(serde_json::Map::new()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        tool_names(&service.list_all_tools().await.unwrap()),
+        vec![
+            "readiness",
+            "next-protocol-context",
+            "advance",
+            "implementation"
+        ]
+    );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn session_refuses_current_step_with_reserved_driver_tool_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "advance"
+
+[[protocols]]
+name = "take"
+requires = ["work-unit"]
+produces = ["advance"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+"#,
+        &[
+            scoped_work_unit_schemas()[0],
+            (
+                "advance",
+                r#"{"type":"object","required":["work_unit","scope"],"properties":{"work_unit":{"type":"string"},"scope":{"type":"string"}}}"#,
+            ),
+        ],
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    write_work_unit(&project_dir);
+
+    let service = ().serve(session_command(&project_dir, "interactive")).await;
+
+    assert!(service.is_err());
+}
+
+#[tokio::test]
+async fn advance_refuses_next_step_with_unsupported_required_output_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "claim"
+
+[[artifact_types]]
+name = "audit-log"
+
+[[protocols]]
+name = "take"
+requires = ["work-unit"]
+produces = ["claim"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+
+[[protocols]]
+name = "audit"
+requires = ["claim"]
+produces = ["audit-log"]
+scoped = true
+trigger = { type = "on_artifact", name = "claim" }
+"#,
+        &[
+            scoped_work_unit_schemas()[0],
+            scoped_work_unit_schemas()[1],
+            ("audit-log", r#"{"type":"array","items":{"type":"string"}}"#),
+        ],
+        &["take", "audit"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    write_work_unit(&project_dir);
+
+    let service = ().serve(session_command(&project_dir, "interactive")).await.unwrap();
+    service
+        .call_tool(CallToolRequestParam {
+            name: "claim".into(),
+            arguments: serde_json::json!({
+                "instance_id": "claim-1",
+                "scope": "session surface"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+
+    let result = service
+        .call_tool(CallToolRequestParam {
+            name: "advance".into(),
+            arguments: Some(serde_json::Map::new()),
+        })
+        .await;
+
+    assert!(result.is_err());
 
     service.cancel().await.unwrap();
 }

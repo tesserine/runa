@@ -223,13 +223,41 @@ Without `--dry-run`, requires a Linux host plus an effective agent command. `run
 
 ## MCP Server
 
-`runa-mcp` is a single-session stdio MCP server that serves one named protocol invocation per process.
+`runa-mcp` is a single-session stdio MCP server. It has two startup modes:
+the existing per-protocol artifact-output mode and the unified session-surface
+mode for phase-1 scoped interactive sessions.
 
 ```bash
 runa-mcp --protocol <name> [--work-unit <name>]
+runa-mcp --session --work-unit <name>
 ```
 
-On startup, the server loads the project, scans the workspace, resolves the named protocol from the manifest, validates that its declared scope matches the presence or absence of `--work-unit`, validates canonical `work-unit` identity for scoped sessions, validates that its required output types can be served as MCP tools, and serves an MCP session over stdio. Each output artifact type (`produces`, required output choice members, and viable `may_produce`) becomes one MCP tool. The tool input schema is the artifact type's JSON Schema with the `work_unit` field removed — the server injects `work_unit` automatically from the `--work-unit` argument.
+In `--protocol` mode, startup loads the project, scans the workspace, resolves
+the named protocol from the manifest, validates that its declared scope matches
+the presence or absence of `--work-unit`, validates canonical `work-unit`
+identity for scoped sessions, validates that its required output types can be
+served as MCP tools, and serves an MCP session over stdio. Each output artifact
+type (`produces`, required output choice members, and viable `may_produce`)
+becomes one MCP tool. The tool input schema is the artifact type's JSON Schema
+with the `work_unit` field removed — the server injects `work_unit`
+automatically from the `--work-unit` argument.
+
+In `--session` mode, phase 1 requires `--work-unit <name>` and evaluates only
+scoped protocols for that delegated work unit. The server exposes driver tools
+and current-step output tools in the same connection:
+
+- `readiness` — rescans and reports scoped protocol readiness using the same
+  evaluation path as `runa state`.
+- `next-protocol-context` — returns the current step's structured context view
+  plus the exact prompt text produced by `context::render_context_prompt`.
+- `advance` — enforces postconditions for the current step, records execution
+  metadata for that same step, and selects the next ready step.
+
+Read driver tools do not retire or replace the current step. Only `advance`
+can retire it. After `advance`, output tools are regenerated from the new
+current step. If a current step requires an output schema that cannot be served
+as an MCP tool, or a required output name collides with a reserved driver tool
+name, the session refuses that step instead of entering an unsatisfiable state.
 
 `runa step` does not spawn `runa-mcp` directly. For direct Claude Code commands, it writes the resolved `runa-mcp` command, arguments, and environment into a temporary `mcpServers.runa` config and passes that config to Claude. For other agent runtimes, it exports the same data as a `RUNA_MCP_CONFIG` JSON payload so an adapter can launch the server as its own child process. The exported command and environment paths are absolute whenever runa resolves them from the local filesystem, so adapters do not depend on child process cwd to launch `runa-mcp`. Transcript environment variables are forwarded into the MCP config when transcript capture is enabled, which lets the MCP server append tool events to the same transcript stream as the CLI execution events.
 

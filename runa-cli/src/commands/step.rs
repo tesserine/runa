@@ -8,9 +8,7 @@ use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
 use std::thread;
 
 use libagent::ExecutionRecord;
-use libagent::context::{
-    ArtifactRelationship, ContextInjection, ContextInjectionView, render_context_prompt,
-};
+use libagent::context::{ContextInjection, ContextInjectionView, render_context_prompt};
 use serde::{Serialize, Serializer};
 use tracing::{info, warn};
 
@@ -250,14 +248,7 @@ pub(crate) struct McpServerConfig {
     pub(crate) env: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PlannedEntry {
-    pub(crate) protocol: String,
-    pub(crate) work_unit: Option<String>,
-    pub(crate) trigger: String,
-    pub(crate) context: ContextInjection,
-    pub(crate) execution_record: ExecutionRecord,
-}
+pub(crate) type PlannedEntry = libagent::PlannedEntry;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ExecutionOptions {
@@ -276,11 +267,7 @@ struct CandidateKey {
     work_unit: Option<String>,
 }
 
-pub(crate) struct ExecutionState {
-    pub(crate) scan_findings: protocol_eval::ScanFindings,
-    pub(crate) evaluated: protocol_eval::EvaluatedProtocols,
-    pub(crate) planned_entries: Vec<PlannedEntry>,
-}
+pub(crate) type ExecutionState = libagent::ExecutionState;
 
 fn serialize_context<S>(context: &ContextInjection, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -321,65 +308,7 @@ pub(crate) fn evaluate_execution_state(
     scan_result: &libagent::ScanResult,
     scope: libagent::EvaluationScope<'_>,
 ) -> ExecutionState {
-    let scan_findings = protocol_eval::collect_scan_findings(scan_result, &loaded.workspace_dir);
-    let evaluated = protocol_eval::evaluate_protocols(loaded, working_dir, &scan_findings, scope);
-    let planned_entries = build_execution_plan(loaded, &scan_findings, &evaluated);
-
-    ExecutionState {
-        scan_findings,
-        evaluated,
-        planned_entries,
-    }
-}
-
-pub(crate) fn build_execution_plan(
-    loaded: &crate::project::LoadedProject,
-    scan_findings: &protocol_eval::ScanFindings,
-    evaluated: &protocol_eval::EvaluatedProtocols,
-) -> Vec<PlannedEntry> {
-    let protocol_map: std::collections::HashMap<&str, &libagent::ProtocolDeclaration> = loaded
-        .manifest
-        .protocols
-        .iter()
-        .map(|protocol| (protocol.name.as_str(), protocol))
-        .collect();
-
-    if evaluated.ready.is_empty() {
-        return Vec::new();
-    }
-
-    evaluated
-        .ready
-        .iter()
-        .map(|entry| {
-            let protocol = protocol_map
-                .get(entry.name.as_str())
-                .expect("planned protocol must exist in manifest");
-            let mut context = libagent::context::build_context(
-                protocol,
-                &loaded.store,
-                entry.work_unit.as_deref(),
-            );
-            context.inputs.retain(|input| {
-                input.relationship == ArtifactRelationship::Requires
-                    || !scan_findings
-                        .affected_types
-                        .contains(input.artifact_type.as_str())
-            });
-            PlannedEntry {
-                protocol: entry.name.clone(),
-                work_unit: entry.work_unit.clone(),
-                trigger: protocol.trigger.to_string(),
-                context,
-                execution_record: libagent::protocol_execution_record(
-                    protocol,
-                    &loaded.store,
-                    entry.work_unit.as_deref(),
-                    &scan_findings.affected_types,
-                ),
-            }
-        })
-        .collect()
+    libagent::evaluate_execution_state(loaded, working_dir, scan_result, scope)
 }
 
 fn format_command(command: &[String]) -> String {
