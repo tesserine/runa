@@ -732,15 +732,20 @@ name = "work-unit"
 [[artifact_types]]
 name = "advance"
 
+[[artifact_types]]
+name = "claim"
+
 [[protocols]]
 name = "take"
 requires = ["work-unit"]
-produces = ["advance"]
+produces = ["claim"]
+may_produce = ["advance"]
 scoped = true
 trigger = { type = "on_artifact", name = "work-unit" }
 "#,
         &[
             scoped_work_unit_schemas()[0],
+            scoped_work_unit_schemas()[1],
             (
                 "advance",
                 r#"{"type":"object","required":["work_unit","scope"],"properties":{"work_unit":{"type":"string"},"scope":{"type":"string"}}}"#,
@@ -823,6 +828,21 @@ trigger = { type = "on_artifact", name = "claim" }
         .await;
 
     assert!(result.is_err());
+    assert_eq!(
+        tool_names(&service.list_all_tools().await.unwrap()),
+        vec!["readiness", "next-protocol-context", "advance", "claim"]
+    );
+
+    let readiness = tool_result_json(
+        service
+            .call_tool(CallToolRequestParam {
+                name: "readiness".into(),
+                arguments: Some(serde_json::Map::new()),
+            })
+            .await
+            .unwrap(),
+    );
+    assert_eq!(readiness["current_step"]["protocol"], "take");
 
     service.cancel().await.unwrap();
 }

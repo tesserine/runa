@@ -240,7 +240,31 @@ fn validate_session_step_outputs(
             ));
         }
     }
+    for type_name in &protocol.may_produce {
+        if DRIVER_TOOLS.contains(&type_name.as_str())
+            && may_produce_output_is_advertised(type_name, store, work_unit)
+        {
+            return Err(format!(
+                "optional output type '{type_name}' collides with reserved session driver verb"
+            ));
+        }
+    }
     validate_output_types(protocol, store, work_unit)
+}
+
+fn may_produce_output_is_advertised(
+    type_name: &str,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+) -> bool {
+    let Some(at) = store.artifact_type(type_name) else {
+        return false;
+    };
+    if work_unit.is_none() && at.schema_requires_work_unit() {
+        return false;
+    }
+    at.schema.get("type").and_then(|t| t.as_str()) == Some("object")
+        && !has_composition_keywords(&at.schema)
 }
 
 /// Check whether a JSON Schema uses composition keywords that prevent

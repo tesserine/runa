@@ -546,7 +546,6 @@ impl Session {
                     step.execution_record.clone(),
                 )
                 .map_err(SessionError::Store)?;
-            self.current_step = None;
         }
 
         let state = self.scan_and_evaluate()?;
