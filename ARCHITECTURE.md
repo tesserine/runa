@@ -6,9 +6,9 @@ Runa is a cognitive runtime for AI agents. This document describes the codebase 
 
 Three crates, Rust 2024 edition, resolver v3:
 
-- **`libagent`** — All domain logic: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, context injection construction, graph-based dry-run projection, pre/post-execution enforcement, project loading, and protocol selection.
+- **`libagent`** — All domain logic: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, context injection construction, shared session readiness/context planning, graph-based dry-run projection, pre/post-execution enforcement, project loading, and protocol selection.
 - **`runa-cli`** — Thin CLI binary. Clap-based argument parsing, delegates to libagent. No domain logic.
-- **`runa-mcp`** — MCP server binary. Single-session stdio process that serves one named protocol invocation per run. Loads the project, resolves the requested protocol from the manifest, exposes protocol outputs as MCP tools, and writes produced artifacts into the workspace.
+- **`runa-mcp`** — MCP server binary. Single-session stdio process that serves either one named protocol invocation or the scoped session surface. Loads the project, delegates readiness/context planning to libagent, exposes driver verbs plus protocol output tools, and writes produced artifacts into the workspace.
 
 ## Data Flow
 
@@ -30,9 +30,11 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 8. **Tracing bootstrap.** Both binaries bootstrap tracing with env/default settings before any config lookup, then reconfigure the shared subscriber from `config.toml` when logging settings are available. Tracing events always go to stderr; operator-facing command output stays on stdout.
 
-9. **CLI execution commands.** `runa state`, `runa step`, and `runa run` share the same scope-resolved topology, readiness evaluation, plan construction, and scope handling. Without `--work-unit`, they evaluate only unscoped protocols. With `--work-unit <ID>`, they evaluate only scoped protocols for that delegated work unit after canonical identity validation. `step --dry-run` previews only the next concrete execution, while `run --dry-run` projects the full optimistic cascade to quiescence from declared `produces` outputs plus already-known required output choice branches within that same scope and scope-filtered execution order; optional `may_produce` outputs do not advance the projection unless they already exist, and required output choice branches are not synthesized unless exactly one member already exists. Live execution targets Linux. Live `step` executes exactly one ready candidate, then re-scans and prints the refreshed state. Live `run` repeats the execute → scan → enforce → re-evaluate cycle until quiescence, resolves its agent command from `--agent-command -- <argv...>` or `[agent].command` in config, reopens exhausted work when a later reconciliation changes relevant inputs, and exits with outcome-specific status codes. Before launching an agent, live execution builds the per-protocol `runa-mcp` config; direct Claude Code commands receive it through a temporary `--mcp-config` file, while other runtimes receive the same payload through `RUNA_MCP_CONFIG` for adapter use. When `RUNA_TRANSCRIPT_DIR` is set, live execution also appends structured transcript events for the rendered prompt, agent stdout/stderr, and exit status.
+9. **Session evaluation planning.** `session` wraps scan findings, scope-filtered topology evaluation, CLI-compatible ready/blocked/waiting protocol entries, context construction, and execution-record snapshot planning. `runa state`, `runa step`, `runa run`, and the scoped `runa-mcp` session surface consume this shared layer so readiness and delivered context are not reimplemented per caller.
 
-10. **MCP runtime loop.** `runa-mcp` parses `--protocol` and optional `--work-unit`, loads the project, scans the workspace, resolves the named protocol from the manifest, validates declared scope and canonical work-unit identity against the provided arguments, validates that its outputs can be served as MCP tools, and serves an MCP session via stdio. When transcript capture is enabled, tool calls and tool results are appended to the same JSONL stream as CLI execution events.
+10. **CLI execution commands.** `runa state`, `runa step`, and `runa run` share the same scope-resolved topology, readiness evaluation, plan construction, and scope handling. Without `--work-unit`, they evaluate only unscoped protocols. With `--work-unit <ID>`, they evaluate only scoped protocols for that delegated work unit after canonical identity validation. `step --dry-run` previews only the next concrete execution, while `run --dry-run` projects the full optimistic cascade to quiescence from declared `produces` outputs plus already-known required output choice branches within that same scope and scope-filtered execution order; optional `may_produce` outputs do not advance the projection unless they already exist, and required output choice branches are not synthesized unless exactly one member already exists. Live execution targets Linux. Live `step` executes exactly one ready candidate, then re-scans and prints the refreshed state. Live `run` repeats the execute → scan → enforce → re-evaluate cycle until quiescence, resolves its agent command from `--agent-command -- <argv...>` or `[agent].command` in config, reopens exhausted work when a later reconciliation changes relevant inputs, and exits with outcome-specific status codes. Before launching an agent, live execution builds the per-protocol `runa-mcp` config; direct Claude Code commands receive it through a temporary `--mcp-config` file, while other runtimes receive the same payload through `RUNA_MCP_CONFIG` for adapter use. When `RUNA_TRANSCRIPT_DIR` is set, live execution also appends structured transcript events for the rendered prompt, agent stdout/stderr, and exit status.
+
+11. **MCP runtime loop.** With `--protocol`, `runa-mcp` serves the existing protocol-output tool surface. Without `--protocol`, it requires `--work-unit`, validates canonical work-unit identity, and serves the scoped session surface: `readiness`, `next-protocol-context`, `advance`, and the current ready protocol's output tools in one caller-agnostic MCP connection. Session `advance` scans, enforces postconditions for the pending protocol, records execution metadata, and returns refreshed readiness. When transcript capture is enabled, tool calls and tool results are appended to the same JSONL stream as CLI execution events.
 
 ## Modules
 
@@ -107,19 +109,34 @@ runtime checks that schema validation cannot express: id/handle number
 agreement, duplicate tracker identity detection, and active deployment
 agreement from `GROUNDWORK_*` atoms.
 
+### `session.rs`
+
+Shared session-surface planning. Converts scan findings plus an evaluation scope
+into ordered ready/blocked/waiting protocol entries, builds the next executable
+protocol context through `context::build_context`, filters untrusted accepted
+inputs under partial scans, and captures the execution-record snapshot that
+`step`, `run`, and session-surface `advance` record after postconditions pass.
+
 ## runa-mcp Modules
 
 ### `main.rs`
 
-Runtime loop: parses `--protocol` and optional `--work-unit`, loads the project,
-scans the workspace, resolves the named protocol from the manifest, validates
-declared scope and canonical scoped identity against the provided arguments,
-validates its output types, builds the MCP handler, and serves via stdio
-transport.
+Runtime loop: parses optional `--protocol` plus optional `--work-unit`, loads
+the project, scans the workspace, validates canonical scoped identity when a
+scope is supplied, then selects protocol mode or session mode. Protocol mode
+validates the named protocol's output tools before serving. Session mode
+requires `--work-unit` and serves the scoped session surface.
 
 ### `handler.rs`
 
-`ServerHandler` implementation. `RunaHandler` derives one MCP tool per output artifact type (`produces` + required output choice members + viable `may_produce`), with tool input schemas derived from artifact type JSON Schemas (with `work_unit` stripped). `validate_protocol_scope` rejects scoped protocols without `--work-unit` and unscoped protocols with one. `validate_output_types` remains a defense-in-depth guard for required output schemas unsupported by MCP tool generation, while sharing the same unscoped-output `work_unit` predicate used by manifest parsing. `call_tool` validates artifacts before writing, then writes to the workspace and records in the store. The server advertises tool capabilities only; prompt delivery is handled by `runa step`, not by MCP.
+`ServerHandler` implementations. `RunaHandler` preserves the protocol-output
+tool surface. `SessionHandler` exposes `readiness`, `next-protocol-context`,
+`advance`, and the current ready protocol's output tools in one MCP connection.
+Both handlers share output-tool generation and validate-then-write behavior.
+`validate_protocol_scope` rejects scoped protocols without `--work-unit` and
+unscoped protocols with one. `validate_output_types` remains a defense-in-depth
+guard for required output schemas unsupported by MCP tool generation, while
+sharing the same unscoped-output `work_unit` predicate used by manifest parsing.
 
 ## `.runa/` Directory Layout
 

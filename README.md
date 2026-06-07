@@ -162,7 +162,7 @@ Both projects are in early development.
 | `runa doctor` | Check project health |
 | `runa step` | Execute the next ready protocol |
 | `runa run` | Walk the ready frontier to quiescence; live runs may override the agent command with `--agent-command -- <argv...>` |
-| `runa-mcp` | MCP server for artifact production |
+| `runa-mcp` | MCP server for session verbs and artifact production |
 
 See [CLI Reference](docs/cli-reference.md) for flags, exit codes, configuration, and behavioral details.
 

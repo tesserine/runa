@@ -1,16 +1,21 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rmcp::Error as McpError;
 use rmcp::ServerHandler;
 use rmcp::model::*;
 use rmcp::service::{RequestContext, RoleServer};
+use serde::Serialize;
 use serde_json::Value;
 use tracing::{info, warn};
 
+use libagent::context::{ContextInjectionView, render_context_prompt};
 use libagent::validation::validate_artifact;
-use libagent::{ArtifactStore, ArtifactType, ProtocolDeclaration, validate_output_scope};
+use libagent::{
+    ArtifactStore, ArtifactType, LoadedProject, ProtocolDeclaration, SessionPlanEntry,
+    validate_output_scope,
+};
 
 pub struct RunaHandler {
     protocol: ProtocolDeclaration,
@@ -33,71 +38,7 @@ impl RunaHandler {
         store: ArtifactStore,
         workspace_dir: PathBuf,
     ) -> Self {
-        let mut tools = Vec::new();
-        let mut tool_schemas = HashMap::new();
-
-        let output_types: Vec<&String> = protocol
-            .produces
-            .iter()
-            .chain(protocol.required_choice_members())
-            .chain(protocol.may_produce.iter().filter(|type_name| {
-                if work_unit.is_none()
-                    && let Some(at) = store.artifact_type(type_name)
-                    && at.schema_requires_work_unit()
-                {
-                    warn!(
-                        operation = "tool_generation",
-                        outcome = "skipped_requires_work_unit",
-                        artifact_type = %type_name,
-                        "skipping may_produce type because handler has no work_unit"
-                    );
-                    return false;
-                }
-                true
-            }))
-            .collect();
-
-        for type_name in &output_types {
-            let Some(at) = store.artifact_type(type_name) else {
-                continue;
-            };
-
-            // Reject non-object schemas: strip_work_unit and add_instance_id
-            // assume object root with properties/required.
-            let root_type = at.schema.get("type").and_then(|t| t.as_str());
-            if root_type != Some("object") {
-                warn!(
-                    operation = "tool_generation",
-                    outcome = "skipped_non_object_schema",
-                    artifact_type = %type_name,
-                    schema_root_type = %root_type.unwrap_or("<missing>"),
-                    "skipping artifact type with unsupported schema root"
-                );
-                continue;
-            }
-
-            // Reject composed schemas: composition keywords prevent reliable
-            // work_unit stripping and injection.
-            if has_composition_keywords(&at.schema) {
-                warn!(
-                    operation = "tool_generation",
-                    outcome = "skipped_composed_schema",
-                    artifact_type = %type_name,
-                    "skipping artifact type with composed schema"
-                );
-                continue;
-            }
-
-            let stripped = strip_work_unit(&at.schema);
-            let schema_obj = add_instance_id(stripped);
-
-            tools.push(Tool::new(
-                (*type_name).clone(),
-                format!("Validate and write a {type_name} artifact to the workspace"),
-                Arc::new(schema_obj),
-            ));
-            tool_schemas.insert((*type_name).clone(), at.schema.clone());
-        }
+        let (tools, tool_schemas) = build_output_tools(&protocol, work_unit.as_deref(), &store);
 
         Self {
             protocol,
@@ -108,6 +49,336 @@ impl RunaHandler {
             tool_schemas,
         }
     }
+}
+
+pub struct SessionHandler {
+    work_unit: String,
+    working_dir: PathBuf,
+    state: Mutex<SessionHandlerState>,
+    workspace_dir: PathBuf,
+    tools: Vec<Tool>,
+    tool_schemas: HashMap<String, Value>,
+}
+
+struct SessionHandlerState {
+    loaded: LoadedProject,
+    pending: Option<SessionPlanEntry>,
+}
+
+#[derive(Serialize)]
+struct ReadinessPayload {
+    version: u32,
+    methodology: String,
+    scan_warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cycle: Option<Vec<String>>,
+    protocols: Vec<libagent::ProtocolJson>,
+}
+
+#[derive(Serialize)]
+struct ContextPayload {
+    protocol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work_unit: Option<String>,
+    trigger: String,
+    context: ContextInjectionView,
+    rendered_prompt: String,
+}
+
+impl SessionHandler {
+    pub fn new(
+        loaded: LoadedProject,
+        working_dir: PathBuf,
+        work_unit: String,
+        workspace_dir: PathBuf,
+    ) -> Self {
+        let session_state = evaluate_loaded_session(&loaded, &working_dir, &work_unit);
+        let pending = session_state.planned_entries.into_iter().next();
+        let mut tools = driver_tools();
+        let mut tool_schemas = HashMap::new();
+
+        if let Some(entry) = &pending
+            && let Some(protocol) = loaded
+                .manifest
+                .protocols
+                .iter()
+                .find(|protocol| protocol.name == entry.protocol)
+        {
+            let (output_tools, output_schemas) =
+                build_output_tools(protocol, Some(&work_unit), &loaded.store);
+            tools.extend(output_tools);
+            tool_schemas.extend(output_schemas);
+        }
+
+        Self {
+            work_unit,
+            working_dir,
+            state: Mutex::new(SessionHandlerState { loaded, pending }),
+            workspace_dir,
+            tools,
+            tool_schemas,
+        }
+    }
+
+    fn refresh_state(&self) -> Result<libagent::SessionState, McpError> {
+        let mut state = self.state.lock().unwrap();
+        let scan_result =
+            libagent::scan(&self.workspace_dir, &mut state.loaded.store).map_err(|error| {
+                McpError::internal_error(format!("failed to scan workspace: {error}"), None)
+            })?;
+        let session_state = libagent::evaluate_session_state(
+            &state.loaded,
+            &self.working_dir,
+            &scan_result,
+            libagent::EvaluationScope::Scoped(&self.work_unit),
+        );
+        state.pending = session_state.planned_entries.first().cloned();
+        Ok(session_state)
+    }
+
+    fn readiness_result(&self) -> Result<CallToolResult, McpError> {
+        let session_state = self.refresh_state()?;
+        let methodology = self.state.lock().unwrap().loaded.manifest.name.clone();
+        readiness_call_result(methodology, session_state)
+    }
+
+    fn next_context_result(&self) -> Result<CallToolResult, McpError> {
+        let session_state = self.refresh_state()?;
+        let Some(entry) = session_state.planned_entries.into_iter().next() else {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "No READY protocols.",
+            )]));
+        };
+        let payload = ContextPayload {
+            protocol: entry.protocol.clone(),
+            work_unit: entry.work_unit.clone(),
+            trigger: entry.trigger,
+            rendered_prompt: render_context_prompt(&entry.context),
+            context: ContextInjectionView::from(&entry.context),
+        };
+        let json = serde_json::to_string_pretty(&payload).map_err(|error| {
+            McpError::internal_error(format!("failed to serialize context: {error}"), None)
+        })?;
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    fn advance_result(&self) -> Result<CallToolResult, McpError> {
+        let mut state = self.state.lock().unwrap();
+        let pending = match state.pending.clone() {
+            Some(pending) => pending,
+            None => {
+                let scan_result = libagent::scan(&self.workspace_dir, &mut state.loaded.store)
+                    .map_err(|error| {
+                        McpError::internal_error(format!("failed to scan workspace: {error}"), None)
+                    })?;
+                let session_state = libagent::evaluate_session_state(
+                    &state.loaded,
+                    &self.working_dir,
+                    &scan_result,
+                    libagent::EvaluationScope::Scoped(&self.work_unit),
+                );
+                let pending = session_state.planned_entries.first().cloned();
+                state.pending = pending.clone();
+                match pending {
+                    Some(pending) => pending,
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "No READY protocols.",
+                        )]));
+                    }
+                }
+            }
+        };
+
+        let scan_result =
+            libagent::scan(&self.workspace_dir, &mut state.loaded.store).map_err(|error| {
+                McpError::internal_error(format!("failed to scan workspace: {error}"), None)
+            })?;
+
+        let protocol = state
+            .loaded
+            .manifest
+            .protocols
+            .iter()
+            .find(|protocol| protocol.name == pending.protocol)
+            .cloned()
+            .ok_or_else(|| {
+                McpError::internal_error(
+                    format!("planned protocol '{}' is missing", pending.protocol),
+                    None,
+                )
+            })?;
+
+        if let Err(error) = libagent::enforce_postconditions(
+            &protocol,
+            &state.loaded.store,
+            pending.work_unit.as_deref(),
+        ) {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "postconditions failed for protocol '{}': {error}",
+                pending.protocol
+            ))]));
+        }
+
+        state
+            .loaded
+            .store
+            .record_execution(
+                &pending.protocol,
+                pending.work_unit.as_deref(),
+                pending.execution_record,
+            )
+            .map_err(|error| {
+                McpError::internal_error(
+                    format!("failed to record execution metadata: {error}"),
+                    None,
+                )
+            })?;
+
+        let session_state = libagent::evaluate_session_state(
+            &state.loaded,
+            &self.working_dir,
+            &scan_result,
+            libagent::EvaluationScope::Scoped(&self.work_unit),
+        );
+        state.pending = session_state.planned_entries.first().cloned();
+        let methodology = state.loaded.manifest.name.clone();
+        drop(state);
+        readiness_call_result(methodology, session_state)
+    }
+}
+
+fn readiness_call_result(
+    methodology: String,
+    session_state: libagent::SessionState,
+) -> Result<CallToolResult, McpError> {
+    let payload = ReadinessPayload {
+        version: 1,
+        methodology,
+        scan_warnings: session_state.scan_findings.warnings.clone(),
+        cycle: session_state
+            .evaluated
+            .cycle
+            .as_ref()
+            .map(|cycle| cycle.path.clone()),
+        protocols: session_state.evaluated.json_protocols(),
+    };
+    let json = serde_json::to_string_pretty(&payload).map_err(|error| {
+        McpError::internal_error(format!("failed to serialize readiness: {error}"), None)
+    })?;
+    Ok(CallToolResult::success(vec![Content::text(json)]))
+}
+
+fn evaluate_loaded_session(
+    loaded: &LoadedProject,
+    working_dir: &Path,
+    work_unit: &str,
+) -> libagent::SessionState {
+    let scan_result = libagent::ScanResult::default();
+    libagent::evaluate_session_state(
+        loaded,
+        working_dir,
+        &scan_result,
+        libagent::EvaluationScope::Scoped(work_unit),
+    )
+}
+
+fn driver_tools() -> Vec<Tool> {
+    vec![
+        driver_tool("readiness", "Report session readiness for the active scope"),
+        driver_tool(
+            "next-protocol-context",
+            "Return the next ready protocol context for the active scope",
+        ),
+        driver_tool(
+            "advance",
+            "Reconcile produced outputs, record execution, and refresh readiness",
+        ),
+    ]
+}
+
+fn driver_tool(name: &'static str, description: &'static str) -> Tool {
+    Tool::new(
+        name,
+        description,
+        Arc::new(serde_json::Map::from_iter([
+            ("type".to_string(), Value::String("object".to_string())),
+            (
+                "properties".to_string(),
+                Value::Object(serde_json::Map::new()),
+            ),
+        ])),
+    )
+}
+
+fn build_output_tools(
+    protocol: &ProtocolDeclaration,
+    work_unit: Option<&str>,
+    store: &ArtifactStore,
+) -> (Vec<Tool>, HashMap<String, Value>) {
+    let mut tools = Vec::new();
+    let mut tool_schemas = HashMap::new();
+
+    let output_types: Vec<&String> = protocol
+        .produces
+        .iter()
+        .chain(protocol.required_choice_members())
+        .chain(protocol.may_produce.iter().filter(|type_name| {
+            if work_unit.is_none()
+                && let Some(at) = store.artifact_type(type_name)
+                && at.schema_requires_work_unit()
+            {
+                warn!(
+                    operation = "tool_generation",
+                    outcome = "skipped_requires_work_unit",
+                    artifact_type = %type_name,
+                    "skipping may_produce type because handler has no work_unit"
+                );
+                return false;
+            }
+            true
+        }))
+        .collect();
+
+    for type_name in &output_types {
+        let Some(at) = store.artifact_type(type_name) else {
+            continue;
+        };
+
+        let root_type = at.schema.get("type").and_then(|t| t.as_str());
+        if root_type != Some("object") {
+            warn!(
+                operation = "tool_generation",
+                outcome = "skipped_non_object_schema",
+                artifact_type = %type_name,
+                schema_root_type = %root_type.unwrap_or("<missing>"),
+                "skipping artifact type with unsupported schema root"
+            );
+            continue;
+        }
+
+        if has_composition_keywords(&at.schema) {
+            warn!(
+                operation = "tool_generation",
+                outcome = "skipped_composed_schema",
+                artifact_type = %type_name,
+                "skipping artifact type with composed schema"
+            );
+            continue;
+        }
+
+        let stripped = strip_work_unit(&at.schema);
+        let schema_obj = add_instance_id(stripped);
+
+        tools.push(Tool::new(
+            (*type_name).clone(),
+            format!("Validate and write a {type_name} artifact to the workspace"),
+            Arc::new(schema_obj),
+        ));
+        tool_schemas.insert((*type_name).clone(), at.schema.clone());
+    }
+
+    (tools, tool_schemas)
 }
 
 /// Check whether a JSON Schema uses composition keywords that prevent
@@ -276,6 +547,123 @@ fn validate_instance_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn call_output_tool(
+    protocol_name: &str,
+    work_unit: Option<&str>,
+    request: CallToolRequestParam,
+    tool_schemas: &HashMap<String, Value>,
+    store: &mut ArtifactStore,
+    workspace_dir: &Path,
+) -> Result<CallToolResult, McpError> {
+    let tool_name = request.name.as_ref();
+    append_tool_event(
+        "tool_call",
+        protocol_name,
+        work_unit,
+        tool_name,
+        request
+            .arguments
+            .as_ref()
+            .map(|arguments| Value::Object(arguments.clone())),
+        None,
+    )?;
+
+    let full_schema = tool_schemas
+        .get(tool_name)
+        .ok_or_else(|| McpError::invalid_params(format!("unknown tool: {tool_name}"), None))?;
+
+    let mut data = match request.arguments {
+        Some(args) => Value::Object(args),
+        None => Value::Object(serde_json::Map::new()),
+    };
+
+    let instance_id = if let Value::Object(data_map) = &mut data {
+        match data_map.remove("instance_id") {
+            Some(Value::String(s)) => s,
+            Some(_) => {
+                return Err(McpError::invalid_params(
+                    "instance_id must be a string",
+                    None,
+                ));
+            }
+            None => {
+                return Err(McpError::invalid_params("instance_id is required", None));
+            }
+        }
+    } else {
+        return Err(McpError::invalid_params("instance_id is required", None));
+    };
+
+    validate_instance_id(&instance_id).map_err(|e| McpError::invalid_params(e, None))?;
+
+    let at = ArtifactType {
+        name: tool_name.to_string(),
+        schema: full_schema.clone(),
+    };
+
+    if at.schema_mentions_work_unit()
+        && let (Value::Object(data_map), Some(wu)) = (&mut data, work_unit)
+    {
+        data_map.insert("work_unit".to_string(), Value::String(wu.to_string()));
+    }
+
+    if let Err(e) = validate_artifact(&data, &at) {
+        let msg = match e {
+            libagent::ValidationError::InvalidArtifact { violations, .. } => violations
+                .iter()
+                .map(|v| format!("{}: {}", v.instance_path, v.description))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            libagent::ValidationError::InvalidSchema { detail, .. } => {
+                format!("schema error: {detail}")
+            }
+        };
+        append_tool_event(
+            "tool_result",
+            protocol_name,
+            work_unit,
+            tool_name,
+            None,
+            Some(&msg),
+        )?;
+        return Ok(CallToolResult::error(vec![Content::text(msg)]));
+    }
+
+    let type_dir = workspace_dir.join(tool_name);
+    std::fs::create_dir_all(&type_dir)
+        .map_err(|e| McpError::internal_error(format!("failed to create directory: {e}"), None))?;
+    let artifact_path = type_dir.join(format!("{instance_id}.json"));
+    let json = serde_json::to_string_pretty(&data)
+        .map_err(|e| McpError::internal_error(format!("serialization error: {e}"), None))?;
+    std::fs::write(&artifact_path, &json)
+        .map_err(|e| McpError::internal_error(format!("failed to write artifact: {e}"), None))?;
+
+    store
+        .record(tool_name, &instance_id, &artifact_path, &data)
+        .map_err(|e| McpError::internal_error(format!("store error: {e}"), None))?;
+
+    info!(
+        operation = "tool_call",
+        outcome = "artifact_written",
+        artifact_type = %tool_name,
+        instance_id = %instance_id,
+        work_unit = ?work_unit,
+        "artifact written to workspace"
+    );
+
+    let message = format!("Produced {tool_name}/{instance_id}.json");
+    append_tool_event(
+        "tool_result",
+        protocol_name,
+        work_unit,
+        tool_name,
+        None,
+        Some(&message),
+    )?;
+
+    Ok(CallToolResult::success(vec![Content::text(message)]))
+}
+
 impl ServerHandler for RunaHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
@@ -308,125 +696,73 @@ impl ServerHandler for RunaHandler {
         request: CallToolRequestParam,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let tool_name = request.name.as_ref();
-        append_tool_event(
-            "tool_call",
-            &self.protocol.name,
-            self.work_unit.as_deref(),
-            tool_name,
-            request
-                .arguments
-                .as_ref()
-                .map(|arguments| Value::Object(arguments.clone())),
-            None,
-        )?;
-
-        // Look up the full schema for this artifact type.
-        let full_schema = self
-            .tool_schemas
-            .get(tool_name)
-            .ok_or_else(|| McpError::invalid_params(format!("unknown tool: {tool_name}"), None))?;
-
-        // Build the artifact data from arguments, extracting instance_id first.
-        let mut data = match request.arguments {
-            Some(args) => Value::Object(args),
-            None => Value::Object(serde_json::Map::new()),
-        };
-
-        // Extract instance_id (tool parameter, not part of artifact schema).
-        let instance_id = if let Value::Object(data_map) = &mut data {
-            match data_map.remove("instance_id") {
-                Some(Value::String(s)) => s,
-                Some(_) => {
-                    return Err(McpError::invalid_params(
-                        "instance_id must be a string",
-                        None,
-                    ));
-                }
-                None => {
-                    return Err(McpError::invalid_params("instance_id is required", None));
-                }
-            }
-        } else {
-            return Err(McpError::invalid_params("instance_id is required", None));
-        };
-
-        validate_instance_id(&instance_id).map_err(|e| McpError::invalid_params(e, None))?;
-
-        let at = ArtifactType {
-            name: tool_name.to_string(),
-            schema: full_schema.clone(),
-        };
-
-        // Inject delegated work_unit whenever the full schema mentions it.
-        if at.schema_mentions_work_unit()
-            && let (Value::Object(data_map), Some(wu)) = (&mut data, &self.work_unit)
-        {
-            data_map.insert("work_unit".to_string(), Value::String(wu.clone()));
-        }
-
-        // Validate against the full schema (including work_unit).
-        if let Err(e) = validate_artifact(&data, &at) {
-            let msg = match e {
-                libagent::ValidationError::InvalidArtifact { violations, .. } => violations
-                    .iter()
-                    .map(|v| format!("{}: {}", v.instance_path, v.description))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                libagent::ValidationError::InvalidSchema { detail, .. } => {
-                    format!("schema error: {detail}")
-                }
-            };
-            append_tool_event(
-                "tool_result",
-                &self.protocol.name,
-                self.work_unit.as_deref(),
-                tool_name,
-                None,
-                Some(&msg),
-            )?;
-            return Ok(CallToolResult::error(vec![Content::text(msg)]));
-        }
-
-        // Write artifact to workspace.
-        let type_dir = self.workspace_dir.join(tool_name);
-        std::fs::create_dir_all(&type_dir).map_err(|e| {
-            McpError::internal_error(format!("failed to create directory: {e}"), None)
-        })?;
-        let artifact_path = type_dir.join(format!("{instance_id}.json"));
-        let json = serde_json::to_string_pretty(&data)
-            .map_err(|e| McpError::internal_error(format!("serialization error: {e}"), None))?;
-        std::fs::write(&artifact_path, &json).map_err(|e| {
-            McpError::internal_error(format!("failed to write artifact: {e}"), None)
-        })?;
-
-        // Record in store.
         let mut state = self.state.lock().unwrap();
-        state
-            .store
-            .record(tool_name, &instance_id, &artifact_path, &data)
-            .map_err(|e| McpError::internal_error(format!("store error: {e}"), None))?;
-
-        info!(
-            operation = "tool_call",
-            outcome = "artifact_written",
-            artifact_type = %tool_name,
-            instance_id = %instance_id,
-            work_unit = ?self.work_unit,
-            "artifact written to workspace"
-        );
-
-        let message = format!("Produced {tool_name}/{instance_id}.json");
-        append_tool_event(
-            "tool_result",
+        call_output_tool(
             &self.protocol.name,
             self.work_unit.as_deref(),
-            tool_name,
-            None,
-            Some(&message),
-        )?;
+            request,
+            &self.tool_schemas,
+            &mut state.store,
+            &self.workspace_dir,
+        )
+    }
+}
 
-        Ok(CallToolResult::success(vec![Content::text(message)]))
+impl ServerHandler for SessionHandler {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo {
+            protocol_version: ProtocolVersion::default(),
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            server_info: Implementation {
+                name: "runa-mcp".into(),
+                version: libagent::version().into(),
+            },
+            instructions: Some(format!(
+                "MCP session surface for work unit '{}'. Use readiness, next-protocol-context, advance, and protocol output tools.",
+                self.work_unit
+            )),
+        }
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        let _state = self.state.lock().unwrap();
+        Ok(ListToolsResult {
+            next_cursor: None,
+            tools: self.tools.clone(),
+        })
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParam,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let tool_name = request.name.to_string();
+        match tool_name.as_str() {
+            "readiness" => self.readiness_result(),
+            "next-protocol-context" => self.next_context_result(),
+            "advance" => self.advance_result(),
+            _ => {
+                let mut state = self.state.lock().unwrap();
+                let protocol_name = state
+                    .pending
+                    .as_ref()
+                    .map(|entry| entry.protocol.clone())
+                    .unwrap_or_else(|| "<session>".to_string());
+                call_output_tool(
+                    &protocol_name,
+                    Some(&self.work_unit),
+                    request,
+                    &self.tool_schemas,
+                    &mut state.loaded.store,
+                    &self.workspace_dir,
+                )
+            }
+        }
     }
 }
 

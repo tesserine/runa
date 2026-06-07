@@ -223,13 +223,16 @@ Without `--dry-run`, requires a Linux host plus an effective agent command. `run
 
 ## MCP Server
 
-`runa-mcp` is a single-session stdio MCP server that serves one named protocol invocation per process.
+`runa-mcp` is a single-session stdio MCP server. It can serve either one named protocol invocation or a scoped session surface.
 
 ```bash
 runa-mcp --protocol <name> [--work-unit <name>]
+runa-mcp --work-unit <name>
 ```
 
-On startup, the server loads the project, scans the workspace, resolves the named protocol from the manifest, validates that its declared scope matches the presence or absence of `--work-unit`, validates canonical `work-unit` identity for scoped sessions, validates that its required output types can be served as MCP tools, and serves an MCP session over stdio. Each output artifact type (`produces`, required output choice members, and viable `may_produce`) becomes one MCP tool. The tool input schema is the artifact type's JSON Schema with the `work_unit` field removed — the server injects `work_unit` automatically from the `--work-unit` argument.
+With `--protocol`, the server loads the project, scans the workspace, resolves the named protocol from the manifest, validates that its declared scope matches the presence or absence of `--work-unit`, validates canonical `work-unit` identity for scoped sessions, validates that its required output types can be served as MCP tools, and serves one protocol's output tools over stdio. Each output artifact type (`produces`, required output choice members, and viable `may_produce`) becomes one MCP tool. The tool input schema is the artifact type's JSON Schema with the `work_unit` field removed — the server injects `work_unit` automatically from the `--work-unit` argument.
+
+Without `--protocol`, `--work-unit` is required and the server exposes the session driver verbs `readiness`, `next-protocol-context`, and `advance` alongside the current ready protocol's output tools. `readiness` re-scans and reports the same scoped ready/blocked/waiting classification used by the CLI. `next-protocol-context` returns the next ready protocol's structured context and rendered prompt from the same context construction path used by `runa step`. `advance` re-scans, enforces postconditions for the pending protocol, records execution metadata, and returns refreshed readiness. The surface is caller-agnostic: caller identity does not change readiness, context delivery, output validation, or advancement semantics.
 
 `runa step` does not spawn `runa-mcp` directly. For direct Claude Code commands, it writes the resolved `runa-mcp` command, arguments, and environment into a temporary `mcpServers.runa` config and passes that config to Claude. For other agent runtimes, it exports the same data as a `RUNA_MCP_CONFIG` JSON payload so an adapter can launch the server as its own child process. The exported command and environment paths are absolute whenever runa resolves them from the local filesystem, so adapters do not depend on child process cwd to launch `runa-mcp`. Transcript environment variables are forwarded into the MCP config when transcript capture is enabled, which lets the MCP server append tool events to the same transcript stream as the CLI execution events.
 

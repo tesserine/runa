@@ -10,14 +10,14 @@ use std::path::PathBuf;
 use std::process;
 use tracing::{error, info};
 
-use handler::RunaHandler;
+use handler::{RunaHandler, SessionHandler};
 
 #[derive(Parser)]
 #[command(name = "runa-mcp", version)]
 struct Cli {
     /// Name of the protocol to serve
     #[arg(long)]
-    protocol: String,
+    protocol: Option<String>,
 
     /// Optional work unit scope for tool serving
     #[arg(long)]
@@ -46,6 +46,10 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    if cli.protocol.is_none() && cli.work_unit.is_none() {
+        return Err("session mode requires --work-unit; protocol mode requires --protocol".into());
+    }
+
     let working_dir = match std::env::var("RUNA_WORKING_DIR") {
         Ok(dir) => PathBuf::from(dir),
         Err(_) => std::env::current_dir()?,
@@ -61,16 +65,45 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(work_unit) = cli.work_unit.as_deref() {
         libagent::validate_scoped_work_unit(&loaded.store, work_unit)?;
     }
+    let Some(protocol_name) = cli.protocol.as_deref() else {
+        let work_unit = cli
+            .work_unit
+            .clone()
+            .ok_or("session mode requires --work-unit")?;
+        info!(
+            operation = "mcp_session",
+            outcome = "serving",
+            work_unit = %work_unit,
+            "serving session surface"
+        );
+
+        let workspace_dir = loaded.workspace_dir.clone();
+        let handler = SessionHandler::new(loaded, working_dir.clone(), work_unit, workspace_dir);
+
+        let (stdin, stdout) = io::stdio();
+        let service = handler.serve((stdin, stdout)).await.inspect_err(|e| {
+            error!(
+                operation = "mcp_server",
+                outcome = "init_failed",
+                error = %e,
+                "server initialization failed"
+            );
+        })?;
+        service.waiting().await?;
+
+        return Ok(());
+    };
+
     let protocol = loaded
         .manifest
         .protocols
         .iter()
-        .find(|protocol| protocol.name == cli.protocol)
+        .find(|protocol| protocol.name == protocol_name)
         .cloned()
         .ok_or_else(|| {
             format!(
                 "protocol '{}' not found in manifest '{}'",
-                cli.protocol, loaded.manifest.name
+                protocol_name, loaded.manifest.name
             )
         })?;
 
