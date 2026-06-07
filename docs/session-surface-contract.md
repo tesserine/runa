@@ -40,6 +40,10 @@ The required session verbs are:
 | `record output` | Accept an output artifact only through the protocol's declared output contract. Runa validates the artifact against the methodology schema, applies scoped session metadata where the runtime owns it, rejects invalid output, and records only valid output as runtime state. |
 | `advance` | Re-evaluate lifecycle progress from the validated artifact state. Advancement follows the methodology dependency graph, trigger rules, preconditions, postconditions, and required disposition artifacts. It is not a separate approval operation. |
 
+In MCP session mode, the concrete driver tool names `readiness`,
+`next-protocol-context`, and `advance` are reserved. A current step must not
+declare an output artifact type with one of those names.
+
 The semantics above are identical in autonomous and interactive modes. Caller
 identity, shell shape, launch path, or UI affordance must not create a second
 meaning for the same verb.

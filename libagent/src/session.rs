@@ -264,6 +264,8 @@ impl SessionState {
                     &scan_findings.affected_types,
                 )
             });
+        let current_inputs_match_provenance =
+            self.current_inputs_match_provenance(&completed_step, &execution_record);
 
         let previous_record = self.loaded.store.stage_execution_record(
             &completed_step.protocol,
@@ -272,7 +274,11 @@ impl SessionState {
         );
 
         let mut staged_exhausted = self.exhausted.clone();
-        staged_exhausted.insert(crate::CandidateKey::from(&completed_step));
+        if current_inputs_match_provenance {
+            staged_exhausted.insert(crate::CandidateKey::from(&completed_step));
+        } else {
+            staged_exhausted.remove(&crate::CandidateKey::from(&completed_step));
+        }
         crate::refresh_exhausted_candidates_after_scan(
             &self.loaded.manifest.protocols,
             &mut staged_exhausted,
@@ -380,6 +386,19 @@ impl SessionState {
         }
 
         Ok(None)
+    }
+
+    fn current_inputs_match_provenance(
+        &self,
+        step: &CurrentStep,
+        provenance: &crate::ExecutionRecord,
+    ) -> bool {
+        let current_inputs = crate::selection::execution_input_snapshot_for_freshness_inputs(
+            &self.loaded.store,
+            provenance.input_modes.iter(),
+            step.work_unit.as_deref(),
+        );
+        provenance.inputs == current_inputs
     }
 
     fn refresh_exhaustion_after_scan(&mut self, scan_result: &crate::ScanResult) {

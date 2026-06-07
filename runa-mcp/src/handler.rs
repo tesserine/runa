@@ -193,18 +193,7 @@ impl RunaHandler {
                     session
                         .advance_with_validator(|next_protocol, store| {
                             if let Some(protocol) = next_protocol {
-                                for type_name in protocol
-                                    .produces
-                                    .iter()
-                                    .chain(protocol.required_choice_members())
-                                {
-                                    if DRIVER_TOOL_NAMES.contains(&type_name.as_str()) {
-                                        return Err(format!(
-                                            "required output type '{type_name}' collides with reserved session driver verb"
-                                        ));
-                                    }
-                                }
-                                validate_output_types(protocol, store, Some(""))
+                                validate_session_output_types(protocol, store, Some(""))
                             } else {
                                 Ok(())
                             }
@@ -491,18 +480,27 @@ fn validate_session_current_step(session: &SessionState) -> Result<(), String> {
     let protocol = session
         .current_protocol()
         .map_err(|error| error.to_string())?;
+    validate_session_output_types(protocol, session.store(), step.work_unit.as_deref())
+}
+
+fn validate_session_output_types(
+    protocol: &ProtocolDeclaration,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+) -> Result<(), String> {
     for type_name in protocol
         .produces
         .iter()
         .chain(protocol.required_choice_members())
+        .chain(protocol.may_produce.iter())
     {
         if DRIVER_TOOL_NAMES.contains(&type_name.as_str()) {
             return Err(format!(
-                "required output type '{type_name}' collides with reserved session driver verb"
+                "output type '{type_name}' collides with reserved session driver verb"
             ));
         }
     }
-    validate_output_types(protocol, session.store(), step.work_unit.as_deref())
+    validate_output_types(protocol, store, work_unit)
 }
 
 fn session_tools_and_schemas(

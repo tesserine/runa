@@ -747,6 +747,77 @@ async fn session_advance_reopens_current_step_when_context_input_changes() {
 }
 
 #[tokio::test]
+async fn session_advance_reopens_current_step_when_readiness_consumes_context_input_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        two_step_session_manifest_toml(),
+        &two_step_session_schemas(),
+        &["take", "implement"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--session")
+                        .arg("--work-unit")
+                        .arg("work-unit-166")
+                        .env_remove("GROUNDWORK_FORGE_TYPE")
+                        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                        .env("GROUNDWORK_FORGE_NAME", "runa")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    service
+        .call_tool(session_call("next-protocol-context"))
+        .await
+        .unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(167),
+    )
+    .unwrap();
+    service.call_tool(session_call("readiness")).await.unwrap();
+    service
+        .call_tool(CallToolRequestParam {
+            name: "claim".to_string().into(),
+            arguments: serde_json::json!({
+                "instance_id": "claim-1",
+                "scope": "claim this work"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+
+    let advance = service.call_tool(session_call("advance")).await.unwrap();
+    let advance: serde_json::Value = serde_json::from_str(&tool_result_text(&advance)).unwrap();
+    assert_eq!(advance["completed_step"]["protocol"], "take");
+    assert_eq!(advance["next_step"]["protocol"], "take");
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn session_advance_emits_tool_list_changed_when_current_step_changes() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = write_methodology(
@@ -1097,6 +1168,74 @@ async fn choice_only_protocol_with_unsupported_may_produce_starts() {
     assert_eq!(tool_names, vec!["approved", "needs-revision"]);
 
     service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn session_start_rejects_may_produce_only_reserved_driver_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "advance"
+
+[[protocols]]
+name = "audit"
+requires = ["work-unit"]
+may_produce = ["advance"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+"#,
+        &[
+            (
+                "work-unit",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "advance",
+                r#"{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"}}}"#,
+            ),
+        ],
+        &["audit"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        r#"{"title":"Scope"}"#,
+    )
+    .unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--session")
+                        .arg("--work-unit")
+                        .arg("work-unit-166")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await;
+
+    match service {
+        Ok(service) => {
+            service.cancel().await.unwrap();
+            panic!("session unexpectedly started with reserved may_produce output");
+        }
+        Err(_) => {}
+    }
 }
 
 #[tokio::test]
