@@ -22,6 +22,9 @@ Semantic Versioning.
 - Added the session surface contract documenting the mode-agnostic driver and
   agent boundary for readiness, context delivery, output recording, lifecycle
   advancement, and disposition authority.
+- `runa-mcp --session --work-unit <ID>` now serves a unified scoped session
+  surface with driver tools for readiness, context retrieval, and advance
+  alongside the current step's output artifact tools.
 
 ### Fixed
 

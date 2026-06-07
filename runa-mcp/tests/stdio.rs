@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
-use rmcp::model::CallToolRequestParam;
+use rmcp::model::{CallToolRequestParam, CallToolResult};
 use rmcp::service::ServiceExt;
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use tokio::process::Command;
@@ -145,6 +145,69 @@ fn scoped_work_unit_schemas() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+fn two_step_session_manifest_toml() -> &'static str {
+    r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "claim"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "take"
+requires = ["work-unit"]
+produces = ["claim"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+
+[[protocols]]
+name = "implement"
+requires = ["claim"]
+produces = ["implementation"]
+scoped = true
+trigger = { type = "on_artifact", name = "claim" }
+"#
+}
+
+fn two_step_session_schemas() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "work-unit",
+            r#"{"type":"object","required":["title","description","acceptance_criteria"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"handle":{"type":"object"}}}"#,
+        ),
+        (
+            "claim",
+            r#"{"type":"object","required":["work_unit","scope"],"properties":{"work_unit":{"type":"string"},"scope":{"type":"string"}}}"#,
+        ),
+        (
+            "implementation",
+            r#"{"type":"object","required":["work_unit","summary"],"properties":{"work_unit":{"type":"string"},"summary":{"type":"string"}}}"#,
+        ),
+    ]
+}
+
+fn two_step_with_unsupported_next_output_schemas() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "work-unit",
+            r#"{"type":"object","required":["title","description","acceptance_criteria"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"handle":{"type":"object"}}}"#,
+        ),
+        (
+            "claim",
+            r#"{"type":"object","required":["work_unit","scope"],"properties":{"work_unit":{"type":"string"},"scope":{"type":"string"}}}"#,
+        ),
+        (
+            "implementation",
+            r#"{"type":"array","items":{"type":"string"}}"#,
+        ),
+    ]
+}
+
 fn github_work_unit_json(number: u64) -> String {
     format!(
         r#"{{"title":"Scope","description":"Enforce canonical scope","acceptance_criteria":["Reject aliases"],"handle":{{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/{number}","number":{number}}}}}"#
@@ -185,6 +248,21 @@ fn setup_project() -> tempfile::TempDir {
     dir
 }
 
+fn tool_result_text(result: &CallToolResult) -> String {
+    result.content[0]
+        .as_text()
+        .expect("tool result should be text")
+        .text
+        .clone()
+}
+
+fn session_call(name: &str) -> CallToolRequestParam {
+    CallToolRequestParam {
+        name: name.to_string().into(),
+        arguments: Some(serde_json::Map::new()),
+    }
+}
+
 #[test]
 fn missing_protocol_argument_fails_clearly() {
     let dir = tempfile::tempdir().unwrap();
@@ -215,6 +293,412 @@ fn unknown_protocol_name_references_manifest() {
     assert!(stderr.contains("missing"), "stderr: {stderr}");
     assert!(stderr.contains("manifest"), "stderr: {stderr}");
     assert!(stderr.contains("groundwork"), "stderr: {stderr}");
+}
+
+#[tokio::test]
+async fn session_mode_advertises_driver_verbs_and_current_output_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_work_unit_manifest_toml(),
+        &scoped_work_unit_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--session")
+                        .arg("--work-unit")
+                        .arg("work-unit-166")
+                        .env_remove("GROUNDWORK_FORGE_TYPE")
+                        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                        .env("GROUNDWORK_FORGE_NAME", "runa")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let tool_names = service
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        tool_names,
+        vec!["readiness", "next-protocol-context", "advance", "claim"]
+    );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn session_mode_is_caller_agnostic_for_tools_readiness_and_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_work_unit_manifest_toml(),
+        &scoped_work_unit_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    let service_a = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--session")
+                        .arg("--work-unit")
+                        .arg("work-unit-166")
+                        .env("RUNA_CALLER_KIND", "interactive")
+                        .env_remove("GROUNDWORK_FORGE_TYPE")
+                        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                        .env("GROUNDWORK_FORGE_NAME", "runa")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let service_b = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--session")
+                        .arg("--work-unit")
+                        .arg("work-unit-166")
+                        .env("RUNA_CALLER_KIND", "autonomous")
+                        .env_remove("GROUNDWORK_FORGE_TYPE")
+                        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                        .env("GROUNDWORK_FORGE_NAME", "runa")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let tools_a = service_a
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect::<Vec<_>>();
+    let tools_b = service_b
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(tools_a, tools_b);
+
+    let readiness_a = service_a
+        .call_tool(session_call("readiness"))
+        .await
+        .unwrap();
+    let readiness_b = service_b
+        .call_tool(session_call("readiness"))
+        .await
+        .unwrap();
+    assert_eq!(
+        tool_result_text(&readiness_a),
+        tool_result_text(&readiness_b)
+    );
+
+    let context_a = service_a
+        .call_tool(session_call("next-protocol-context"))
+        .await
+        .unwrap();
+    let context_b = service_b
+        .call_tool(session_call("next-protocol-context"))
+        .await
+        .unwrap();
+    assert_eq!(tool_result_text(&context_a), tool_result_text(&context_b));
+
+    service_a.cancel().await.unwrap();
+    service_b.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn session_record_read_advance_records_execution_for_producing_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        two_step_session_manifest_toml(),
+        &two_step_session_schemas(),
+        &["take", "implement"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--session")
+                        .arg("--work-unit")
+                        .arg("work-unit-166")
+                        .env_remove("GROUNDWORK_FORGE_TYPE")
+                        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                        .env("GROUNDWORK_FORGE_NAME", "runa")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    service
+        .call_tool(CallToolRequestParam {
+            name: "claim".to_string().into(),
+            arguments: serde_json::json!({
+                "instance_id": "claim-1",
+                "scope": "claim this work"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+
+    service.call_tool(session_call("readiness")).await.unwrap();
+    service.call_tool(session_call("advance")).await.unwrap();
+
+    let execution_records =
+        fs::read_to_string(project_dir.join(".runa/store/execution-records.json")).unwrap();
+    assert!(
+        execution_records.contains(r#""protocol": "take""#),
+        "{execution_records}"
+    );
+
+    let tool_names = service
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec![
+            "readiness",
+            "next-protocol-context",
+            "advance",
+            "implementation"
+        ]
+    );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn session_advance_reconciles_deleted_output_before_recording_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        two_step_session_manifest_toml(),
+        &two_step_session_schemas(),
+        &["take", "implement"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--session")
+                        .arg("--work-unit")
+                        .arg("work-unit-166")
+                        .env_remove("GROUNDWORK_FORGE_TYPE")
+                        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                        .env("GROUNDWORK_FORGE_NAME", "runa")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    service
+        .call_tool(CallToolRequestParam {
+            name: "claim".to_string().into(),
+            arguments: serde_json::json!({
+                "instance_id": "claim-1",
+                "scope": "claim this work"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+    fs::remove_file(workspace.join("claim/claim-1.json")).unwrap();
+
+    let advance = service.call_tool(session_call("advance")).await;
+    assert!(
+        advance.is_err(),
+        "advance unexpectedly succeeded: {advance:?}"
+    );
+    let execution_record_path = project_dir.join(".runa/store/execution-records.json");
+    if execution_record_path.exists() {
+        let execution_records = fs::read_to_string(&execution_record_path).unwrap();
+        assert!(
+            !execution_records.contains(r#""protocol": "take""#),
+            "advance must not record execution from stale output state: {execution_records}"
+        );
+    }
+
+    let tool_names = service
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec!["readiness", "next-protocol-context", "advance", "claim"]
+    );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn session_advance_error_preserves_current_step_when_next_step_is_unservable() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        two_step_session_manifest_toml(),
+        &two_step_with_unsupported_next_output_schemas(),
+        &["take", "implement"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--session")
+                        .arg("--work-unit")
+                        .arg("work-unit-166")
+                        .env_remove("GROUNDWORK_FORGE_TYPE")
+                        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                        .env("GROUNDWORK_FORGE_NAME", "runa")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    service
+        .call_tool(CallToolRequestParam {
+            name: "claim".to_string().into(),
+            arguments: serde_json::json!({
+                "instance_id": "claim-1",
+                "scope": "claim this work"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+
+    let advance = service.call_tool(session_call("advance")).await;
+    assert!(
+        advance.is_err(),
+        "advance unexpectedly succeeded: {advance:?}"
+    );
+
+    let tool_names = service
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec!["readiness", "next-protocol-context", "advance", "claim"]
+    );
+
+    let context = service
+        .call_tool(session_call("next-protocol-context"))
+        .await
+        .unwrap();
+    let context: serde_json::Value = serde_json::from_str(&tool_result_text(&context)).unwrap();
+    assert_eq!(context["context"]["protocol"], "take");
+
+    service.cancel().await.unwrap();
 }
 
 #[tokio::test]

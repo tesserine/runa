@@ -29,6 +29,8 @@ pub mod projection;
 pub mod scan;
 pub mod scoped_identity;
 pub mod selection;
+pub mod session;
+pub mod status;
 pub mod store;
 #[cfg(test)]
 pub(crate) mod test_helpers;
@@ -59,6 +61,14 @@ pub use selection::{
     ScanTrust, WaitingReason, classify_candidates, collect_unsatisfied_conditions,
     discover_ready_candidates, protocol_execution_input_snapshot, protocol_execution_record,
     protocol_relevant_input_types, protocol_relevant_inputs_changed, resolve_evaluation_topology,
+};
+pub use session::{
+    AdvanceOutcome, CurrentStep, SessionError, SessionReadiness, SessionState, StepSelector,
+};
+pub use status::{
+    EvaluatedProtocols, FailureEntry, FailureJson, InputEntry, InputJson, ProtocolEntry,
+    ProtocolJson, ProtocolStatus, ScanFindings, StateJson, TriggerState, collect_scan_findings,
+    evaluate_protocols,
 };
 pub use store::{
     ArtifactState, ArtifactStore, ExecutionInput, ExecutionInputMode, ExecutionInputSnapshot,
