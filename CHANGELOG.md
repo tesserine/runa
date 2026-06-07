@@ -19,6 +19,9 @@ Semantic Versioning.
   and valid tracker-backed roots are checked for handle-number agreement,
   duplicate tracker identity, and active `GROUNDWORK_*` deployment agreement
   against Groundwork's released handle contract.
+- Added the session surface contract documenting the mode-agnostic driver and
+  agent boundary for readiness, context delivery, output recording, lifecycle
+  advancement, and disposition authority.
 
 ### Fixed
 
