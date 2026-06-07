@@ -1,11 +1,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
+use std::sync::Arc;
+use std::time::Duration;
 
+use rmcp::ClientHandler;
 use rmcp::model::{CallToolRequestParam, CallToolResult};
 use rmcp::service::ServiceExt;
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use tokio::process::Command;
+use tokio::sync::Notify;
 
 fn write_methodology(
     dir: &Path,
@@ -206,6 +210,19 @@ fn two_step_with_unsupported_next_output_schemas() -> Vec<(&'static str, &'stati
             r#"{"type":"array","items":{"type":"string"}}"#,
         ),
     ]
+}
+
+struct ToolListChangeClient {
+    notify: Arc<Notify>,
+}
+
+impl ClientHandler for ToolListChangeClient {
+    async fn on_tool_list_changed(
+        &self,
+        _context: rmcp::service::NotificationContext<rmcp::RoleClient>,
+    ) {
+        self.notify.notify_one();
+    }
 }
 
 fn github_work_unit_json(number: u64) -> String {
@@ -538,6 +555,70 @@ async fn session_record_read_advance_records_execution_for_producing_step() {
 }
 
 #[tokio::test]
+async fn session_advance_emits_tool_list_changed_when_current_step_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        two_step_session_manifest_toml(),
+        &two_step_session_schemas(),
+        &["take", "implement"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    let tool_list_changed = Arc::new(Notify::new());
+    let service = ToolListChangeClient {
+        notify: tool_list_changed.clone(),
+    }
+    .serve(
+        TokioChildProcess::new(
+            Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                cmd.arg("--session")
+                    .arg("--work-unit")
+                    .arg("work-unit-166")
+                    .env_remove("GROUNDWORK_FORGE_TYPE")
+                    .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                    .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                    .env("GROUNDWORK_FORGE_NAME", "runa")
+                    .current_dir(&project_dir);
+            }),
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    service
+        .call_tool(CallToolRequestParam {
+            name: "claim".to_string().into(),
+            arguments: serde_json::json!({
+                "instance_id": "claim-1",
+                "scope": "claim this work"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+
+    service.call_tool(session_call("advance")).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), tool_list_changed.notified())
+        .await
+        .expect("advance should emit notifications/tools/list_changed");
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn session_advance_reconciles_deleted_output_before_recording_execution() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = write_methodology(
@@ -734,6 +815,56 @@ async fn choice_only_protocol_with_unsupported_may_produce_starts() {
         .map(|tool| tool.name.as_ref())
         .collect::<Vec<_>>();
     assert_eq!(tool_names, vec!["approved", "needs-revision"]);
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn fixed_protocol_mode_exposes_output_tool_named_advance() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "advance"
+
+[[protocols]]
+name = "legacy"
+produces = ["advance"]
+trigger = { type = "on_change", name = "advance" }
+"#,
+        &[(
+            "advance",
+            r#"{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"}}}"#,
+        )],
+        &["legacy"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("legacy")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let tools = service.list_all_tools().await.unwrap();
+    let tool_names = tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(tool_names, vec!["advance"]);
 
     service.cancel().await.unwrap();
 }

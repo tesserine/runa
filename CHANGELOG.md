@@ -31,6 +31,12 @@ Semantic Versioning.
 - Required output choice freshness and dry-run projection now stay conservative
   when choice-member scans are incomplete, while still projecting downstream
   cascades through an already-present exactly-one choice member.
+- Session-mode `advance` now emits the advertised MCP
+  `notifications/tools/list_changed` notification when it moves to a different
+  current step, so caching clients can rediscover the new step's output tools.
+- Fixed-protocol `runa-mcp --protocol` servers now keep output tools whose
+  artifact type names match session driver verbs such as `advance`; those names
+  are reserved only on the session surface.
 - Choice-only protocols with unsupported optional outputs now start `runa-mcp`
   correctly instead of being rejected as optional-output-only sessions.
 

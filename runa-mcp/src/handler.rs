@@ -40,7 +40,7 @@ impl RunaHandler {
         workspace_dir: PathBuf,
     ) -> Self {
         let (tools, tool_schemas) =
-            output_tools_for_protocol(&protocol, work_unit.as_deref(), &store);
+            output_tools_for_protocol(&protocol, work_unit.as_deref(), &store, false);
 
         Self {
             protocol: Some(protocol),
@@ -79,6 +79,7 @@ impl RunaHandler {
         session: &Mutex<SessionState>,
         tool_name: &str,
         request: CallToolRequestParam,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         match tool_name {
             "readiness" => {
@@ -101,28 +102,40 @@ impl RunaHandler {
                 return json_tool_result(&payload);
             }
             "advance" => {
-                let mut session = session.lock().unwrap();
-                let outcome = session
-                    .advance_with_validator(|next_protocol, store| {
-                        if let Some(protocol) = next_protocol {
-                            for type_name in protocol
-                                .produces
-                                .iter()
-                                .chain(protocol.required_choice_members())
-                            {
-                                if DRIVER_TOOL_NAMES.contains(&type_name.as_str()) {
-                                    return Err(format!(
-                                        "required output type '{type_name}' collides with reserved session driver verb"
-                                    ));
+                let (result, tool_list_changed) = {
+                    let mut session = session.lock().unwrap();
+                    let before_step = session.current_step().cloned();
+                    let outcome = session
+                        .advance_with_validator(|next_protocol, store| {
+                            if let Some(protocol) = next_protocol {
+                                for type_name in protocol
+                                    .produces
+                                    .iter()
+                                    .chain(protocol.required_choice_members())
+                                {
+                                    if DRIVER_TOOL_NAMES.contains(&type_name.as_str()) {
+                                        return Err(format!(
+                                            "required output type '{type_name}' collides with reserved session driver verb"
+                                        ));
+                                    }
                                 }
+                                validate_output_types(protocol, store, Some(""))
+                            } else {
+                                Ok(())
                             }
-                            validate_output_types(protocol, store, Some(""))
-                        } else {
-                            Ok(())
-                        }
-                    })
-                    .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-                return json_tool_result(&outcome);
+                        })
+                        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+                    let after_step = outcome.next_step.clone();
+                    (json_tool_result(&outcome)?, before_step != after_step)
+                };
+                if tool_list_changed {
+                    context
+                        .peer
+                        .notify_tool_list_changed()
+                        .await
+                        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+                }
+                return Ok(result);
             }
             _ => {}
         }
@@ -248,6 +261,7 @@ fn output_tools_for_protocol(
     protocol: &ProtocolDeclaration,
     work_unit: Option<&str>,
     store: &ArtifactStore,
+    reserve_driver_names: bool,
 ) -> (Vec<Tool>, HashMap<String, Value>) {
     let mut tools = Vec::new();
     let mut tool_schemas = HashMap::new();
@@ -274,7 +288,7 @@ fn output_tools_for_protocol(
         .collect();
 
     for type_name in &output_types {
-        if DRIVER_TOOL_NAMES.contains(&type_name.as_str()) {
+        if reserve_driver_names && DRIVER_TOOL_NAMES.contains(&type_name.as_str()) {
             continue;
         }
         let Some(at) = store.artifact_type(type_name) else {
@@ -383,6 +397,7 @@ fn session_tools_and_schemas(
                 .current_step()
                 .and_then(|step| step.work_unit.as_deref()),
             session.store(),
+            true,
         );
         tools.append(&mut output_tools);
         schemas = output_schemas;
@@ -607,11 +622,13 @@ impl ServerHandler for RunaHandler {
     async fn call_tool(
         &self,
         request: CallToolRequestParam,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let tool_name = request.name.to_string();
         if let Some(session) = &self.session {
-            return self.call_session_tool(session, &tool_name, request).await;
+            return self
+                .call_session_tool(session, &tool_name, request, context)
+                .await;
         }
         let protocol = self
             .protocol
