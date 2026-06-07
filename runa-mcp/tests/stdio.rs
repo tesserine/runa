@@ -236,8 +236,12 @@ impl ClientHandler for ToolListChangeClient {
 }
 
 fn github_work_unit_json(number: u64) -> String {
+    github_work_unit_json_with_title(number, "Scope")
+}
+
+fn github_work_unit_json_with_title(number: u64, title: &str) -> String {
     format!(
-        r#"{{"title":"Scope","description":"Enforce canonical scope","acceptance_criteria":["Reject aliases"],"handle":{{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/{number}","number":{number}}}}}"#
+        r#"{{"title":"{title}","description":"Enforce canonical scope","acceptance_criteria":["Reject aliases"],"handle":{{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/{number}","number":{number}}}}}"#
     )
 }
 
@@ -627,7 +631,7 @@ async fn session_advance_records_context_time_input_provenance() {
 
     fs::write(
         workspace.join("work-unit/work-unit-166.json"),
-        github_work_unit_json(167),
+        github_work_unit_json_with_title(166, "Scope revised"),
     )
     .unwrap();
 
@@ -713,7 +717,7 @@ async fn session_advance_reopens_current_step_when_context_input_changes() {
         .unwrap();
     fs::write(
         workspace.join("work-unit/work-unit-166.json"),
-        github_work_unit_json(167),
+        github_work_unit_json_with_title(166, "Scope revised"),
     )
     .unwrap();
     service
@@ -802,7 +806,7 @@ async fn session_advance_reopens_current_step_when_readiness_consumes_context_in
         .unwrap();
     fs::write(
         workspace.join("work-unit/work-unit-166.json"),
-        github_work_unit_json(167),
+        github_work_unit_json_with_title(166, "Scope revised"),
     )
     .unwrap();
     service.call_tool(session_call("readiness")).await.unwrap();

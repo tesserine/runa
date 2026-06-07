@@ -46,6 +46,9 @@ Semantic Versioning.
 - Session-mode `next-protocol-context` now revalidates the current step's
   readiness before serving context, refusing stale current steps whose trigger
   or required inputs are no longer ready.
+- Session-mode rescans now revalidate the scoped work-unit identity before
+  readiness, context, or advance can evaluate or act on newly discovered
+  artifacts.
 - Session-mode MCP driver calls now append transcript tool events, including
   failed driver results, when `RUNA_TRANSCRIPT_DIR` is set.
 - Fixed-protocol `runa-mcp --protocol` servers now keep output tools whose

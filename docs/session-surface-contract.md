@@ -31,6 +31,12 @@ All session clients invoke the same runa surface. An interactive driver is a
 client of that surface, not a reimplementation of readiness, context delivery,
 lifecycle movement, or artifact recording.
 
+Every session verb that reconciles the workspace re-establishes the session's
+scoped work-unit identity before evaluating readiness, serving context, or
+advancing lifecycle state. Current-step readiness reconfirmation applies when a
+verb serves or completes that step; scoped identity revalidation is
+unconditional after a rescan.
+
 The required session verbs are:
 
 | Verb | Semantics |

@@ -151,6 +151,12 @@ pub struct SessionState {
     exhausted: HashSet<crate::CandidateKey>,
 }
 
+struct ReconciledScan {
+    scan_result: crate::ScanResult,
+    scan_findings: crate::ScanFindings,
+    evaluated: crate::EvaluatedProtocols,
+}
+
 impl From<&CurrentStep> for crate::CandidateKey {
     fn from(step: &CurrentStep) -> Self {
         Self::new(&step.protocol, step.work_unit.as_deref())
@@ -181,9 +187,7 @@ impl SessionState {
         F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
     {
         let work_unit = work_unit.ok_or(SessionError::MissingWorkUnit)?;
-        let mut loaded = crate::project::load(&working_dir, config_override)?;
-        crate::scan(&loaded.workspace_dir, &mut loaded.store)?;
-        crate::validate_scoped_work_unit(&loaded.store, &work_unit)?;
+        let loaded = crate::project::load(&working_dir, config_override)?;
         let mut session = Self {
             working_dir,
             loaded,
@@ -191,8 +195,13 @@ impl SessionState {
             current_step: None,
             exhausted: HashSet::new(),
         };
-        session
-            .refresh_current_from_scan_with_validator(StepSelector::FirstReady, validate_step)?;
+        let reconciled = session.reconcile_after_scan(false)?;
+        let next_step = session.select_next(
+            &reconciled.evaluated,
+            &reconciled.scan_findings,
+            &session.exhausted,
+        )?;
+        session.current_step = session.validate_selected_step(next_step, validate_step)?;
         Ok(session)
     }
 
@@ -228,16 +237,17 @@ impl SessionState {
         F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
     {
         let before_step = self.current_step.clone();
-        let scan_result = crate::scan(&self.loaded.workspace_dir, &mut self.loaded.store)?;
-        self.refresh_exhaustion_after_scan(&scan_result);
-        let scan_findings = crate::collect_scan_findings(&scan_result, &self.loaded.workspace_dir);
-        let evaluated = self.evaluate(&scan_findings);
+        let reconciled = self.reconcile_after_scan(false)?;
         if self.current_step.is_none() {
-            let next_step = self.select_next(&evaluated, &scan_findings, &self.exhausted)?;
+            let next_step = self.select_next(
+                &reconciled.evaluated,
+                &reconciled.scan_findings,
+                &self.exhausted,
+            )?;
             self.current_step = self.validate_selected_step(next_step, validate_step)?;
         }
         let current_step_changed = before_step != self.current_step;
-        let payload = self.readiness_from(scan_findings, evaluated);
+        let payload = self.readiness_from(reconciled.scan_findings, reconciled.evaluated);
         Ok(SessionTransition {
             payload,
             current_step_changed,
@@ -245,26 +255,23 @@ impl SessionState {
     }
 
     pub fn next_context(&mut self) -> Result<(ContextInjection, String), SessionError> {
-        let scan_result = crate::scan(&self.loaded.workspace_dir, &mut self.loaded.store)?;
-        self.refresh_exhaustion_after_scan(&scan_result);
-        let scan_findings = crate::collect_scan_findings(&scan_result, &self.loaded.workspace_dir);
+        let reconciled = self.reconcile_after_scan(true)?;
         let current_step = self
             .current_step
             .clone()
             .ok_or(SessionError::NoCurrentStep)?;
-        let evaluated = self.evaluate(&scan_findings);
-        self.ensure_current_step_can_complete(&current_step, &evaluated)?;
         let protocol = self.protocol(&current_step.protocol)?;
         let mut context =
             crate::context::build_context(protocol, &self.loaded.store, Some(&self.work_unit));
         context.inputs.retain(|input| {
             input.relationship == crate::context::ArtifactRelationship::Requires
-                || !scan_findings
+                || !reconciled
+                    .scan_findings
                     .affected_types
                     .contains(input.artifact_type.as_str())
         });
         let rendered = render_context_prompt(&context);
-        self.refresh_current_provenance_snapshot(&scan_findings)?;
+        self.refresh_current_provenance_snapshot(&reconciled.scan_findings)?;
         Ok((context, rendered))
     }
 
@@ -297,15 +304,12 @@ impl SessionState {
         ) -> Result<Option<CurrentStep>, SessionError>,
         F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
     {
+        let before_step = self.current_step.clone();
+        let reconciled = self.reconcile_after_scan(true)?;
         let completed_step = self
             .current_step
             .clone()
             .ok_or(SessionError::NoCurrentStep)?;
-        let before_step = self.current_step.clone();
-        let scan_result = crate::scan(&self.loaded.workspace_dir, &mut self.loaded.store)?;
-        let scan_findings = crate::collect_scan_findings(&scan_result, &self.loaded.workspace_dir);
-        let current_evaluated = self.evaluate(&scan_findings);
-        self.ensure_current_step_can_complete(&completed_step, &current_evaluated)?;
 
         let protocol = self.protocol(&completed_step.protocol)?;
         crate::enforce_postconditions(
@@ -322,7 +326,7 @@ impl SessionState {
                     protocol,
                     &self.loaded.store,
                     completed_step.work_unit.as_deref(),
-                    &scan_findings.affected_types,
+                    &reconciled.scan_findings.affected_types,
                 )
             });
         let current_inputs_match_provenance =
@@ -343,11 +347,16 @@ impl SessionState {
         crate::refresh_exhausted_candidates_after_scan(
             &self.loaded.manifest.protocols,
             &mut staged_exhausted,
-            &scan_result,
+            &reconciled.scan_result,
         );
 
-        let evaluated = self.evaluate(&scan_findings);
-        let next_step = match select_next(self, &evaluated, &scan_findings, &staged_exhausted) {
+        let evaluated = self.evaluate(&reconciled.scan_findings);
+        let next_step = match select_next(
+            self,
+            &evaluated,
+            &reconciled.scan_findings,
+            &staged_exhausted,
+        ) {
             Ok(next_step) => next_step,
             Err(error) => {
                 self.loaded.store.restore_execution_record(
@@ -380,7 +389,7 @@ impl SessionState {
 
         self.current_step = next_step;
         self.exhausted = staged_exhausted;
-        let readiness = self.readiness_from(scan_findings, evaluated);
+        let readiness = self.readiness_from(reconciled.scan_findings, evaluated);
         let current_step_changed = before_step != self.current_step;
 
         let payload = AdvanceOutcome {
@@ -395,21 +404,34 @@ impl SessionState {
         })
     }
 
-    fn refresh_current_from_scan_with_validator<F>(
+    fn reconcile_after_scan(
         &mut self,
-        _selector: StepSelector,
-        validate_step: F,
-    ) -> Result<(), SessionError>
-    where
-        F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
-    {
-        let scan_result = crate::scan(&self.loaded.workspace_dir, &mut self.loaded.store)?;
+        require_current_ready: bool,
+    ) -> Result<ReconciledScan, SessionError> {
+        let scan_result = self.scan_workspace()?;
+        crate::validate_scoped_work_unit(&self.loaded.store, &self.work_unit)?;
         self.refresh_exhaustion_after_scan(&scan_result);
         let scan_findings = crate::collect_scan_findings(&scan_result, &self.loaded.workspace_dir);
         let evaluated = self.evaluate(&scan_findings);
-        let next_step = self.select_next(&evaluated, &scan_findings, &self.exhausted)?;
-        self.current_step = self.validate_selected_step(next_step, validate_step)?;
-        Ok(())
+        if require_current_ready {
+            let current_step = self
+                .current_step
+                .clone()
+                .ok_or(SessionError::NoCurrentStep)?;
+            self.ensure_current_step_can_complete(&current_step, &evaluated)?;
+        }
+        Ok(ReconciledScan {
+            scan_result,
+            scan_findings,
+            evaluated,
+        })
+    }
+
+    fn scan_workspace(&mut self) -> Result<crate::ScanResult, SessionError> {
+        Ok(crate::scan(
+            &self.loaded.workspace_dir,
+            &mut self.loaded.store,
+        )?)
     }
 
     fn evaluate(&self, scan_findings: &crate::ScanFindings) -> crate::EvaluatedProtocols {
@@ -560,7 +582,7 @@ mod tests {
     use std::collections::{BTreeMap, HashSet};
     use std::fs;
 
-    fn write_session_project(dir: &Path) -> PathBuf {
+    fn write_session_project_with_work_unit(dir: &Path, create_work_unit: bool) -> PathBuf {
         let manifest_path = crate::test_helpers::write_methodology(
             dir,
             r#"
@@ -611,12 +633,18 @@ trigger = { type = "on_artifact", name = "work-unit" }
         .unwrap();
         let workspace = project_dir.join(".runa/workspace");
         fs::create_dir_all(workspace.join("work-unit")).unwrap();
-        fs::write(
-            workspace.join("work-unit/work-unit-166.json"),
-            r#"{"title":"Scope"}"#,
-        )
-        .unwrap();
+        if create_work_unit {
+            fs::write(
+                workspace.join("work-unit/work-unit-166.json"),
+                r#"{"title":"Scope"}"#,
+            )
+            .unwrap();
+        }
         project_dir
+    }
+
+    fn write_session_project(dir: &Path) -> PathBuf {
+        write_session_project_with_work_unit(dir, true)
     }
 
     #[test]
@@ -711,5 +739,48 @@ trigger = { type = "on_artifact", name = "work-unit" }
             context,
             Err(SessionError::CurrentStepNotReady(protocol)) if protocol == "take"
         ));
+    }
+
+    #[test]
+    fn session_revalidates_scoped_work_unit_after_delayed_rescan() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = write_session_project_with_work_unit(dir.path(), false);
+        let workspace = project_dir.join(".runa/workspace");
+        let mut session =
+            SessionState::open(project_dir.clone(), None, Some("work-unit-166".to_string()))
+                .unwrap();
+
+        fs::write(
+            workspace.join("work-unit/work-unit-167.json"),
+            r#"{"title":"Different work"}"#,
+        )
+        .unwrap();
+
+        let readiness = session.readiness(|_next_protocol, _store| Ok(()));
+        assert!(matches!(readiness, Err(SessionError::WorkUnitScope(_))));
+        assert!(session.current_step().is_none());
+
+        session.current_step = Some(CurrentStep {
+            protocol: "take".to_string(),
+            work_unit: Some("work-unit-166".to_string()),
+            provenance_snapshot: None,
+        });
+        let context = session.next_context();
+        assert!(matches!(context, Err(SessionError::WorkUnitScope(_))));
+
+        let advance = session.advance_with_validator(|_next_protocol, _store| Ok(()));
+        assert!(matches!(advance, Err(SessionError::WorkUnitScope(_))));
+        assert_no_execution_record(&project_dir, "take");
+    }
+
+    fn assert_no_execution_record(project_dir: &Path, protocol: &str) {
+        let execution_record_path = project_dir.join(".runa/store/execution-records.json");
+        if execution_record_path.is_file() {
+            let execution_records = fs::read_to_string(execution_record_path).unwrap();
+            assert!(
+                !execution_records.contains(&format!(r#""protocol": "{protocol}""#)),
+                "{execution_records}"
+            );
+        }
     }
 }
