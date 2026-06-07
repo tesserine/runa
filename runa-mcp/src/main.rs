@@ -78,7 +78,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         );
 
         let workspace_dir = loaded.workspace_dir.clone();
-        let handler = SessionHandler::new(loaded, working_dir.clone(), work_unit, workspace_dir);
+        let handler = SessionHandler::new(loaded, working_dir.clone(), work_unit, workspace_dir)
+            .map_err(|err| format!("session cannot be served via MCP tools: {err}"))?;
 
         let (stdin, stdout) = io::stdio();
         let service = handler.serve((stdin, stdout)).await.inspect_err(|e| {

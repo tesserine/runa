@@ -56,8 +56,6 @@ pub struct SessionHandler {
     working_dir: PathBuf,
     state: Mutex<SessionHandlerState>,
     workspace_dir: PathBuf,
-    tools: Vec<Tool>,
-    tool_schemas: HashMap<String, Value>,
 }
 
 struct SessionHandlerState {
@@ -91,33 +89,17 @@ impl SessionHandler {
         working_dir: PathBuf,
         work_unit: String,
         workspace_dir: PathBuf,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let session_state = evaluate_loaded_session(&loaded, &working_dir, &work_unit);
         let pending = session_state.planned_entries.into_iter().next();
-        let mut tools = driver_tools();
-        let mut tool_schemas = HashMap::new();
+        validate_session_pending(&loaded, pending.as_ref(), &work_unit)?;
 
-        if let Some(entry) = &pending
-            && let Some(protocol) = loaded
-                .manifest
-                .protocols
-                .iter()
-                .find(|protocol| protocol.name == entry.protocol)
-        {
-            let (output_tools, output_schemas) =
-                build_output_tools(protocol, Some(&work_unit), &loaded.store);
-            tools.extend(output_tools);
-            tool_schemas.extend(output_schemas);
-        }
-
-        Self {
+        Ok(Self {
             work_unit,
             working_dir,
             state: Mutex::new(SessionHandlerState { loaded, pending }),
             workspace_dir,
-            tools,
-            tool_schemas,
-        }
+        })
     }
 
     fn refresh_state(&self) -> Result<libagent::SessionState, McpError> {
@@ -133,6 +115,8 @@ impl SessionHandler {
             libagent::EvaluationScope::Scoped(&self.work_unit),
         );
         state.pending = session_state.planned_entries.first().cloned();
+        validate_session_pending(&state.loaded, state.pending.as_ref(), &self.work_unit)
+            .map_err(|error| McpError::internal_error(error, None))?;
         Ok(session_state)
     }
 
@@ -242,9 +226,16 @@ impl SessionHandler {
             libagent::EvaluationScope::Scoped(&self.work_unit),
         );
         state.pending = session_state.planned_entries.first().cloned();
+        validate_session_pending(&state.loaded, state.pending.as_ref(), &self.work_unit)
+            .map_err(|error| McpError::internal_error(error, None))?;
         let methodology = state.loaded.manifest.name.clone();
         drop(state);
         readiness_call_result(methodology, session_state)
+    }
+
+    fn current_tools_and_schemas(&self) -> Result<(Vec<Tool>, HashMap<String, Value>), McpError> {
+        let state = self.state.lock().unwrap();
+        session_tools_and_schemas(&state, &self.work_unit)
     }
 }
 
@@ -281,6 +272,66 @@ fn evaluate_loaded_session(
         &scan_result,
         libagent::EvaluationScope::Scoped(work_unit),
     )
+}
+
+fn validate_session_pending(
+    loaded: &LoadedProject,
+    pending: Option<&SessionPlanEntry>,
+    work_unit: &str,
+) -> Result<(), String> {
+    let Some(entry) = pending else {
+        return Ok(());
+    };
+    let protocol = loaded
+        .manifest
+        .protocols
+        .iter()
+        .find(|protocol| protocol.name == entry.protocol)
+        .ok_or_else(|| format!("planned protocol '{}' is missing", entry.protocol))?;
+    validate_output_types(protocol, &loaded.store, Some(work_unit)).map_err(|error| {
+        format!(
+            "protocol '{}' cannot be served via MCP tools: {error}",
+            protocol.name
+        )
+    })
+}
+
+fn session_tools_and_schemas(
+    state: &SessionHandlerState,
+    work_unit: &str,
+) -> Result<(Vec<Tool>, HashMap<String, Value>), McpError> {
+    let mut tools = driver_tools();
+    let mut tool_schemas = HashMap::new();
+
+    if let Some(entry) = &state.pending {
+        let protocol = state
+            .loaded
+            .manifest
+            .protocols
+            .iter()
+            .find(|protocol| protocol.name == entry.protocol)
+            .ok_or_else(|| {
+                McpError::internal_error(
+                    format!("planned protocol '{}' is missing", entry.protocol),
+                    None,
+                )
+            })?;
+        validate_output_types(protocol, &state.loaded.store, Some(work_unit)).map_err(|error| {
+            McpError::internal_error(
+                format!(
+                    "protocol '{}' cannot be served via MCP tools: {error}",
+                    protocol.name
+                ),
+                None,
+            )
+        })?;
+        let (output_tools, output_schemas) =
+            build_output_tools(protocol, Some(work_unit), &state.loaded.store);
+        tools.extend(output_tools);
+        tool_schemas.extend(output_schemas);
+    }
+
+    Ok((tools, tool_schemas))
 }
 
 fn driver_tools() -> Vec<Tool> {
@@ -729,10 +780,10 @@ impl ServerHandler for SessionHandler {
         _request: Option<PaginatedRequestParam>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let _state = self.state.lock().unwrap();
+        let (tools, _) = self.current_tools_and_schemas()?;
         Ok(ListToolsResult {
             next_cursor: None,
-            tools: self.tools.clone(),
+            tools,
         })
     }
 
@@ -753,11 +804,12 @@ impl ServerHandler for SessionHandler {
                     .as_ref()
                     .map(|entry| entry.protocol.clone())
                     .unwrap_or_else(|| "<session>".to_string());
+                let (_, tool_schemas) = session_tools_and_schemas(&state, &self.work_unit)?;
                 call_output_tool(
                     &protocol_name,
                     Some(&self.work_unit),
                     request,
-                    &self.tool_schemas,
+                    &tool_schemas,
                     &mut state.loaded.store,
                     &self.workspace_dir,
                 )

@@ -34,6 +34,9 @@ Semantic Versioning.
   cascades through an already-present exactly-one choice member.
 - Choice-only protocols with unsupported optional outputs now start `runa-mcp`
   correctly instead of being rejected as optional-output-only sessions.
+- Session-mode `runa-mcp` now keeps output tools aligned with the current
+  pending protocol after `advance` and rejects unsatisfiable required-output
+  schemas before serving.
 
 ## [0.1.2] — 2026-05-17
 

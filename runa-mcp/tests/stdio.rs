@@ -145,6 +145,52 @@ fn scoped_work_unit_schemas() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+fn scoped_multi_protocol_manifest_toml() -> &'static str {
+    r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "claim"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "take"
+requires = ["work-unit"]
+produces = ["claim"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+
+[[protocols]]
+name = "implement"
+requires = ["claim"]
+produces = ["implementation"]
+scoped = true
+trigger = { type = "on_artifact", name = "claim" }
+"#
+}
+
+fn scoped_multi_protocol_schemas() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "work-unit",
+            r#"{"type":"object","required":["title","description","acceptance_criteria"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"handle":{"type":"object"}}}"#,
+        ),
+        (
+            "claim",
+            r#"{"type":"object","required":["work_unit","scope"],"properties":{"work_unit":{"type":"string"},"scope":{"type":"string"}}}"#,
+        ),
+        (
+            "implementation",
+            r#"{"type":"object","required":["work_unit","title"],"properties":{"work_unit":{"type":"string"},"title":{"type":"string"}}}"#,
+        ),
+    ]
+}
+
 fn github_work_unit_json(number: u64) -> String {
     format!(
         r#"{{"title":"Scope","description":"Enforce canonical scope","acceptance_criteria":["Reject aliases"],"handle":{{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/{number}","number":{number}}}}}"#
@@ -567,6 +613,194 @@ async fn session_surface_output_tool_then_advance_records_execution() {
     assert_eq!(payload["protocols"][0]["status"], "waiting");
 
     service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn session_surface_output_tools_track_pending_protocol_after_advance() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_multi_protocol_manifest_toml(),
+        &scoped_multi_protocol_schemas(),
+        &["take", "implement"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--work-unit")
+                        .arg("work-unit-166")
+                        .env_remove("GROUNDWORK_FORGE_TYPE")
+                        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+                        .env("GROUNDWORK_FORGE_NAME", "runa")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let initial_tools = service
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        initial_tools,
+        vec!["readiness", "next-protocol-context", "advance", "claim"]
+    );
+
+    let produced = service
+        .call_tool(CallToolRequestParam {
+            name: "claim".into(),
+            arguments: serde_json::json!({
+                "instance_id": "claim-1",
+                "scope": "Implement the unified session surface"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        produced.is_error,
+        Some(false),
+        "{}",
+        text_content(&produced)
+    );
+
+    let advanced = service
+        .call_tool(CallToolRequestParam {
+            name: "advance".into(),
+            arguments: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        advanced.is_error,
+        Some(false),
+        "{}",
+        text_content(&advanced)
+    );
+
+    let post_advance_tools = service
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        post_advance_tools,
+        vec![
+            "readiness",
+            "next-protocol-context",
+            "advance",
+            "implementation"
+        ]
+    );
+
+    let implementation = service
+        .call_tool(CallToolRequestParam {
+            name: "implementation".into(),
+            arguments: serde_json::json!({
+                "instance_id": "impl-1",
+                "title": "ship it"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        implementation.is_error,
+        Some(false),
+        "{}",
+        text_content(&implementation)
+    );
+
+    let artifact =
+        fs::read_to_string(project_dir.join(".runa/workspace/implementation/impl-1.json")).unwrap();
+    assert!(artifact.contains("\"work_unit\": \"work-unit-166\""));
+
+    service.cancel().await.unwrap();
+}
+
+#[test]
+fn session_start_rejects_unsupported_required_output_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "audit-log"
+
+[[protocols]]
+name = "audit"
+requires = ["work-unit"]
+produces = ["audit-log"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+"#,
+        &[
+            (
+                "work-unit",
+                r#"{"type":"object","required":["title","description","acceptance_criteria"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"handle":{"type":"object"}}}"#,
+            ),
+            ("audit-log", r#"{"type":"array","items":{"type":"string"}}"#),
+        ],
+        &["audit"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    let output = StdCommand::new(env!("CARGO_BIN_EXE_runa-mcp"))
+        .arg("--work-unit")
+        .arg("work-unit-166")
+        .env_remove("GROUNDWORK_FORGE_TYPE")
+        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+        .env("GROUNDWORK_FORGE_NAME", "runa")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("required output type 'audit-log': non-object schema root type 'array'"),
+        "stderr: {stderr}"
+    );
 }
 
 #[tokio::test]
