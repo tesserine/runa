@@ -7,6 +7,8 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.2.0-rc.1] — 2026-06-08
+
 ### Added
 
 - Methodology manifests can declare `required_output_choices`: named output
