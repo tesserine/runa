@@ -85,22 +85,46 @@ The stage semantics are identical in autonomous and interactive modes. Caller
 identity, shell shape, launch path, or UI affordance must not create a second
 meaning for any stage or for the outer verb.
 
-### MCP exposure (current) and the open question
+### MCP exposure and the operator verb
 
-The landed MCP session surface currently exposes three concrete reserved tool
-names — `readiness`, `next-protocol-context`, and `advance` — through which a
-driver may invoke inner stages individually; output recording rides the
-methodology's own output tools. A current step must not declare an output
-artifact type named `readiness`, `next-protocol-context`, or `advance`.
+runa is a state machine the operator advances one tick at a time, where each
+tick performs the same operation: take the next step. The operator-facing
+surface is therefore a **single outer verb** — `go` — and the operator addresses
+nothing finer. Autonomous mode issues `go` repeatedly to quiescence; interactive
+mode issues it one tick at a time. Mode is the cadence of `go`, not a different
+or larger vocabulary.
 
-Whether the operator-facing surface needs these inner stages individually
-invocable, or whether a single outer verb is sufficient, is an **open question
-to be settled by the interactive driver** (the first consumer that either uses
-the stages separately — e.g. to inspect readiness without committing — or always
-issues them in sequence). It is deliberately not pre-decided here: the model
-above (one outer verb over a cascade) is what the architecture establishes; the
-MCP surface's stage granularity is held to the evidence the driver produces, not
-collapsed or fixed on hypothesis.
+The cascade's internal decomposition — how many functions implement reconcile,
+select, context construction, output recording, and postcondition-gated commit,
+and where their boundaries fall — is an **engineering concern, not an interface
+concern**. Those boundaries are chosen for sound internal engineering:
+long-term maintainability, and a substrate on which the recursive spiral can
+operate effectively across radical scale. They are invisible to the operator and
+carry no interface commitment; they may be refactored freely without touching
+this contract.
+
+The landed MCP session surface exposes three reserved tool names — `readiness`,
+`next-protocol-context`, and `advance`. These are the mechanics of the cascade,
+not operator verbs: a single `advance` already returns the full post-step
+state (the completed step, the next step, and the complete readiness
+classification), so no separate operator-issued `readiness` call carries
+information `advance` has not already returned at the step boundary. A current
+step must not declare an output artifact type named `readiness`,
+`next-protocol-context`, or `advance`.
+
+Observation does not enter through the control surface. A human observing a
+single step closely — interactive mode's purpose — does so by looking *into* the
+system through its observability vector (the durable artifact store and the
+output reports built on it), not by inserting pauses or extra invocations into
+the control flow. Control flow stays the uniform tick; observability is a
+separate, sideways vector over the same durable state.
+
+There are no contractual mid-step stopping points where the cascade pauses and
+returns control to the human. Were such a pause ever introduced, the default
+must remain full automation — the cascade runs to its step boundary unless a
+pause is explicitly requested — so that automation is the path and any
+human-in-the-cascade interruption is the deliberate exception. No such pause is
+specified now, and none is required.
 
 ## Disposition-Authority Contract
 
@@ -134,12 +158,13 @@ The session lifecycle is expressed as methodology protocols and driven by
 runa's dependency graph. The same graph-driven lifecycle must be reachable
 through the same session surface in both autonomous and interactive modes.
 
-An interactive client may choose to stop after one checkpoint for observation,
-while an autonomous orchestrator may continue issuing verbs until quiescence.
-That loop ownership difference does not change the lifecycle. Both clients
-observe the same readiness, receive the same context for the same ready
-protocol, record outputs through the same validation gate, and advance only
-through the same graph and typed dispositions.
+The difference between modes is the cadence of the single outer verb: an
+interactive client issues one tick at a time, while an autonomous orchestrator
+continues issuing ticks until quiescence. That cadence difference does not
+change the lifecycle. Both clients drive the same cascade — the same readiness
+evaluation, the same context for the same ready protocol, the same
+validation-gated output recording, and advancement only through the same graph
+and typed dispositions.
 
 Any driver path that hand-rolls readiness, context construction, artifact
 recording, or lifecycle transition logic is outside this contract. The valid
