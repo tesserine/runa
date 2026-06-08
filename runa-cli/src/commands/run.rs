@@ -354,6 +354,7 @@ fn execute_and_reconcile(
         &execution_entry,
         ExecutionOptions {
             isolate_process_group: true,
+            ..ExecutionOptions::default()
         },
     )?;
 

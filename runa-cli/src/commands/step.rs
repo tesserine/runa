@@ -278,9 +278,10 @@ pub(crate) struct PlannedEntry {
     pub(crate) execution_record: ExecutionRecord,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ExecutionOptions {
     pub(crate) isolate_process_group: bool,
+    pub(crate) extra_env: BTreeMap<String, String>,
 }
 
 struct BinaryLookup {
@@ -504,10 +505,13 @@ pub(crate) fn execute_entry(
             .arg(config.path())
             .arg("--strict-mcp-config");
     }
-    child.args(&agent_command[1..]).env(
-        "RUNA_MCP_CONFIG",
-        serde_json::to_string(&entry.mcp_config).map_err(StepError::Json)?,
-    );
+    child
+        .args(&agent_command[1..])
+        .env(
+            "RUNA_MCP_CONFIG",
+            serde_json::to_string(&entry.mcp_config).map_err(StepError::Json)?,
+        )
+        .envs(&options.extra_env);
     child.current_dir(working_dir).stdin(Stdio::piped());
     if transcript_capture_enabled {
         child.stdout(Stdio::piped()).stderr(Stdio::piped());

@@ -216,9 +216,10 @@ Runs one interactive session tick for a delegated work unit. `go` requires
 `[agent].command`, evaluates scoped readiness, launches the agent with a session
 MCP config, and sends a generic instruction to retrieve context, produce the
 current step output, call `advance`, and stop. After the agent exits, `go`
-reloads the store and verifies that the selected session step's execution
-record changed; a successful process exit without a session advance is treated
-as attempted-work failure.
+verifies that the selected session step produced a successful `advance`
+transition receipt from the session surface, then reloads the store to print
+refreshed readiness. A successful process exit without a session advance is
+treated as attempted-work failure.
 
 ## Key Design Patterns
 

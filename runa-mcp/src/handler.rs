@@ -211,19 +211,8 @@ impl RunaHandler {
                         .map_err(|error| McpError::internal_error(error.to_string(), None))
                 };
                 return match result {
-                    Ok(transition) => match complete_session_transition(transition, &context).await
-                    {
-                        Ok((result, content)) => {
-                            append_session_driver_event(
-                                "tool_result",
-                                current_step.as_ref(),
-                                tool_name,
-                                None,
-                                Some(&content),
-                            )?;
-                            Ok(result)
-                        }
-                        Err(error) => {
+                    Ok(transition) => {
+                        if let Err(error) = write_session_advance_receipt(&transition.payload) {
                             let message = error.to_string();
                             append_session_driver_event(
                                 "tool_result",
@@ -232,9 +221,32 @@ impl RunaHandler {
                                 None,
                                 Some(&message),
                             )?;
-                            Err(error)
+                            return Err(McpError::internal_error(message, None));
                         }
-                    },
+                        match complete_session_transition(transition, &context).await {
+                            Ok((result, content)) => {
+                                append_session_driver_event(
+                                    "tool_result",
+                                    current_step.as_ref(),
+                                    tool_name,
+                                    None,
+                                    Some(&content),
+                                )?;
+                                Ok(result)
+                            }
+                            Err(error) => {
+                                let message = error.to_string();
+                                append_session_driver_event(
+                                    "tool_result",
+                                    current_step.as_ref(),
+                                    tool_name,
+                                    None,
+                                    Some(&message),
+                                )?;
+                                Err(error)
+                            }
+                        }
+                    }
                     Err(error) => {
                         let message = error.to_string();
                         append_session_driver_event(
@@ -332,6 +344,18 @@ impl RunaHandler {
         )?;
         Ok(CallToolResult::success(vec![Content::text(message)]))
     }
+}
+
+fn write_session_advance_receipt(payload: &libagent::AdvanceOutcome) -> std::io::Result<()> {
+    let Some(path) = std::env::var_os(libagent::SESSION_ADVANCE_RECEIPT_ENV) else {
+        return Ok(());
+    };
+    let path = PathBuf::from(path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_vec_pretty(payload).map_err(std::io::Error::other)?;
+    std::fs::write(path, json)
 }
 
 fn json_tool_result_with_content(

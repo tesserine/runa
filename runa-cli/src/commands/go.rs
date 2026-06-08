@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::fs;
+use std::io;
 use std::path::Path;
 
 use crate::commands::step::{
@@ -28,6 +30,30 @@ fn tick_prompt() -> &'static str {
      Call the runa MCP tool `next-protocol-context`, follow the returned rendered prompt, \
      produce the required output through the current runa MCP output tool, call `advance`, \
      and then stop. Do not call readiness as a separate operator action."
+}
+
+fn receipt_io_error(stage: &'static str, source: io::Error) -> StepError {
+    StepError::AgentCommandIo {
+        command: "go".to_string(),
+        stage,
+        source,
+    }
+}
+
+fn session_advance_receipt_matches(
+    receipt_path: &Path,
+    protocol: &str,
+    work_unit: Option<&str>,
+) -> Result<bool, StepError> {
+    let receipt = match fs::read_to_string(receipt_path) {
+        Ok(receipt) => receipt,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(receipt_io_error("session_advance_receipt_read", error)),
+    };
+    let receipt: serde_json::Value = serde_json::from_str(&receipt).map_err(StepError::Json)?;
+    let completed_step = &receipt["completed_step"];
+    Ok(completed_step["protocol"].as_str() == Some(protocol)
+        && completed_step["work_unit"].as_str() == work_unit)
 }
 
 pub fn run(
@@ -60,20 +86,26 @@ pub fn run(
         .planned_entries
         .first()
         .expect("non-empty plan should have a selected step");
-    let previous_execution_record = loaded
-        .store
-        .execution_record(&selected_step.protocol, selected_step.work_unit.as_deref())
-        .cloned();
 
     let config_path = crate::project::resolve_config(working_dir, config_override)
         .map_err(CommandError::from)
         .map_err(StepError::from)?;
     let mcp_binary = locate_runa_mcp()?;
-    let mcp_config = build_session_mcp_config(
+    let receipt_dir = tempfile::Builder::new()
+        .prefix("runa-go-advance-")
+        .tempdir()
+        .map_err(|source| receipt_io_error("session_advance_receipt_create", source))?;
+    let receipt_path = receipt_dir.path().join("advance.json");
+    let receipt_path_env = receipt_path.to_string_lossy().into_owned();
+    let mut mcp_config = build_session_mcp_config(
         &mcp_binary.to_string_lossy(),
         working_dir,
         &config_path,
         work_unit,
+    );
+    mcp_config.env.insert(
+        libagent::SESSION_ADVANCE_RECEIPT_ENV.to_string(),
+        receipt_path_env.clone(),
     );
     let entry = PlanEntry {
         protocol: "go".to_string(),
@@ -101,8 +133,25 @@ pub fn run(
         working_dir,
         &agent_command,
         &entry,
-        ExecutionOptions::default(),
+        ExecutionOptions {
+            extra_env: BTreeMap::from([(
+                libagent::SESSION_ADVANCE_RECEIPT_ENV.to_string(),
+                receipt_path_env,
+            )]),
+            ..ExecutionOptions::default()
+        },
     )?;
+
+    if !session_advance_receipt_matches(
+        &receipt_path,
+        &selected_step.protocol,
+        selected_step.work_unit.as_deref(),
+    )? {
+        return Err(StepError::SessionDidNotAdvance {
+            protocol: selected_step.protocol.clone(),
+            work_unit: selected_step.work_unit.clone(),
+        });
+    }
 
     let mut loaded = crate::project::load(working_dir, config_override)
         .map_err(CommandError::from)
@@ -115,16 +164,6 @@ pub fn run(
                 source,
             }
         })?;
-    let current_execution_record = loaded
-        .store
-        .execution_record(&selected_step.protocol, selected_step.work_unit.as_deref())
-        .cloned();
-    if current_execution_record == previous_execution_record {
-        return Err(StepError::SessionDidNotAdvance {
-            protocol: selected_step.protocol.clone(),
-            work_unit: selected_step.work_unit.clone(),
-        });
-    }
     let refreshed =
         crate::commands::step::evaluate_execution_state(&loaded, working_dir, &scan_result, scope);
 

@@ -30,6 +30,10 @@ Semantic Versioning.
 
 ### Fixed
 
+- `runa go` now uses the session surface's successful `advance` result as its
+  advancement authority instead of comparing execution-record snapshots, so
+  regenerating a deleted output with unchanged inputs no longer reports a false
+  no-advance failure.
 - Required output choice freshness and dry-run projection now stay conservative
   when choice-member scans are incomplete, while still projecting downstream
   cascades through an already-present exactly-one choice member.

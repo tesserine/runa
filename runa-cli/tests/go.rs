@@ -53,6 +53,67 @@ fn write_executable(path: &Path, content: &str) {
     fs::set_permissions(path, permissions).unwrap();
 }
 
+fn drive_session_mcp_once(project_dir: &Path, runa_mcp_path: &Path, log_path: &Path) {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(
+            r#"
+set -eu
+{
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"go-parity-test","version":"1.0.0"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"next-protocol-context","arguments":{}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"claim","arguments":{"instance_id":"claim-1","scope":"claim this work"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"advance","arguments":{}}}'
+    sleep 1
+} | "$1" --session --work-unit work-unit-168 > "$2"
+if grep -q '"error"' "$2"; then
+    cat "$2" >&2
+    exit 23
+fi
+"#,
+        )
+        .arg("drive-session")
+        .arg(runa_mcp_path)
+        .arg(log_path)
+        .env_remove("GROUNDWORK_FORGE_TYPE")
+        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+        .env("GROUNDWORK_FORGE_NAME", "runa")
+        .current_dir(project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "direct session MCP tick failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn write_go_session_agent(agent_path: &Path) {
+    write_executable(
+        agent_path,
+        r#"#!/bin/sh
+set -eu
+cat > "$1"
+{
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"go-parity-test","version":"1.0.0"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"next-protocol-context","arguments":{}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"claim","arguments":{"instance_id":"claim-1","scope":"claim this work"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"advance","arguments":{}}}'
+    sleep 1
+} | "$2" --session --work-unit work-unit-168 > "$3"
+if grep -q '"error"' "$3"; then
+    cat "$3" >&2
+    exit 23
+fi
+"#,
+    );
+}
+
 fn setup_ready_scoped_project(dir: &Path) -> PathBuf {
     let manifest_path = common::write_methodology(
         dir,
@@ -73,6 +134,42 @@ fn setup_ready_scoped_project(dir: &Path) -> PathBuf {
     .unwrap();
 
     project_dir
+}
+
+fn scoped_state_json(project_dir: &Path) -> serde_json::Value {
+    let output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .arg("--work-unit")
+        .arg("work-unit-168")
+        .env_remove("GROUNDWORK_FORGE_TYPE")
+        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+        .env("GROUNDWORK_FORGE_NAME", "runa")
+        .current_dir(project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "state failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn workspace_claim_json(project_dir: &Path) -> serde_json::Value {
+    serde_json::from_str(
+        &fs::read_to_string(project_dir.join(".runa/workspace/claim/claim-1.json")).unwrap(),
+    )
+    .unwrap()
+}
+
+fn execution_records_json(project_dir: &Path) -> serde_json::Value {
+    serde_json::from_str(
+        &fs::read_to_string(project_dir.join(".runa/store/execution-records.json")).unwrap(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -204,5 +301,79 @@ fn go_fails_when_agent_exits_without_advancing_the_session_step() {
     assert!(
         stderr.contains("did not advance"),
         "stderr should explain the missing advance: {stderr}"
+    );
+}
+
+#[test]
+fn go_matches_direct_session_surface_when_regenerating_deleted_output_with_unchanged_inputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let go_dir = dir.path().join("go");
+    let direct_dir = dir.path().join("direct");
+    fs::create_dir(&go_dir).unwrap();
+    fs::create_dir(&direct_dir).unwrap();
+    let go_project_dir = setup_ready_scoped_project(&go_dir);
+    let direct_project_dir = setup_ready_scoped_project(&direct_dir);
+    let runa_mcp_path = runa_mcp_bin_path();
+
+    drive_session_mcp_once(
+        &go_project_dir,
+        &runa_mcp_path,
+        &dir.path().join("go-baseline-mcp.log"),
+    );
+    drive_session_mcp_once(
+        &direct_project_dir,
+        &runa_mcp_path,
+        &dir.path().join("direct-baseline-mcp.log"),
+    );
+
+    fs::remove_file(go_project_dir.join(".runa/workspace/claim/claim-1.json")).unwrap();
+    fs::remove_file(direct_project_dir.join(".runa/workspace/claim/claim-1.json")).unwrap();
+
+    let agent_path = dir.path().join("agent.sh");
+    let prompt_path = dir.path().join("prompt.txt");
+    let go_log_path = dir.path().join("go-rerun-mcp.log");
+    write_go_session_agent(&agent_path);
+    append_agent_command_config(
+        &go_project_dir,
+        &[&agent_path, &prompt_path, &runa_mcp_path, &go_log_path],
+    );
+
+    let go_output = runa_bin()
+        .arg("go")
+        .arg("--work-unit")
+        .arg("work-unit-168")
+        .env_remove("GROUNDWORK_FORGE_TYPE")
+        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
+        .env("GROUNDWORK_FORGE_NAME", "runa")
+        .current_dir(&go_project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        go_output.status.success(),
+        "go failed after authoritative advance regenerated the deleted output\nstdout: {}\nstderr: {}\nmcp log: {}",
+        String::from_utf8_lossy(&go_output.stdout),
+        String::from_utf8_lossy(&go_output.stderr),
+        fs::read_to_string(&go_log_path).unwrap_or_else(|_| "<missing>".to_string())
+    );
+
+    drive_session_mcp_once(
+        &direct_project_dir,
+        &runa_mcp_path,
+        &dir.path().join("direct-rerun-mcp.log"),
+    );
+
+    assert_eq!(
+        workspace_claim_json(&go_project_dir),
+        workspace_claim_json(&direct_project_dir)
+    );
+    assert_eq!(
+        execution_records_json(&go_project_dir),
+        execution_records_json(&direct_project_dir)
+    );
+    assert_eq!(
+        scoped_state_json(&go_project_dir),
+        scoped_state_json(&direct_project_dir)
     );
 }
