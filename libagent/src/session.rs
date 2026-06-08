@@ -7,6 +7,8 @@ use serde::Serialize;
 
 use crate::context::{ContextInjection, render_context_prompt};
 
+pub const SESSION_ADVANCE_RECEIPT_ENV: &str = "RUNA_SESSION_ADVANCE_RECEIPT";
+
 #[derive(Debug)]
 pub enum SessionError {
     Project(crate::ProjectError),

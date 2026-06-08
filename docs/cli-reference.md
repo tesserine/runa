@@ -29,7 +29,9 @@ filter = "info"   # any tracing env-filter directive
 
 ### Agent Execution
 
-Live `runa step` (without `--dry-run`) requires an `[agent].command` entry in the config. Live `runa run` uses the same config entry by default, but a single invocation may override it with `--agent-command -- <argv tokens>`:
+Live `runa step` and `runa go` require an `[agent].command` entry in the
+config. Live `runa run` uses the same config entry by default, but a single
+invocation may override it with `--agent-command -- <argv tokens>`:
 
 ```toml
 [agent]
@@ -221,6 +223,43 @@ Without `--dry-run`, requires a Linux host plus an effective agent command. `run
 | 6 | Infrastructure failure: project/config/load/scan/serialization/bootstrap/runtime failure prevented completion from being established. |
 | 130 | Interrupted — `Ctrl-C` prevented the next candidate from starting. |
 
+### `runa go`
+
+```bash
+runa go --work-unit <ID> [--config <PATH>]
+```
+
+Advances one scoped interactive session tick. `go` evaluates the delegated work
+unit, launches the configured agent with a `runa-mcp --session --work-unit
+<ID>` MCP config, and sends only a generic one-tick instruction on stdin. The
+agent retrieves the current protocol context through `next-protocol-context`,
+records outputs through the current output tools, calls `advance`, and stops.
+
+`go` does not expose readiness, context, record, or approval as operator
+commands. Those remain the session surface mechanics inside `runa-mcp`; the
+operator-facing command is the single tick.
+
+If no scoped protocol is READY, `go` prints `No READY protocols.` and exits
+with the same no-work distinction as `step`: `3` when work remains blocked or
+waiting, `4` when no actionable work remains because outputs are current. If the
+agent exits successfully but does not advance the selected session step, `go`
+fails with exit `5`.
+
+**Flags:**
+
+- `--work-unit <ID>` — Required. Advance only scoped protocols for the
+  delegated work unit `<ID>`.
+
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| 0 | The configured agent advanced one session step. |
+| 3 | No READY candidate and work remains blocked, waiting on prerequisites, or trapped in a cycle. |
+| 4 | No READY candidate and no actionable work remains because the in-scope outputs are already current. |
+| 5 | Work was attempted, but the agent failed or did not advance the selected session step. |
+| 6 | Infrastructure failure: project/config/load/scan/serialization/bootstrap/MCP lookup/runtime I/O failure prevented completion from being established. |
+
 ## MCP Server
 
 `runa-mcp` is a stdio MCP server with two modes.
@@ -234,7 +273,18 @@ In fixed-protocol mode, the server loads the project, scans the workspace, resol
 
 In session mode, phase 1 requires `--work-unit <name>` and serves one scoped work-unit session in a single MCP connection. The tool list always includes the driver tools `readiness`, `next-protocol-context`, and `advance`, plus the output tools for the current ready step. A current step is refused if any declared output type for that step would collide with one of those reserved driver tool names. Every driver verb rescans and revalidates the scoped work-unit identity before reporting, serving, or advancing. `readiness` reports the same status classification as `runa state` for the session scope, and selects the first non-exhausted ready step when the session has no current step. `next-protocol-context` verifies that the current step still satisfies readiness authority for its trigger and preconditions, and returns both the structured context and rendered prompt for the current step without advancing it. `advance` verifies that the current step still satisfies readiness authority for its trigger and preconditions, enforces postconditions for the current step, uses staged execution metadata to select and validate the next ready step, and only then persists that metadata and advances the session. Any driver verb that changes the current step emits `notifications/tools/list_changed` so caching MCP clients can rediscover the current step's output tools. Output tools validate and write artifacts exactly as in fixed-protocol mode; recording an output does not advance the session.
 
-`runa step` currently continues to use fixed-protocol mode. It does not spawn `runa-mcp` directly. For direct Claude Code commands, it writes the resolved `runa-mcp` command, arguments, and environment into a temporary `mcpServers.runa` config and passes that config to Claude. For other agent runtimes, it exports the same data as a `RUNA_MCP_CONFIG` JSON payload so an adapter can launch the server as its own child process. The exported command and environment paths are absolute whenever runa resolves them from the local filesystem, so adapters do not depend on child process cwd to launch `runa-mcp`. Transcript environment variables are forwarded into the MCP config when transcript capture is enabled, which lets the MCP server append tool events to the same transcript stream as the CLI execution events.
+`runa step` currently continues to use fixed-protocol mode. `runa go` uses
+session mode. Neither command spawns `runa-mcp` directly. For direct Claude Code
+commands, runa writes the resolved `runa-mcp` command, arguments, and
+environment into a temporary `mcpServers.runa` config and passes that config to
+Claude. For other agent runtimes, it exports the same data as a
+`RUNA_MCP_CONFIG` JSON payload so an adapter can launch the server as its own
+child process. The exported command and environment paths are absolute whenever
+runa resolves them from the local filesystem, so adapters do not depend on child
+process cwd to launch `runa-mcp`. Transcript environment variables are forwarded
+into the MCP config when transcript capture is enabled, which lets the MCP
+server append tool events to the same transcript stream as the CLI execution
+events.
 
 **Environment variables:**
 

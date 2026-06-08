@@ -64,8 +64,8 @@ pub use selection::{
     refresh_exhausted_candidates_after_scan, resolve_evaluation_topology,
 };
 pub use session::{
-    AdvanceOutcome, CurrentStep, SessionError, SessionReadiness, SessionState, SessionTransition,
-    StepSelector,
+    AdvanceOutcome, CurrentStep, SESSION_ADVANCE_RECEIPT_ENV, SessionError, SessionReadiness,
+    SessionState, SessionTransition, StepSelector,
 };
 pub use status::{
     EvaluatedProtocols, FailureEntry, FailureJson, InputEntry, InputJson, ProtocolEntry,
