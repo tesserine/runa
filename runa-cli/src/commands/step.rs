@@ -42,6 +42,10 @@ pub enum StepError {
         work_unit: Option<String>,
         status: String,
     },
+    SessionDidNotAdvance {
+        protocol: String,
+        work_unit: Option<String>,
+    },
     PostExecutionScan {
         protocol: String,
         work_unit: Option<String>,
@@ -119,6 +123,19 @@ impl fmt::Display for StepError {
                     "agent command '{command}' failed for protocol '{protocol}': {status}"
                 ),
             },
+            StepError::SessionDidNotAdvance {
+                protocol,
+                work_unit,
+            } => match work_unit {
+                Some(work_unit) => write!(
+                    f,
+                    "agent command completed but did not advance session protocol '{protocol}' (work_unit={work_unit})"
+                ),
+                None => write!(
+                    f,
+                    "agent command completed but did not advance session protocol '{protocol}'"
+                ),
+            },
             StepError::PostExecutionScan {
                 protocol,
                 work_unit,
@@ -176,6 +193,7 @@ impl std::error::Error for StepError {
             StepError::AgentCommandIo { source, .. } => Some(source),
             StepError::AgentMcpConfigConflict { .. } => None,
             StepError::AgentCommandFailed { .. } => None,
+            StepError::SessionDidNotAdvance { .. } => None,
             StepError::PostExecutionScan { source, .. } => Some(source),
             StepError::PostExecutionEnforcement { source, .. } => Some(source),
             StepError::PostExecutionRecord { source, .. } => Some(source),
@@ -198,6 +216,7 @@ impl StepError {
             StepError::AgentCommandFailed { .. } | StepError::PostExecutionEnforcement { .. } => {
                 ExitCode::WorkFailed
             }
+            StepError::SessionDidNotAdvance { .. } => ExitCode::WorkFailed,
             StepError::Command(_)
             | StepError::Json(_)
             | StepError::AgentCommandNotConfigured
@@ -1108,6 +1127,36 @@ fn build_mcp_config(
     McpServerConfig {
         command: normalize_mcp_command(mcp_command, &working_dir),
         args,
+        env,
+    }
+}
+
+pub(crate) fn build_session_mcp_config(
+    mcp_command: &str,
+    working_dir: &Path,
+    config_path: &Path,
+    work_unit: &str,
+) -> McpServerConfig {
+    let working_dir = absolutize_path(working_dir, working_dir);
+    let config_path = absolutize_path(config_path, &working_dir);
+    let mut env = BTreeMap::new();
+    env.insert(
+        "RUNA_CONFIG".to_string(),
+        config_path.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "RUNA_WORKING_DIR".to_string(),
+        working_dir.to_string_lossy().into_owned(),
+    );
+    env.extend(libagent::transcript::transcript_env());
+
+    McpServerConfig {
+        command: normalize_mcp_command(mcp_command, &working_dir),
+        args: vec![
+            "--session".to_string(),
+            "--work-unit".to_string(),
+            work_unit.to_string(),
+        ],
         env,
     }
 }

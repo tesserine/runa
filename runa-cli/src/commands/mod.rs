@@ -6,6 +6,7 @@ use libagent::ScanResult;
 use crate::project::{self, LoadedProject, ProjectError};
 
 pub mod doctor;
+pub mod go;
 pub mod init;
 pub mod list;
 pub mod protocol_eval;

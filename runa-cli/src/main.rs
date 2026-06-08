@@ -62,6 +62,12 @@ enum Commands {
     },
     /// Cascade through ready protocols until quiescence
     Run(RunArgs),
+    /// Advance a scoped interactive session by one operator tick
+    Go {
+        /// Delegated work unit to advance
+        #[arg(long)]
+        work_unit: String,
+    },
 }
 
 #[derive(Args)]
@@ -220,6 +226,17 @@ fn main() {
                     }
                 }
                 Err(err) => fatal_command_error("run", &err, err.exit_code()),
+            }
+        }
+        Commands::Go { work_unit } => {
+            match commands::go::run(&working_dir, config_override_ref, &work_unit) {
+                Ok(outcome) => {
+                    let exit_code = outcome.exit_code().code();
+                    if exit_code != 0 {
+                        process::exit(exit_code);
+                    }
+                }
+                Err(err) => fatal_command_error("go", &err, err.exit_code()),
             }
         }
     }

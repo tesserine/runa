@@ -25,6 +25,8 @@ Semantic Versioning.
 - `runa-mcp --session --work-unit <ID>` now serves a unified scoped session
   surface with driver tools for readiness, context retrieval, and advance
   alongside the current step's output artifact tools.
+- `runa go --work-unit <ID>` now advances one interactive session tick by
+  launching the configured agent against the unified session MCP surface.
 
 ### Fixed
 
