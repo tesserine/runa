@@ -21,9 +21,9 @@ An implementation may expose the surface through MCP, CLI adapters, or another
 transport, but the transport must not change the meaning, validation, authority,
 or artifact contract of any operation.
 
-Mode changes who issues session verbs and at what checkpoint granularity. Mode
-does not change what a verb means, what validates it, or who holds transition
-authority.
+Mode changes who issues the outer session verb and at what checkpoint
+granularity. Mode does not change what an operation means, what validates it, or
+who holds transition authority.
 
 ## Invocation Contract
 
@@ -31,28 +31,76 @@ All session clients invoke the same runa surface. An interactive driver is a
 client of that surface, not a reimplementation of readiness, context delivery,
 lifecycle movement, or artifact recording.
 
-Every session verb that reconciles the workspace re-establishes the session's
-scoped work-unit identity before evaluating readiness, serving context, or
-advancing lifecycle state. Current-step readiness reconfirmation applies when a
-verb serves or completes that step; scoped identity revalidation is
-unconditional after a rescan.
+### Two layers: the operator verb and the cascade it runs
 
-The required session verbs are:
+runa derives the next action from artifact state. A session therefore advances
+by one outer operation — *take the next step* — and that operation **cascades**
+through a sequence of internal stages: reconcile artifact state, select the
+ready protocol for the scope, build and inject that protocol's validated
+context, let the agent perform the protocol and record its output through the
+methodology's declared output contract, enforce postconditions, and commit the
+transition. The autonomous orchestrator demonstrates the cascade running whole:
+its run loop issues no separate readiness, context, or advance operation — one
+loop tick runs the entire sequence internally, including context construction,
+which is built as part of the agent invocation and is not a separately issued
+step.
 
-| Verb | Semantics |
+The surface accordingly has two layers, and keeping them distinct is what keeps
+the vocabulary honest:
+
+- **Outer layer — the operator verb.** The single operation a session driver
+  issues to move the work: *advance the session by one step*. Autonomous mode
+  issues it repeatedly to quiescence; interactive mode issues it one step at a
+  time so a human can observe between ticks. This is the only layer an operator
+  must address. Mode is which cadence issues this verb, not a different verb
+  (ADR-0015).
+
+- **Inner layer — the cascade stages.** Reconcile/select (readiness), context
+  construction, output recording, and postcondition-gated commit are *stages of
+  the outer operation*, not peer operations an operator wields. Output recording
+  in particular crosses the runa↔methodology boundary: the artifact is recorded
+  through the **methodology's own declared output tool**, validated by runa
+  against the methodology schema (runa is blind to the artifact type by
+  contract). It is the agent's interior write-back during the cascade, not an
+  operator verb.
+
+### Stage semantics
+
+The inner stages, each performed during the outer operation:
+
+| Stage | Semantics |
 | --- | --- |
-| `readiness` | Reconcile current artifact state and evaluate the methodology graph for the session scope. The result classifies protocols with the same ready, blocked, waiting, currentness, scan-gap, and scope rules runa applies everywhere else. |
-| `next context` | Deliver the execution context for a ready protocol from runa's validated input set: protocol instructions, scoped work unit when present, valid required inputs, available accepted inputs, and expected outputs. The client does not query the store directly or synthesize context. |
-| `record output` | Accept an output artifact only through the protocol's declared output contract. Runa validates the artifact against the methodology schema, applies scoped session metadata where the runtime owns it, rejects invalid output, and records only valid output as runtime state. |
-| `advance` | Re-evaluate lifecycle progress from the validated artifact state. Advancement follows the methodology dependency graph, trigger rules, preconditions, postconditions, and required disposition artifacts. It is not a separate approval operation. |
+| reconcile / select (readiness) | Reconcile current artifact state and evaluate the methodology graph for the session scope, classifying protocols by the same ready, blocked, waiting, currentness, scan-gap, and scope rules runa applies everywhere else, and selecting the ready protocol to run. |
+| context construction | Build the execution context for the selected protocol from runa's validated input set — protocol instructions, scoped work unit when present, valid required inputs, available accepted inputs, expected outputs — and inject it. The client never queries the store directly or synthesizes context. In the autonomous path this is built as part of the agent invocation. |
+| output recording | Accept an output artifact only through the protocol's declared output contract. Runa validates the artifact against the methodology schema, applies scoped session metadata where the runtime owns it, rejects invalid output, and records only valid output as runtime state. Reached through the methodology's own output tool, not a runa verb. |
+| postcondition-gated commit (advance) | Enforce the completed protocol's postconditions, then re-evaluate lifecycle progress from validated artifact state and commit the transition, following the methodology dependency graph, trigger rules, preconditions, postconditions, and required disposition artifacts. It is not a separate approval operation. |
 
-In MCP session mode, the concrete driver tool names `readiness`,
-`next-protocol-context`, and `advance` are reserved. A current step must not
-declare an output artifact type with one of those names.
+Every stage that reconciles the workspace re-establishes the session's scoped
+work-unit identity before evaluating readiness, serving context, or advancing
+lifecycle state. Current-step readiness reconfirmation applies when the cascade
+serves or completes that step; scoped identity revalidation is unconditional
+after a rescan.
 
-The semantics above are identical in autonomous and interactive modes. Caller
+The stage semantics are identical in autonomous and interactive modes. Caller
 identity, shell shape, launch path, or UI affordance must not create a second
-meaning for the same verb.
+meaning for any stage or for the outer verb.
+
+### MCP exposure (current) and the open question
+
+The landed MCP session surface currently exposes three concrete reserved tool
+names — `readiness`, `next-protocol-context`, and `advance` — through which a
+driver may invoke inner stages individually; output recording rides the
+methodology's own output tools. A current step must not declare an output
+artifact type named `readiness`, `next-protocol-context`, or `advance`.
+
+Whether the operator-facing surface needs these inner stages individually
+invocable, or whether a single outer verb is sufficient, is an **open question
+to be settled by the interactive driver** (the first consumer that either uses
+the stages separately — e.g. to inspect readiness without committing — or always
+issues them in sequence). It is deliberately not pre-decided here: the model
+above (one outer verb over a cascade) is what the architecture establishes; the
+MCP surface's stage granularity is held to the evidence the driver produces, not
+collapsed or fixed on hypothesis.
 
 ## Disposition-Authority Contract
 
