@@ -9,6 +9,10 @@ Semantic Versioning.
 
 ### Changed
 
+- Durable transcript capture settings and scoped forge identity can now live in
+  `.runa/config.toml`, with `RUNA_TRANSCRIPT_*` and `GROUNDWORK_FORGE_*`
+  environment variables retained as per-invocation overrides. Resolved forge
+  identity is forwarded into launched agent and MCP environments.
 - Live agent launch is now agent-agnostic. A command named `claude` is no
   longer launched with injected `--mcp-config` / `--strict-mcp-config` flags;
   it receives the MCP session config through `RUNA_MCP_CONFIG` like every other

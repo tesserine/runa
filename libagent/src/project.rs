@@ -54,6 +54,40 @@ impl AgentConfig {
     }
 }
 
+/// The `[transcript]` section of `.runa/config.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TranscriptConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redact_env: Vec<String>,
+}
+
+impl TranscriptConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// The `[forge]` section of `.runa/config.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ForgeConfig {
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub forge_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracker_id: Option<String>,
+}
+
+impl ForgeConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 /// On-disk format for `.runa/config.toml` — operator configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
@@ -62,6 +96,10 @@ pub struct Config {
     pub logging: LoggingConfig,
     #[serde(default, skip_serializing_if = "AgentConfig::is_default")]
     pub agent: AgentConfig,
+    #[serde(default, skip_serializing_if = "TranscriptConfig::is_default")]
+    pub transcript: TranscriptConfig,
+    #[serde(default, skip_serializing_if = "ForgeConfig::is_default")]
+    pub forge: ForgeConfig,
 }
 
 /// On-disk format for `.runa/state.toml` — initialization metadata managed by runa.
@@ -73,6 +111,7 @@ pub struct State {
 
 /// A fully loaded runa project: manifest, dependency graph, and artifact store.
 pub struct LoadedProject {
+    pub config: Config,
     pub manifest: Manifest,
     pub graph: DependencyGraph,
     pub store: ArtifactStore,
@@ -248,6 +287,7 @@ pub fn load(
         .map_err(ProjectError::StoreError)?;
 
     Ok(LoadedProject {
+        config,
         manifest,
         graph,
         store,
@@ -301,6 +341,8 @@ trigger = { type = "on_change", name = "constraints" }
             methodology_path: canonical.display().to_string(),
             logging: LoggingConfig::default(),
             agent: AgentConfig::default(),
+            transcript: TranscriptConfig::default(),
+            forge: ForgeConfig::default(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -362,6 +404,8 @@ trigger = { type = "on_change", name = "constraints" }
             methodology_path: canonical.display().to_string(),
             logging: LoggingConfig::default(),
             agent: AgentConfig::default(),
+            transcript: TranscriptConfig::default(),
+            forge: ForgeConfig::default(),
         };
         fs::write(&external_config_path, toml::to_string(&config).unwrap()).unwrap();
 
@@ -443,6 +487,8 @@ artifacts_dir = "custom-artifacts"
             methodology_path: canonical.display().to_string(),
             logging: LoggingConfig::default(),
             agent: AgentConfig::default(),
+            transcript: TranscriptConfig::default(),
+            forge: ForgeConfig::default(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -588,5 +634,56 @@ command = ["codex", "exec"]
             config.agent.command,
             Some(vec!["codex".to_string(), "exec".to_string()])
         );
+    }
+
+    #[test]
+    fn config_with_transcript_and_forge_tables_parses_durable_runtime_settings() {
+        let config: Config = toml::from_str(
+            r#"
+methodology_path = "/tmp/methodology.toml"
+
+[transcript]
+dir = "var/transcripts"
+redact_env = ["SECRET_TOKEN", "API_KEY"]
+
+[forge]
+type = "sourcehut"
+owner = "operator"
+name = "weforge"
+tracker_id = "4"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.transcript.dir.as_deref(), Some("var/transcripts"));
+        assert_eq!(config.transcript.redact_env, ["SECRET_TOKEN", "API_KEY"]);
+        assert_eq!(config.forge.forge_type.as_deref(), Some("sourcehut"));
+        assert_eq!(config.forge.owner.as_deref(), Some("operator"));
+        assert_eq!(config.forge.name.as_deref(), Some("weforge"));
+        assert_eq!(config.forge.tracker_id.as_deref(), Some("4"));
+    }
+
+    #[test]
+    fn config_serializes_and_deserializes_new_durable_runtime_settings() {
+        let config = Config {
+            methodology_path: "/tmp/methodology.toml".to_string(),
+            logging: LoggingConfig::default(),
+            agent: AgentConfig::default(),
+            transcript: TranscriptConfig {
+                dir: Some("transcripts".to_string()),
+                redact_env: vec!["SECRET_TOKEN".to_string()],
+            },
+            forge: ForgeConfig {
+                forge_type: Some("github".to_string()),
+                owner: Some("tesserine".to_string()),
+                name: Some("runa".to_string()),
+                tracker_id: Some("4".to_string()),
+            },
+        };
+
+        let serialized = toml::to_string(&config).unwrap();
+        let round_tripped: Config = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(round_tripped, config);
     }
 }

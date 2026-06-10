@@ -90,6 +90,9 @@ pub fn run(
     let config_path = crate::project::resolve_config(working_dir, config_override)
         .map_err(CommandError::from)
         .map_err(StepError::from)?;
+    let runtime_env = crate::commands::step::resolved_runtime_env(working_dir, &loaded.config);
+    let transcript_settings =
+        libagent::transcript::resolve_transcript_settings(working_dir, &loaded.config.transcript);
     let mcp_binary = locate_runa_mcp()?;
     let receipt_dir = tempfile::Builder::new()
         .prefix("runa-go-advance-")
@@ -102,6 +105,7 @@ pub fn run(
         working_dir,
         &config_path,
         work_unit,
+        &runtime_env,
     );
     mcp_config.env.insert(
         libagent::SESSION_ADVANCE_RECEIPT_ENV.to_string(),
@@ -134,10 +138,14 @@ pub fn run(
         &agent_command,
         &entry,
         ExecutionOptions {
-            extra_env: BTreeMap::from([(
-                libagent::SESSION_ADVANCE_RECEIPT_ENV.to_string(),
-                receipt_path_env,
-            )]),
+            extra_env: runtime_env
+                .into_iter()
+                .chain([(
+                    libagent::SESSION_ADVANCE_RECEIPT_ENV.to_string(),
+                    receipt_path_env,
+                )])
+                .collect(),
+            transcript_settings: Some(transcript_settings),
             ..ExecutionOptions::default()
         },
     )?;

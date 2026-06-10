@@ -192,6 +192,51 @@ fn state_accepts_exact_tracker_backed_work_unit_without_slug() {
 }
 
 #[test]
+fn state_accepts_tracker_backed_work_unit_with_forge_identity_only_in_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        common::scoped_work_unit_manifest_toml(),
+        common::scoped_work_unit_schemas(),
+        &["take"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    common::append_github_forge_config(&project_dir, "tesserine", "runa");
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-163.json"),
+        common::github_work_unit_json(163),
+    )
+    .unwrap();
+
+    let output = runa_bin()
+        .arg("state")
+        .arg("--work-unit")
+        .arg("work-unit-163")
+        .env_remove("GROUNDWORK_FORGE_TYPE")
+        .env_remove("GROUNDWORK_FORGE_OWNER")
+        .env_remove("GROUNDWORK_FORGE_NAME")
+        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("take"), "stdout: {stdout}");
+    assert!(stdout.contains("work-unit-163"), "stdout: {stdout}");
+}
+
+#[test]
 fn state_rejects_exact_tracker_backed_work_unit_with_number_disagreement() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(

@@ -3,6 +3,7 @@ use std::fmt;
 
 use serde_json::Value;
 
+use crate::project::ForgeConfig;
 use crate::store::{ArtifactStore, ValidationStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,10 +86,53 @@ pub fn validate_scoped_work_unit(
     store: &ArtifactStore,
     supplied: &str,
 ) -> Result<(), ScopedWorkUnitError> {
-    let environment: HashMap<String, String> = std::env::vars()
-        .filter(|(name, _)| name.starts_with("GROUNDWORK_"))
-        .collect();
+    let environment = resolve_forge_environment(&ForgeConfig::default());
     validate_scoped_work_unit_with_env(store, supplied, &environment)
+}
+
+pub fn resolve_forge_environment(config: &ForgeConfig) -> HashMap<String, String> {
+    let mut environment: HashMap<String, String> = std::env::vars()
+        .filter(|(name, value)| name.starts_with("GROUNDWORK_") && !value.is_empty())
+        .collect();
+
+    insert_config_env(
+        &mut environment,
+        "GROUNDWORK_FORGE_TYPE",
+        config.forge_type.as_deref(),
+    );
+    insert_config_env(
+        &mut environment,
+        "GROUNDWORK_FORGE_OWNER",
+        config.owner.as_deref(),
+    );
+    insert_config_env(
+        &mut environment,
+        "GROUNDWORK_FORGE_NAME",
+        config.name.as_deref(),
+    );
+    insert_config_env(
+        &mut environment,
+        "GROUNDWORK_FORGE_TRACKER_ID",
+        config.tracker_id.as_deref(),
+    );
+
+    environment
+}
+
+fn insert_config_env(
+    environment: &mut HashMap<String, String>,
+    variable: &'static str,
+    value: Option<&str>,
+) {
+    if environment
+        .get(variable)
+        .is_some_and(|existing| !existing.is_empty())
+    {
+        return;
+    }
+    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        environment.insert(variable.to_string(), value.to_string());
+    }
 }
 
 pub fn validate_scoped_work_unit_with_env(
@@ -281,10 +325,51 @@ fn instance_work_unit_number(instance_id: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use std::ffi::OsString;
     use tempfile::TempDir;
 
     use super::*;
+    use crate::project::ForgeConfig;
     use crate::{ArtifactStore, ArtifactType};
+
+    struct EnvGuard {
+        previous: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn set(values: &[(&'static str, &str)]) -> Self {
+            let previous = values
+                .iter()
+                .map(|(name, _)| (*name, std::env::var_os(name)))
+                .collect::<Vec<_>>();
+            for (name, value) in values {
+                unsafe { std::env::set_var(name, value) };
+            }
+            Self { previous }
+        }
+
+        fn unset(names: &[&'static str]) -> Self {
+            let previous = names
+                .iter()
+                .map(|name| (*name, std::env::var_os(name)))
+                .collect::<Vec<_>>();
+            for name in names {
+                unsafe { std::env::remove_var(name) };
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in &self.previous {
+                match value {
+                    Some(value) => unsafe { std::env::set_var(name, value) },
+                    None => unsafe { std::env::remove_var(name) },
+                }
+            }
+        }
+    }
 
     fn work_unit_store(dir: &TempDir) -> ArtifactStore {
         ArtifactStore::new(
@@ -351,6 +436,84 @@ mod tests {
                 tracker_id.to_string(),
             ),
         ])
+    }
+
+    #[test]
+    fn forge_environment_resolves_config_values_when_environment_is_unset() {
+        let _env = EnvGuard::unset(&[
+            "GROUNDWORK_FORGE_TYPE",
+            "GROUNDWORK_FORGE_OWNER",
+            "GROUNDWORK_FORGE_NAME",
+            "GROUNDWORK_FORGE_TRACKER_ID",
+        ]);
+        let config = ForgeConfig {
+            forge_type: Some("sourcehut".to_string()),
+            owner: Some("operator".to_string()),
+            name: Some("weforge".to_string()),
+            tracker_id: Some("4".to_string()),
+        };
+
+        let environment = resolve_forge_environment(&config);
+
+        assert_eq!(
+            environment.get("GROUNDWORK_FORGE_TYPE").map(String::as_str),
+            Some("sourcehut")
+        );
+        assert_eq!(
+            environment
+                .get("GROUNDWORK_FORGE_OWNER")
+                .map(String::as_str),
+            Some("operator")
+        );
+        assert_eq!(
+            environment.get("GROUNDWORK_FORGE_NAME").map(String::as_str),
+            Some("weforge")
+        );
+        assert_eq!(
+            environment
+                .get("GROUNDWORK_FORGE_TRACKER_ID")
+                .map(String::as_str),
+            Some("4")
+        );
+    }
+
+    #[test]
+    fn forge_environment_resolves_environment_values_over_config_values() {
+        let _env = EnvGuard::set(&[
+            ("GROUNDWORK_FORGE_TYPE", "github"),
+            ("GROUNDWORK_FORGE_OWNER", "env-owner"),
+            ("GROUNDWORK_FORGE_NAME", "env-name"),
+            ("GROUNDWORK_FORGE_TRACKER_ID", "9"),
+        ]);
+        let config = ForgeConfig {
+            forge_type: Some("sourcehut".to_string()),
+            owner: Some("config-owner".to_string()),
+            name: Some("config-name".to_string()),
+            tracker_id: Some("4".to_string()),
+        };
+
+        let environment = resolve_forge_environment(&config);
+
+        assert_eq!(
+            environment.get("GROUNDWORK_FORGE_TYPE").map(String::as_str),
+            Some("github")
+        );
+        assert_eq!(
+            environment
+                .get("GROUNDWORK_FORGE_OWNER")
+                .map(String::as_str),
+            Some("env-owner")
+        );
+        assert_eq!(
+            environment.get("GROUNDWORK_FORGE_NAME").map(String::as_str),
+            Some("env-name")
+        );
+        assert_eq!(
+            environment
+                .get("GROUNDWORK_FORGE_TRACKER_ID")
+                .map(String::as_str),
+            Some("9")
+        );
     }
 
     #[test]

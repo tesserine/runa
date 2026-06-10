@@ -244,11 +244,13 @@ fn build_run_json_plan(
     scope: libagent::EvaluationScope<'_>,
 ) -> Result<Vec<RunPlanJson>, RunError> {
     let preview_command = preview_runa_mcp_command();
+    let runtime_env = crate::commands::step::resolved_runtime_env(working_dir, &loaded.config);
     let concrete_entries: std::collections::HashMap<_, _> = build_plan_entries(
         execution_state.planned_entries.clone(),
         &preview_command,
         working_dir,
         config_path,
+        &runtime_env,
     )
     .into_iter()
     .map(|entry| {
@@ -342,11 +344,19 @@ fn execute_and_reconcile(
     mcp_command: &str,
     next_entry: PlannedEntry,
 ) -> Result<ReconcileOutcome, StepError> {
-    let execution_entry =
-        build_plan_entries(vec![next_entry], mcp_command, working_dir, config_path)
-            .into_iter()
-            .next()
-            .expect("single planned entry must produce one execution entry");
+    let runtime_env = crate::commands::step::resolved_runtime_env(working_dir, &loaded.config);
+    let transcript_settings =
+        libagent::transcript::resolve_transcript_settings(working_dir, &loaded.config.transcript);
+    let execution_entry = build_plan_entries(
+        vec![next_entry],
+        mcp_command,
+        working_dir,
+        config_path,
+        &runtime_env,
+    )
+    .into_iter()
+    .next()
+    .expect("single planned entry must produce one execution entry");
 
     execute_entry(
         working_dir,
@@ -354,7 +364,8 @@ fn execute_and_reconcile(
         &execution_entry,
         ExecutionOptions {
             isolate_process_group: true,
-            ..ExecutionOptions::default()
+            extra_env: runtime_env,
+            transcript_settings: Some(transcript_settings),
         },
     )?;
 

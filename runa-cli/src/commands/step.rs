@@ -272,6 +272,7 @@ pub(crate) struct PlannedEntry {
 pub(crate) struct ExecutionOptions {
     pub(crate) isolate_process_group: bool,
     pub(crate) extra_env: BTreeMap<String, String>,
+    pub(crate) transcript_settings: Option<libagent::transcript::TranscriptSettings>,
 }
 
 struct BinaryLookup {
@@ -403,6 +404,35 @@ fn format_exit_status(status: ExitStatus) -> String {
     }
 }
 
+pub(crate) fn resolved_runtime_env(
+    working_dir: &Path,
+    config: &libagent::Config,
+) -> BTreeMap<String, String> {
+    let transcript_settings =
+        libagent::transcript::resolve_transcript_settings(working_dir, &config.transcript);
+    let mut env: BTreeMap<String, String> =
+        libagent::transcript::transcript_env_from_settings(&transcript_settings)
+            .into_iter()
+            .collect();
+
+    let forge_environment = libagent::resolve_forge_environment(&config.forge);
+    for name in [
+        "GROUNDWORK_FORGE_TYPE",
+        "GROUNDWORK_FORGE_OWNER",
+        "GROUNDWORK_FORGE_NAME",
+        "GROUNDWORK_FORGE_TRACKER_ID",
+    ] {
+        if let Some(value) = forge_environment
+            .get(name)
+            .filter(|value| !value.is_empty())
+        {
+            env.insert(name.to_string(), value.clone());
+        }
+    }
+
+    env
+}
+
 #[cfg(test)]
 fn candidate_key(protocol: &str, work_unit: Option<&str>) -> CandidateKey {
     CandidateKey {
@@ -418,7 +448,14 @@ pub(crate) fn execute_entry(
     options: ExecutionOptions,
 ) -> Result<(), StepError> {
     let command_display = format_command(agent_command);
-    let transcript_capture_enabled = libagent::transcript::capture_enabled();
+    let transcript_settings = options.transcript_settings.clone().unwrap_or_else(|| {
+        libagent::transcript::resolve_transcript_settings(
+            working_dir,
+            &libagent::TranscriptConfig::default(),
+        )
+    });
+    let transcript_capture_enabled =
+        libagent::transcript::capture_enabled_with_settings(&transcript_settings);
     info!(
         operation = "agent_execution",
         outcome = "starting",
@@ -467,12 +504,14 @@ pub(crate) fn execute_entry(
                 "stdout",
                 entry.protocol.clone(),
                 entry.work_unit.clone(),
+                transcript_settings.clone(),
             ),
             spawn_stream_forwarder(
                 stderr,
                 "stderr",
                 entry.protocol.clone(),
                 entry.work_unit.clone(),
+                transcript_settings.clone(),
             ),
         ))
     } else {
@@ -490,14 +529,17 @@ pub(crate) fn execute_entry(
             })?;
         let prompt = render_context_prompt(&entry.context);
         if transcript_capture_enabled {
-            libagent::transcript::append_event(libagent::transcript::TranscriptEvent {
-                source: "runa",
-                kind: "agent_input",
-                protocol: Some(&entry.protocol),
-                work_unit: entry.work_unit.as_deref(),
-                content: Some(&prompt),
-                ..Default::default()
-            })
+            libagent::transcript::append_event_with_settings(
+                libagent::transcript::TranscriptEvent {
+                    source: "runa",
+                    kind: "agent_input",
+                    protocol: Some(&entry.protocol),
+                    work_unit: entry.work_unit.as_deref(),
+                    content: Some(&prompt),
+                    ..Default::default()
+                },
+                &transcript_settings,
+            )
             .map_err(|source| StepError::AgentCommandIo {
                 command: command_display.clone(),
                 stage: "transcript_write",
@@ -525,15 +567,18 @@ pub(crate) fn execute_entry(
     }
 
     if transcript_capture_enabled {
-        libagent::transcript::append_event(libagent::transcript::TranscriptEvent {
-            source: "runa",
-            kind: "agent_exit",
-            protocol: Some(&entry.protocol),
-            work_unit: entry.work_unit.as_deref(),
-            exit_code: status.code(),
-            success: Some(status.success()),
-            ..Default::default()
-        })
+        libagent::transcript::append_event_with_settings(
+            libagent::transcript::TranscriptEvent {
+                source: "runa",
+                kind: "agent_exit",
+                protocol: Some(&entry.protocol),
+                work_unit: entry.work_unit.as_deref(),
+                exit_code: status.code(),
+                success: Some(status.success()),
+                ..Default::default()
+            },
+            &transcript_settings,
+        )
         .map_err(|source| StepError::AgentCommandIo {
             command: command_display.clone(),
             stage: "transcript_write",
@@ -576,9 +621,16 @@ fn spawn_stream_forwarder(
     stream_name: &'static str,
     protocol: String,
     work_unit: Option<String>,
+    transcript_settings: libagent::transcript::TranscriptSettings,
 ) -> thread::JoinHandle<io::Result<()>> {
     thread::spawn(move || {
-        forward_stream_to_host_and_transcript(stream, stream_name, protocol, work_unit)
+        forward_stream_to_host_and_transcript(
+            stream,
+            stream_name,
+            protocol,
+            work_unit,
+            transcript_settings,
+        )
     })
 }
 
@@ -615,6 +667,7 @@ fn forward_stream_to_host_and_transcript(
     stream_name: &'static str,
     protocol: String,
     work_unit: Option<String>,
+    transcript_settings: libagent::transcript::TranscriptSettings,
 ) -> io::Result<()> {
     let mut buffer = [0_u8; 4096];
 
@@ -636,26 +689,35 @@ fn forward_stream_to_host_and_transcript(
         }
 
         let content = String::from_utf8_lossy(chunk);
-        libagent::transcript::append_event(libagent::transcript::TranscriptEvent {
-            source: "runa",
-            kind: if stream_name == "stderr" {
-                "agent_stderr"
-            } else {
-                "agent_stdout"
+        libagent::transcript::append_event_with_settings(
+            libagent::transcript::TranscriptEvent {
+                source: "runa",
+                kind: if stream_name == "stderr" {
+                    "agent_stderr"
+                } else {
+                    "agent_stdout"
+                },
+                protocol: Some(&protocol),
+                work_unit: work_unit.as_deref(),
+                stream: Some(stream_name),
+                content: Some(&content),
+                ..Default::default()
             },
-            protocol: Some(&protocol),
-            work_unit: work_unit.as_deref(),
-            stream: Some(stream_name),
-            content: Some(&content),
-            ..Default::default()
-        })?;
+            &transcript_settings,
+        )?;
     }
 }
 
+struct LiveExecutionContext<'a> {
+    working_dir: &'a Path,
+    agent_command: &'a [String],
+    config_path: &'a Path,
+    runtime_env: &'a BTreeMap<String, String>,
+    transcript_settings: &'a libagent::transcript::TranscriptSettings,
+}
+
 fn execute_live_single(
-    working_dir: &Path,
-    agent_command: &[String],
-    config_path: &Path,
+    context: LiveExecutionContext<'_>,
     loaded: &mut crate::project::LoadedProject,
     planned_entries: Vec<PlannedEntry>,
     scope: libagent::EvaluationScope<'_>,
@@ -674,7 +736,8 @@ fn execute_live_single(
                         work_unit,
                         source,
                     })?;
-                let refreshed = evaluate_execution_state(loaded, working_dir, &scan_result, scope);
+                let refreshed =
+                    evaluate_execution_state(loaded, context.working_dir, &scan_result, scope);
                 match decide_live_fallback_after_refresh(refreshed) {
                     Ok(entry) => entry,
                     Err(outcome) => {
@@ -687,17 +750,26 @@ fn execute_live_single(
 
     let mcp_binary = locate_runa_mcp()?;
     let mcp_command = mcp_binary.to_string_lossy().into_owned();
-    let execution_entry =
-        build_plan_entries(vec![next_entry], &mcp_command, working_dir, config_path)
-            .into_iter()
-            .next()
-            .expect("single planned entry must produce one execution entry");
+    let execution_entry = build_plan_entries(
+        vec![next_entry],
+        &mcp_command,
+        context.working_dir,
+        context.config_path,
+        context.runtime_env,
+    )
+    .into_iter()
+    .next()
+    .expect("single planned entry must produce one execution entry");
 
     execute_entry(
-        working_dir,
-        agent_command,
+        context.working_dir,
+        context.agent_command,
         &execution_entry,
-        ExecutionOptions::default(),
+        ExecutionOptions {
+            extra_env: context.runtime_env.clone(),
+            transcript_settings: Some(context.transcript_settings.clone()),
+            ..ExecutionOptions::default()
+        },
     )?;
 
     let scan_result =
@@ -739,7 +811,7 @@ fn execute_live_single(
             source,
         })?;
 
-    let refreshed = evaluate_execution_state(loaded, working_dir, &scan_result, scope);
+    let refreshed = evaluate_execution_state(loaded, context.working_dir, &scan_result, scope);
 
     match &execution_entry.work_unit {
         Some(work_unit) => println!(
@@ -785,6 +857,9 @@ fn run_internal(
     let config_path = crate::project::resolve_config(working_dir, config_override)
         .map_err(CommandError::from)
         .map_err(StepError::from)?;
+    let runtime_env = resolved_runtime_env(working_dir, &loaded.config);
+    let transcript_settings =
+        libagent::transcript::resolve_transcript_settings(working_dir, &loaded.config.transcript);
 
     let agent_command = if dry_run {
         None
@@ -803,11 +878,15 @@ fn run_internal(
 
     if !dry_run {
         return execute_live_single(
-            working_dir,
-            agent_command
-                .as_ref()
-                .expect("live execution requires agent command"),
-            &config_path,
+            LiveExecutionContext {
+                working_dir,
+                agent_command: agent_command
+                    .as_ref()
+                    .expect("live execution requires agent command"),
+                config_path: &config_path,
+                runtime_env: &runtime_env,
+                transcript_settings: &transcript_settings,
+            },
             &mut loaded,
             planned_entries,
             scope,
@@ -824,6 +903,7 @@ fn run_internal(
         &preview_runa_mcp_command(),
         working_dir,
         &config_path,
+        &runtime_env,
     );
 
     let execution_plan_is_empty = execution_plan.is_empty();
@@ -929,6 +1009,7 @@ pub(crate) fn build_plan_entries(
     mcp_command: &str,
     working_dir: &Path,
     config_path: &Path,
+    runtime_env: &BTreeMap<String, String>,
 ) -> Vec<PlanEntry> {
     planned_entries
         .into_iter()
@@ -942,6 +1023,7 @@ pub(crate) fn build_plan_entries(
                 config_path,
                 &entry.protocol,
                 entry.work_unit.as_deref(),
+                runtime_env,
             ),
             context: entry.context,
             execution_record: entry.execution_record,
@@ -1035,6 +1117,7 @@ fn build_mcp_config(
     config_path: &Path,
     protocol: &str,
     work_unit: Option<&str>,
+    runtime_env: &BTreeMap<String, String>,
 ) -> McpServerConfig {
     let mut args = vec!["--protocol".to_string(), protocol.to_string()];
     if let Some(work_unit) = work_unit {
@@ -1054,6 +1137,7 @@ fn build_mcp_config(
         working_dir.to_string_lossy().into_owned(),
     );
     env.extend(libagent::transcript::transcript_env());
+    env.extend(runtime_env.clone());
 
     McpServerConfig {
         command: normalize_mcp_command(mcp_command, &working_dir),
@@ -1067,6 +1151,7 @@ pub(crate) fn build_session_mcp_config(
     working_dir: &Path,
     config_path: &Path,
     work_unit: &str,
+    runtime_env: &BTreeMap<String, String>,
 ) -> McpServerConfig {
     let working_dir = absolutize_path(working_dir, working_dir);
     let config_path = absolutize_path(config_path, &working_dir);
@@ -1080,6 +1165,7 @@ pub(crate) fn build_session_mcp_config(
         working_dir.to_string_lossy().into_owned(),
     );
     env.extend(libagent::transcript::transcript_env());
+    env.extend(runtime_env.clone());
 
     McpServerConfig {
         command: normalize_mcp_command(mcp_command, &working_dir),
@@ -1489,6 +1575,7 @@ cat >/dev/null
             Path::new("/tmp/project/.runa/config.toml"),
             "implement",
             Some("wu-a"),
+            &BTreeMap::new(),
         );
 
         assert_eq!(config.command, "/tmp/bin/runa-mcp");
@@ -1522,6 +1609,7 @@ cat >/dev/null
             Path::new("/tmp/project/.runa/config.toml"),
             "implement",
             None,
+            &BTreeMap::new(),
         );
 
         assert_eq!(
@@ -1531,6 +1619,35 @@ cat >/dev/null
         assert_eq!(
             config.env.get("RUNA_TRANSCRIPT_REDACT_ENV"),
             Some(&"SECRET_TOKEN".to_string())
+        );
+    }
+
+    #[test]
+    fn build_mcp_config_includes_supplied_runtime_environment() {
+        let runtime_env = BTreeMap::from([
+            (
+                "GROUNDWORK_FORGE_OWNER".to_string(),
+                "tesserine".to_string(),
+            ),
+            ("GROUNDWORK_FORGE_NAME".to_string(), "runa".to_string()),
+        ]);
+
+        let config = build_mcp_config(
+            "/tmp/bin/runa-mcp",
+            Path::new("/tmp/project"),
+            Path::new("/tmp/project/.runa/config.toml"),
+            "implement",
+            None,
+            &runtime_env,
+        );
+
+        assert_eq!(
+            config.env.get("GROUNDWORK_FORGE_OWNER"),
+            Some(&"tesserine".to_string())
+        );
+        assert_eq!(
+            config.env.get("GROUNDWORK_FORGE_NAME"),
+            Some(&"runa".to_string())
         );
     }
 
@@ -1551,6 +1668,7 @@ cat >/dev/null
             Path::new(".runa/config.toml"),
             "implement",
             None,
+            &BTreeMap::new(),
         );
 
         assert_eq!(
@@ -1584,6 +1702,7 @@ cat >/dev/null
             Path::new("/tmp/project/.runa/config.toml"),
             "implement",
             None,
+            &BTreeMap::new(),
         );
 
         assert_eq!(config.command, "runa-mcp");

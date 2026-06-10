@@ -74,3 +74,15 @@ pub fn github_work_unit_json(number: u64) -> String {
         r#"{{"title":"Scope","description":"Enforce canonical scope","acceptance_criteria":["Reject aliases"],"handle":{{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/{number}","number":{number}}}}}"#
     )
 }
+
+#[allow(dead_code)]
+pub fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
+    fs::write(
+        project_dir.join(".runa/config.toml"),
+        format!(
+            "{}\n[forge]\ntype = \"github\"\nowner = \"{owner}\"\nname = \"{name}\"\n",
+            fs::read_to_string(project_dir.join(".runa/config.toml")).unwrap()
+        ),
+    )
+    .unwrap();
+}

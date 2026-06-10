@@ -167,6 +167,14 @@ Both projects are in early development.
 
 See [CLI Reference](docs/cli-reference.md) for flags, exit codes, configuration, and behavioral details.
 
+## Configuration
+
+`runa init` creates `.runa/config.toml` with the methodology path. Operators
+may also set durable project defaults there for live agent command,
+transcript capture, and scoped forge identity. Environment variables such as
+`RUNA_TRANSCRIPT_DIR` and `GROUNDWORK_FORGE_*` remain per-invocation overrides;
+config is the project-local default.
+
 ## Build
 
 Rust 2024 edition. Runa targets Linux.

@@ -265,6 +265,29 @@ fn init_project(project_dir: &Path, manifest_path: &Path) {
     .unwrap();
 }
 
+fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
+    let config_path = project_dir.join(".runa/config.toml");
+    let existing = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        config_path,
+        format!("{existing}\n[forge]\ntype = \"github\"\nowner = \"{owner}\"\nname = \"{name}\"\n"),
+    )
+    .unwrap();
+}
+
+fn append_transcript_config(project_dir: &Path, transcript_dir: &Path) {
+    let config_path = project_dir.join(".runa/config.toml");
+    let existing = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        config_path,
+        format!(
+            "{existing}\n[transcript]\ndir = {:?}\n",
+            transcript_dir.display().to_string()
+        ),
+    )
+    .unwrap();
+}
+
 fn setup_project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = write_methodology(
@@ -1696,6 +1719,55 @@ async fn mcp_accepts_exact_tracker_backed_work_unit_without_slug() {
 }
 
 #[tokio::test]
+async fn mcp_accepts_tracker_backed_work_unit_with_forge_identity_only_in_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_work_unit_manifest_toml(),
+        &scoped_work_unit_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    append_github_forge_config(&project_dir, "tesserine", "runa");
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-163.json"),
+        github_work_unit_json(163),
+    )
+    .unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("take")
+                        .arg("--work-unit")
+                        .arg("work-unit-163")
+                        .env_remove("GROUNDWORK_FORGE_TYPE")
+                        .env_remove("GROUNDWORK_FORGE_OWNER")
+                        .env_remove("GROUNDWORK_FORGE_NAME")
+                        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let tools = service.list_all_tools().await.unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name.as_ref(), "claim");
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn mcp_rejects_exact_tracker_backed_work_unit_with_number_disagreement() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = write_methodology(
@@ -1796,6 +1868,54 @@ async fn tool_calls_append_transcript_events_when_enabled() {
                         .arg("--work-unit")
                         .arg("wu-1")
                         .env("RUNA_TRANSCRIPT_DIR", &transcript_dir)
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    service
+        .call_tool(CallToolRequestParam {
+            name: "implementation".into(),
+            arguments: serde_json::json!({
+                "instance_id": "impl-1",
+                "title": "ship it"
+            })
+            .as_object()
+            .cloned(),
+        })
+        .await
+        .unwrap();
+
+    let events = fs::read_to_string(transcript_dir.join("events.jsonl"))
+        .expect("tool transcript events should be written");
+    assert!(events.contains("\"source\":\"runa-mcp\""));
+    assert!(events.contains("\"kind\":\"tool_call\""));
+    assert!(events.contains("\"kind\":\"tool_result\""));
+    assert!(events.contains("\"tool_name\":\"implementation\""));
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn tool_calls_append_transcript_events_from_config_when_environment_is_unset() {
+    let dir = setup_project();
+    let project_dir = dir.path().join("project");
+    let transcript_dir = dir.path().join("configured-transcript");
+    append_transcript_config(&project_dir, &transcript_dir);
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("implement")
+                        .arg("--work-unit")
+                        .arg("wu-1")
+                        .env_remove("RUNA_TRANSCRIPT_DIR")
+                        .env_remove("RUNA_TRANSCRIPT_REDACT_ENV")
                         .current_dir(&project_dir);
                 }),
             )

@@ -411,7 +411,12 @@ impl SessionState {
         require_current_ready: bool,
     ) -> Result<ReconciledScan, SessionError> {
         let scan_result = self.scan_workspace()?;
-        crate::validate_scoped_work_unit(&self.loaded.store, &self.work_unit)?;
+        let environment = crate::resolve_forge_environment(&self.loaded.config.forge);
+        crate::validate_scoped_work_unit_with_env(
+            &self.loaded.store,
+            &self.work_unit,
+            &environment,
+        )?;
         self.refresh_exhaustion_after_scan(&scan_result);
         let scan_findings = crate::collect_scan_findings(&scan_result, &self.loaded.workspace_dir);
         let evaluated = self.evaluate(&scan_findings);
