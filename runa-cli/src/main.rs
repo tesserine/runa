@@ -2,6 +2,7 @@ mod commands;
 mod exit_codes;
 mod project;
 
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::process;
 use std::{io, io::Write};
@@ -36,6 +37,11 @@ enum Commands {
     Doctor,
     /// Scan the artifact workspace and reconcile it into the store
     Scan,
+    /// Fetch a work unit from the configured forge
+    Take {
+        /// Forge issue or ticket id to acquire
+        id: NonZeroU64,
+    },
     /// Evaluate protocol readiness and report state
     State {
         /// Emit machine-readable JSON instead of text output
@@ -176,6 +182,12 @@ fn main() {
         Commands::Scan => {
             if let Err(err) = commands::scan::run(&working_dir, config_override_ref) {
                 fatal_command_error("scan", &err, ExitCode::InfrastructureFailure);
+            }
+        }
+        Commands::Take { id } => {
+            match commands::take::run(&working_dir, config_override_ref, id.get()) {
+                Ok(id) => println!("{id}"),
+                Err(err) => fatal_command_error("take", &err, ExitCode::InfrastructureFailure),
             }
         }
         Commands::State { json, work_unit } => {

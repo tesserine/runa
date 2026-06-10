@@ -320,6 +320,9 @@ fn github_repository(url: &str) -> Option<&str> {
 }
 
 fn instance_work_unit_number(instance_id: &str) -> Option<u64> {
+    if instance_id.chars().all(|ch| ch.is_ascii_digit()) {
+        return instance_id.parse().ok();
+    }
     let rest = instance_id.strip_prefix("work-unit-")?;
     let number = rest.split_once('-').map_or(rest, |(number, _)| number);
     number.parse().ok()
@@ -527,6 +530,26 @@ mod tests {
         let result = validate_scoped_work_unit_with_env(
             &store,
             "work-unit-163",
+            &github_environment("tesserine/runa"),
+        );
+
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn bare_numeric_work_unit_id_accepts_matching_github_deployment() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = work_unit_store(&tmp);
+        let artifact = github_work_unit(163);
+        let artifact_path = tmp.path().join("163.json");
+        std::fs::write(&artifact_path, artifact.to_string()).unwrap();
+        store
+            .record_with_timestamp("work-unit", "163", &artifact_path, &artifact, 1)
+            .unwrap();
+
+        let result = validate_scoped_work_unit_with_env(
+            &store,
+            "163",
             &github_environment("tesserine/runa"),
         );
 

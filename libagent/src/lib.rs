@@ -20,6 +20,7 @@
 pub(crate) mod completion;
 pub mod context;
 pub mod enforcement;
+pub mod forge_take;
 pub mod graph;
 pub mod logging;
 pub mod manifest;
@@ -41,6 +42,10 @@ pub mod validation;
 pub use enforcement::{
     ArtifactFailure, EnforcementError, Phase, Relationship, enforce_postconditions,
     enforce_preconditions,
+};
+pub use forge_take::{
+    ForgeFetcher, ForgeHandle, ForgeIssue, HttpForgeFetcher, ResolvedForge, TakeError,
+    take_work_unit, take_work_unit_with_fetcher,
 };
 pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use logging::{LoggingError, ResolvedLoggingConfig, configure_tracing, resolve_logging_config};

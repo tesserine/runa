@@ -14,6 +14,7 @@ pub mod run;
 pub mod scan;
 pub mod state;
 pub mod step;
+pub mod take;
 
 #[derive(Debug)]
 pub enum CommandError {

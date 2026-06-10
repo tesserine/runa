@@ -7,6 +7,12 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Added `runa take <id>` to fetch GitHub issues or SourceHut tickets from the
+  configured forge into validated `.runa/workspace/work-unit/<id>.json`
+  artifacts.
+
 ### Changed
 
 - Durable transcript capture settings and scoped forge identity can now live in

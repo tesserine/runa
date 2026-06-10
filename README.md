@@ -21,10 +21,11 @@ A **methodology** is a plugin configuration that registers with runa through a T
 Scope is methodology-owned metadata, not something runa infers from schemas or artifact contents. Unscoped commands evaluate only unscoped protocols. `runa state --work-unit <ID>`, `runa step --work-unit <ID>`, `runa run --work-unit <ID>`, and `runa go --work-unit <ID>` evaluate only `scoped = true` protocols for that delegated work unit.
 
 When a methodology records `work-unit` artifacts, scoped entry points require
-`<ID>` to exactly match one recorded `work-unit` instance id. Tracker-looking
-aliases such as ticket numbers or partial ids are rejected and the diagnostic
-lists the available canonical ids. If no `work-unit` artifacts are recorded,
-scoped evaluation remains inert and accepts the caller-supplied id as before.
+`<ID>` to exactly match one recorded `work-unit` instance id. A bare tracker
+number is valid when the recorded artifact id is that number, as with `runa
+take 58`; it is not treated as an alias for a different id. If no `work-unit`
+artifacts are recorded, scoped evaluation remains inert and accepts the
+caller-supplied id as before.
 
 ## Quick Start
 
@@ -158,6 +159,7 @@ Both projects are in early development.
 | `runa init` | Initialize a project from a methodology manifest |
 | `runa scan` | Reconcile the artifact workspace into the store |
 | `runa list` | Display protocols in topological order |
+| `runa take` | Fetch a configured forge issue or ticket into `.runa/workspace/work-unit/` |
 | `runa state` | Evaluate and classify protocol readiness |
 | `runa doctor` | Check project health |
 | `runa step` | Execute the next ready protocol |
@@ -174,6 +176,10 @@ may also set durable project defaults there for live agent command,
 transcript capture, and scoped forge identity. Environment variables such as
 `RUNA_TRANSCRIPT_DIR` and `GROUNDWORK_FORGE_*` remain per-invocation overrides;
 config is the project-local default.
+
+`runa take <id>` uses `[forge]` to fetch the issue or ticket that becomes a
+`work-unit` artifact. GitHub credentials come from `GITHUB_TOKEN` or
+`GH_TOKEN`; SourceHut credentials come from `SOURCEHUT_TOKEN` or `SRHT_TOKEN`.
 
 ## Build
 

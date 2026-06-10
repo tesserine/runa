@@ -45,6 +45,12 @@ Any non-empty matching `GROUNDWORK_FORGE_*` environment variable overrides the
 configured field for that invocation. The forge type still defaults to `github`
 when neither config nor env specifies one.
 
+`runa take <id>` also uses `[forge]` to fetch the issue or ticket from the
+configured forge. GitHub requires `owner` and `name`; SourceHut requires
+`owner`, `name`, and `tracker_id`. Credentials are read only from the process
+environment: GitHub uses `GITHUB_TOKEN`, then `GH_TOKEN`; SourceHut uses
+`SOURCEHUT_TOKEN`, then `SRHT_TOKEN`.
+
 ### Logging
 
 Runtime diagnostics use `tracing` on stderr. Command output stays on stdout.
@@ -146,6 +152,28 @@ Displays protocols in topological (execution) order after an implicit scan. For 
 
 **Exit codes:** 0 on success. 6 on failure.
 
+### `runa take`
+
+```bash
+runa take <id> [--config <PATH>]
+```
+
+Fetches issue or ticket `<id>` from the configured `[forge]`, converts it into
+a `work-unit` artifact, validates it against the active methodology schema, and
+writes `.runa/workspace/work-unit/<id>.json`. The command overwrites the same
+artifact path on repeat runs and records the artifact in `.runa/store/`.
+
+On success, stdout is exactly `<id>` plus a newline. Diagnostics go to stderr.
+`take` does not require `[agent]` or `[transcript]` settings.
+
+Acceptance criteria are extracted from Markdown list items under one of these
+headings: `Acceptance criteria`, `Verification criteria`, `Verification gate`,
+or `What must be true`. The tracker body remains the work-unit description.
+
+**Exit codes:** 0 on success. 2 on invalid command-line usage. 6 on
+project-load, config, credential, forge API, response parse, validation, or I/O
+failure.
+
 ### `runa state`
 
 ```bash
@@ -157,12 +185,14 @@ Evaluates protocols after an implicit scan and classifies each as `READY`, `BLOC
 Without `--work-unit`, `state` evaluates only unscoped protocols (`scoped = false`) and each protocol appears at most once with no `work_unit`. With `--work-unit <ID>`, `state` evaluates only scoped protocols (`scoped = true`) for that exact delegated work unit. It does not enumerate sibling work units from artifact state.
 
 If any `work-unit` artifacts are recorded, `<ID>` must exactly equal one recorded
-`work-unit` instance id. Non-exact values fail before readiness evaluation and
-the error names the supplied value plus the available canonical ids. Invalid or
-malformed recorded `work-unit` artifacts still establish canonical ids, but
-tracker-handle consistency checks run only for valid, parseable roots. A
-methodology with no recorded `work-unit` artifacts has no canonical ids to
-enforce, so scoped behavior remains unchanged.
+`work-unit` instance id. Bare numeric ids, such as artifacts written by `runa
+take`, are valid canonical ids when recorded exactly. Non-exact values fail
+before readiness evaluation and the error names the supplied value plus the
+available canonical ids. Invalid or malformed recorded `work-unit` artifacts
+still establish canonical ids, but tracker-handle consistency checks run only
+for valid, parseable roots. A methodology with no recorded `work-unit`
+artifacts has no canonical ids to enforce, so scoped behavior remains
+unchanged.
 
 Text output groups protocols in READY, BLOCKED, then WAITING order, preserving scope-filtered topological protocol order within each group. READY entries list valid required and accepted artifact instances. BLOCKED entries list required-artifact failures (missing, invalid, stale, scan_incomplete). WAITING entries list the trigger condition and the specific reason execution cannot proceed, including explicit cycle conditions for in-scope hard-cycle participants. For `on_artifact`, those reasons are phrased in terms of the absence of valid instances rather than the presence of unhealthy siblings.
 
