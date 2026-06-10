@@ -7,6 +7,14 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Live agent launch is now agent-agnostic. A command named `claude` is no
+  longer launched with injected `--mcp-config` / `--strict-mcp-config` flags;
+  it receives the MCP session config through `RUNA_MCP_CONFIG` like every other
+  runtime. Operators who relied on the old auto-injection should adapt by
+  having their agent command or wrapper consume `RUNA_MCP_CONFIG`.
+
 ## [0.2.0-rc.1] — 2026-06-08
 
 ### Added
