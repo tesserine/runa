@@ -61,9 +61,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut loaded = project::load(&working_dir, config_ref)?;
+    apply_transcript_settings(&working_dir, &loaded.config);
     libagent::scan(&loaded.workspace_dir, &mut loaded.store)?;
     if let Some(work_unit) = cli.work_unit.as_deref() {
-        libagent::validate_scoped_work_unit(&loaded.store, work_unit)?;
+        let environment = libagent::resolve_forge_environment(&loaded.config.forge);
+        libagent::validate_scoped_work_unit_with_env(&loaded.store, work_unit, &environment)?;
     }
     if cli.session {
         let handler = RunaHandler::new_session(working_dir.clone(), config_ref, cli.work_unit)?;
@@ -137,4 +139,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     service.waiting().await?;
 
     Ok(())
+}
+
+fn apply_transcript_settings(working_dir: &std::path::Path, config: &project::Config) {
+    let settings =
+        libagent::transcript::resolve_transcript_settings(working_dir, &config.transcript);
+    for (name, value) in libagent::transcript::transcript_env_from_settings(&settings) {
+        unsafe { std::env::set_var(name, value) };
+    }
 }

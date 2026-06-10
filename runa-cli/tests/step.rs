@@ -441,6 +441,23 @@ fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
     )
     .unwrap();
 }
+fn append_transcript_config(project_dir: &Path, transcript_dir: &Path, redact_env: &[&str]) {
+    let config_path = project_dir.join(".runa/config.toml");
+    let existing = fs::read_to_string(&config_path).unwrap();
+    let redact_entries = redact_env
+        .iter()
+        .map(|name| format!("{name:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    fs::write(
+        config_path,
+        format!(
+            "{existing}\n[transcript]\ndir = {:?}\nredact_env = [{redact_entries}]\n",
+            transcript_dir.display().to_string()
+        ),
+    )
+    .unwrap();
+}
 fn write_capture_agent(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -472,6 +489,18 @@ fn write_choice_approved_agent(dir: &Path) -> std::path::PathBuf {
     fs::write(
         &script_path,
         "#!/bin/sh\ncat > /dev/null\nmkdir -p .runa/workspace/approved\nprintf '%s\\n' '{\"summary\":\"approved\"}' > .runa/workspace/approved/result.json\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+fn write_transcript_agent(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("transcript-agent.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\ncat >/dev/null\nprintf 'stdout SECRET_VALUE\\n'\nmkdir -p .runa/workspace/implementation\nprintf '%s\\n' '{\"done\":true}' > .runa/workspace/implementation/impl-1.json\n",
     )
     .unwrap();
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -631,6 +660,7 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     assert_eq!(
         execution_plan[0]["mcp_config"]["env"],
         serde_json::json!({
+            "GROUNDWORK_FORGE_TYPE": "github",
             "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
             "RUNA_WORKING_DIR": project_dir
         })
@@ -1104,6 +1134,7 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     assert_eq!(
         mcp_config["env"],
         serde_json::json!({
+            "GROUNDWORK_FORGE_TYPE": "github",
             "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
             "RUNA_WORKING_DIR": project_dir
         })
@@ -1166,6 +1197,7 @@ fn step_without_dry_run_launches_claude_named_agent_agnostically() {
     assert_eq!(
         mcp_config["env"],
         serde_json::json!({
+            "GROUNDWORK_FORGE_TYPE": "github",
             "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
             "RUNA_WORKING_DIR": project_dir
         })
@@ -1277,6 +1309,77 @@ trigger = { type = "on_artifact", name = "implementation" }
         .unwrap();
     assert_eq!(verify["status"], "ready");
 }
+
+#[test]
+fn step_without_dry_run_writes_transcript_from_config_when_environment_is_unset() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "implementation",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+        ],
+        &["implement"],
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    let transcript_dir = dir.path().join("configured-transcript");
+    append_transcript_config(&project_dir, &transcript_dir, &["SECRET_TOKEN"]);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+
+    let agent_path = write_transcript_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path()]);
+
+    let output = runa_bin()
+        .arg("step")
+        .env_remove("RUNA_TRANSCRIPT_DIR")
+        .env_remove("RUNA_TRANSCRIPT_REDACT_ENV")
+        .env("SECRET_TOKEN", "SECRET_VALUE")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = fs::read_to_string(transcript_dir.join("events.jsonl")).unwrap();
+    assert!(events.contains("\"kind\":\"agent_stdout\""), "{events}");
+    assert!(events.contains("[REDACTED:SECRET_TOKEN]"), "{events}");
+    assert!(!events.contains("SECRET_VALUE"), "{events}");
+}
+
 #[test]
 fn step_without_dry_run_stops_after_the_first_ready_protocol_when_multiple_are_ready() {
     let dir = tempfile::tempdir().unwrap();

@@ -49,13 +49,19 @@ pub use model::{
     ArtifactType, Manifest, ProtocolDeclaration, RequiredOutputChoice, TriggerCondition,
     UnscopedOutputRequiresWorkUnitError, validate_output_scope,
 };
-pub use project::{Config, LoadedProject, LogFormat, LoggingConfig, ProjectError, State};
+pub use project::{
+    Config, ForgeConfig, LoadedProject, LogFormat, LoggingConfig, ProjectError, State,
+    TranscriptConfig,
+};
 pub use projection::{ProjectionCandidate, ProjectionClass, project_cascade};
 pub use scan::{
     ArtifactRef, InvalidArtifact, MalformedArtifact, PartiallyScannedType, ScanError, ScanResult,
     UnreadableArtifact, scan,
 };
-pub use scoped_identity::{ScopedWorkUnitError, validate_scoped_work_unit};
+pub use scoped_identity::{
+    ScopedWorkUnitError, resolve_forge_environment, validate_scoped_work_unit,
+    validate_scoped_work_unit_with_env,
+};
 pub use selection::{
     Candidate, CandidateKey, CandidateStatus, ClassifiedCandidate, EvaluationScope,
     EvaluationTopology, ScanTrust, WaitingReason, classify_candidates,

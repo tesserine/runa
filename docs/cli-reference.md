@@ -13,6 +13,38 @@ Commands that load a methodology share a common config resolution chain. The fir
 
 For `runa init`, `--config` controls where the config file is written. For all other commands, it controls where the config file is read from.
 
+### Durable Project Settings
+
+Durable project settings live in `.runa/config.toml`. Environment variables
+with matching runtime meaning remain per-invocation overrides.
+
+```toml
+[transcript]
+dir = "transcripts"
+redact_env = ["SECRET_TOKEN", "API_KEY"]
+
+[forge]
+type = "github"
+owner = "tesserine"
+name = "runa"
+tracker_id = "4"
+```
+
+`[transcript].dir` enables transcript capture and is resolved relative to the
+project directory when it is not absolute. `RUNA_TRANSCRIPT_DIR` overrides it
+for one invocation. `[transcript].redact_env` names environment variables whose
+current values should be redacted from transcript events.
+`RUNA_TRANSCRIPT_REDACT_ENV`, when set to a comma-separated list, overrides the
+configured list.
+
+`[forge]` supplies the active scoped work-unit deployment identity. Runa uses
+it when validating tracker-backed `work-unit` roots and injects the resolved
+`GROUNDWORK_FORGE_TYPE`, `GROUNDWORK_FORGE_OWNER`, `GROUNDWORK_FORGE_NAME`, and
+`GROUNDWORK_FORGE_TRACKER_ID` values into launched agent and MCP environments.
+Any non-empty matching `GROUNDWORK_FORGE_*` environment variable overrides the
+configured field for that invocation. The forge type still defaults to `github`
+when neither config nor env specifies one.
+
 ### Logging
 
 Runtime diagnostics use `tracing` on stderr. Command output stays on stdout.
@@ -51,14 +83,15 @@ payload containing the resolved `runa-mcp` command, arguments, and environment
 child process. Runtime-specific translation, such as wrapping that payload in a
 client-specific config file, belongs to the runtime or adapter, not to runa.
 
-When `RUNA_TRANSCRIPT_DIR` is set, live execution appends JSON Lines transcript
-events to `$RUNA_TRANSCRIPT_DIR/events.jsonl`. Events include protocol prompts,
+When transcript capture is enabled through `[transcript].dir` or
+`RUNA_TRANSCRIPT_DIR`, live execution appends JSON Lines transcript events to
+`events.jsonl` in the resolved directory. Events include protocol prompts,
 agent stdout/stderr chunks, agent exit status, and `runa-mcp` tool call/result
-events when the agent runtime launches the configured MCP server.
-`RUNA_TRANSCRIPT_REDACT_ENV` may name comma-separated environment variables;
-their current non-empty values are replaced with `[REDACTED:<name>]` before
-events are written. Hidden model reasoning and runtime-private provider events
-are outside runa's observable boundary.
+events when the agent runtime launches the configured MCP server. Configured or
+environment-supplied redaction names cause their current non-empty values to be
+replaced with `[REDACTED:<name>]` before events are written. Hidden model
+reasoning and runtime-private provider events are outside runa's observable
+boundary.
 
 ## Commands
 
@@ -291,10 +324,18 @@ resolves them from the local filesystem, so adapters do not depend on child
 process cwd to launch `runa-mcp`. Transcript environment variables are forwarded
 into the MCP config when transcript capture is enabled, which lets the MCP
 server append tool events to the same transcript stream as the CLI execution
-events.
+events. Configured forge identity is forwarded the same way through
+`GROUNDWORK_FORGE_*` entries so methodology tooling inside the agent session can
+use the project-local identity without user-global shell state.
 
 **Environment variables:**
 
 - `RUNA_WORKING_DIR` — Project directory. Defaults to the current directory.
 - `RUNA_CONFIG` — Config file override (same as `--config` in the CLI).
+- `RUNA_TRANSCRIPT_DIR` — Transcript directory override for one invocation.
+- `RUNA_TRANSCRIPT_REDACT_ENV` — Comma-separated transcript redaction-name
+  override for one invocation.
+- `GROUNDWORK_FORGE_TYPE`, `GROUNDWORK_FORGE_OWNER`, `GROUNDWORK_FORGE_NAME`,
+  `GROUNDWORK_FORGE_TRACKER_ID` — Forge identity field overrides for one
+  invocation.
 - `RUST_LOG` — Tracing filter override for stderr diagnostics.
