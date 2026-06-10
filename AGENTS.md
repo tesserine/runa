@@ -9,6 +9,7 @@ Architecture: `ARCHITECTURE.md`
 Methodology authoring: `docs/methodology-authoring-guide.md`
 Interface contract: `docs/interface-contract.md`
 Contribution conventions: `CONTRIBUTING.md`
+Principles: [pentaxis93/principles](https://github.com/pentaxis93/principles)
 Shared governance: [commons](https://github.com/tesserine/commons) — read everything in this repo
 
 This project does not vendor agent skills in-repo. Resolve project skills from
