@@ -42,7 +42,14 @@ command = ["claude", "-p", "--dangerously-skip-permissions"]
 runa run --agent-command -- claude -p --dangerously-skip-permissions
 ```
 
-Runa executes that command in the project root with stdout and stderr attached to the terminal, renders a natural-language execution prompt from the planned protocol context, and writes the prompt on stdin. For direct Claude Code commands, runa writes a temporary `mcpServers.runa` config for the planned protocol and launches Claude with `--mcp-config <path> --strict-mcp-config`. Before each invocation, runa also exports `RUNA_MCP_CONFIG` — a runtime-agnostic JSON payload containing the resolved `runa-mcp` command, arguments, and environment — so non-Claude agent adapters can launch the MCP server as their own child process. Agent adapters translate that payload into their runtime's schema. The config path above is resolved from the project root at execution time.
+Runa executes the configured argv unmodified in the project root with stdout
+and stderr attached to the terminal, renders a natural-language execution
+prompt from the planned protocol context, and writes the prompt on stdin. Before
+each invocation, runa exports `RUNA_MCP_CONFIG` — a runtime-agnostic JSON
+payload containing the resolved `runa-mcp` command, arguments, and environment
+— so the configured runtime or adapter can launch the MCP server as its own
+child process. Runtime-specific translation, such as wrapping that payload in a
+client-specific config file, belongs to the runtime or adapter, not to runa.
 
 When `RUNA_TRANSCRIPT_DIR` is set, live execution appends JSON Lines transcript
 events to `$RUNA_TRANSCRIPT_DIR/events.jsonl`. Events include protocol prompts,
@@ -165,7 +172,7 @@ When recorded `work-unit` artifacts exist, `<ID>` must be the exact canonical
 
 With `--dry-run`, text output prints the next execution plus the grouped READY/BLOCKED/WAITING status view. The execution entry includes the protocol name, optional work unit, the trigger that activated it, an MCP server config, and the serialized agent-facing context payload (protocol name, optional work unit, instruction content, valid required and available accepted inputs with display paths and content hashes, and expected outputs split into `produces`, `may_produce`, and `required_output_choices`). Dry-run does not require a discoverable `runa-mcp` binary. If the in-scope graph contains a hard dependency cycle, `step` reports it as a warning, exposes the scope-filtered cycle in JSON, and keeps those participants out of `READY`.
 
-Without `--dry-run`, `step` requires `[agent].command` in the config and a Linux host. If the initial scan finds no READY work, `step` performs one final re-scan and re-evaluates readiness before returning a no-work outcome. If that refreshed state exposes a READY candidate, the same invocation executes that one protocol. Only when the refreshed state still has no actionable work does it print `No READY protocols.` and exit without requiring `runa-mcp`: exit `3` when work remains blocked, waiting, or trapped in a cycle, and exit `4` when no actionable work remains because outputs are already current. Otherwise, it resolves `runa-mcp` (preferring a sibling binary next to the running `runa` executable, falling back to `PATH`), executes the candidate, re-scans the workspace, enforces postconditions, and prints the refreshed status view.
+Without `--dry-run`, `step` requires `[agent].command` in the config and a Linux host. If the initial scan finds no READY work, `step` performs one final re-scan and re-evaluates readiness before returning a no-work outcome. If that refreshed state exposes a READY candidate, the same invocation executes that one protocol. Only when the refreshed state still has no actionable work does it print `No READY protocols.` and exit without requiring `runa-mcp`: exit `3` when work remains blocked, waiting, or trapped in a cycle, and exit `4` when no actionable work remains because outputs are already current. Otherwise, it resolves `runa-mcp` (preferring a sibling binary next to the running `runa` executable, falling back to `PATH`), exports the candidate MCP launch config through `RUNA_MCP_CONFIG`, launches the configured agent argv unmodified, re-scans the workspace, enforces postconditions, and prints the refreshed status view.
 
 **Flags:**
 
@@ -274,13 +281,13 @@ In fixed-protocol mode, the server loads the project, scans the workspace, resol
 In session mode, phase 1 requires `--work-unit <name>` and serves one scoped work-unit session in a single MCP connection. The tool list always includes the driver tools `readiness`, `next-protocol-context`, and `advance`, plus the output tools for the current ready step. A current step is refused if any declared output type for that step would collide with one of those reserved driver tool names. Every driver verb rescans and revalidates the scoped work-unit identity before reporting, serving, or advancing. `readiness` reports the same status classification as `runa state` for the session scope, and selects the first non-exhausted ready step when the session has no current step. `next-protocol-context` verifies that the current step still satisfies readiness authority for its trigger and preconditions, and returns both the structured context and rendered prompt for the current step without advancing it. `advance` verifies that the current step still satisfies readiness authority for its trigger and preconditions, enforces postconditions for the current step, uses staged execution metadata to select and validate the next ready step, and only then persists that metadata and advances the session. Any driver verb that changes the current step emits `notifications/tools/list_changed` so caching MCP clients can rediscover the current step's output tools. Output tools validate and write artifacts exactly as in fixed-protocol mode; recording an output does not advance the session.
 
 `runa step` currently continues to use fixed-protocol mode. `runa go` uses
-session mode. Neither command spawns `runa-mcp` directly. For direct Claude Code
-commands, runa writes the resolved `runa-mcp` command, arguments, and
-environment into a temporary `mcpServers.runa` config and passes that config to
-Claude. For other agent runtimes, it exports the same data as a
-`RUNA_MCP_CONFIG` JSON payload so an adapter can launch the server as its own
-child process. The exported command and environment paths are absolute whenever
-runa resolves them from the local filesystem, so adapters do not depend on child
+session mode. Neither command spawns `runa-mcp` directly. Before launching the
+configured agent, runa exports the resolved `runa-mcp` command, arguments, and
+environment as a `RUNA_MCP_CONFIG` JSON payload so the runtime or adapter can
+launch the server as its own child process. Runa does not inspect the agent
+binary name, inject runtime-specific flags, or write runtime-specific config
+files. The exported command and environment paths are absolute whenever runa
+resolves them from the local filesystem, so adapters do not depend on child
 process cwd to launch `runa-mcp`. Transcript environment variables are forwarded
 into the MCP config when transcript capture is enabled, which lets the MCP
 server append tool events to the same transcript stream as the CLI execution

@@ -568,7 +568,7 @@ fn write_producing_fake_claude(dir: &Path) -> std::path::PathBuf {
     let script_path = dir.join("claude");
     fs::write(
         &script_path,
-        "#!/bin/sh\nset -eu\nconfig=\"\"\nstrict=0\nprintf '%s\\n' \"$@\" > \"$FAKE_CLAUDE_ARGV_CAPTURE\"\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"--mcp-config\" ]; then\n    shift\n    config=\"$1\"\n  elif [ \"$1\" = \"--strict-mcp-config\" ]; then\n    strict=1\n  fi\n  shift\ndone\nif [ -z \"$config\" ] || [ \"$strict\" -ne 1 ]; then\n  exit 37\nfi\ncat \"$config\" > \"$FAKE_CLAUDE_CAPTURE\"\ncat >/dev/null\nmkdir -p .runa/workspace/implementation\nprintf '%s\\n' '{\"done\":true}' > .runa/workspace/implementation/impl-1.json\n",
+        "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > \"$FAKE_CLAUDE_ARGV_CAPTURE\"\nfor arg in \"$@\"; do\n  case \"$arg\" in\n    --mcp-config|--mcp-config=*|--strict-mcp-config)\n      exit 37\n      ;;\n  esac\ndone\nprintf '%s' \"$RUNA_MCP_CONFIG\" > \"$FAKE_CLAUDE_CAPTURE\"\ncat >/dev/null\nmkdir -p .runa/workspace/implementation\nprintf '%s\\n' '{\"done\":true}' > .runa/workspace/implementation/impl-1.json\n",
     )
     .unwrap();
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1110,7 +1110,7 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     );
 }
 #[test]
-fn step_without_dry_run_wires_direct_claude_to_mcp_config() {
+fn step_without_dry_run_launches_claude_named_agent_agnostically() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = common::write_methodology(
         dir.path(),
@@ -1134,7 +1134,11 @@ fn step_without_dry_run_wires_direct_claude_to_mcp_config() {
     let fake_claude = write_producing_fake_claude(dir.path());
     let argv_capture = dir.path().join("captured-claude-argv.txt");
     let mcp_config_path = dir.path().join("captured-claude-config.json");
-    append_agent_command_config(&project_dir, &[fake_claude.as_path()]);
+    let configured_arg = dir.path().join("operator-config.json");
+    append_agent_command_config(
+        &project_dir,
+        &[fake_claude.as_path(), configured_arg.as_path()],
+    );
 
     let output = runa_bin()
         .arg("step")
@@ -1151,23 +1155,22 @@ fn step_without_dry_run_wires_direct_claude_to_mcp_config() {
     );
 
     let argv = fs::read_to_string(&argv_capture).unwrap();
-    assert!(argv.contains("--mcp-config\n"), "{argv}");
-    assert!(argv.contains("--strict-mcp-config\n"), "{argv}");
+    assert_eq!(argv, format!("{}\n", configured_arg.display()));
 
     let mcp_config: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&mcp_config_path).unwrap()).unwrap();
     assert_eq!(
-        mcp_config["mcpServers"]["runa"]["args"],
+        mcp_config["args"],
         serde_json::json!(["--protocol", "implement"])
     );
     assert_eq!(
-        mcp_config["mcpServers"]["runa"]["env"],
+        mcp_config["env"],
         serde_json::json!({
             "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
             "RUNA_WORKING_DIR": project_dir
         })
     );
-    let mcp_command = mcp_config["mcpServers"]["runa"]["command"]
+    let mcp_command = mcp_config["command"]
         .as_str()
         .expect("mcp command should be a string");
     assert!(
