@@ -35,11 +35,11 @@ invocation may override it with `--agent-command -- <argv tokens>`:
 
 ```toml
 [agent]
-command = ["claude", "-p", "--dangerously-skip-permissions"]
+command = ["./examples/agent-claude-code.sh", "-p", "--dangerously-skip-permissions"]
 ```
 
 ```bash
-runa run --agent-command -- claude -p --dangerously-skip-permissions
+runa run --agent-command -- ./examples/agent-claude-code.sh -p --dangerously-skip-permissions
 ```
 
 Runa executes the configured argv unmodified in the project root with stdout
