@@ -1623,6 +1623,46 @@ cat >/dev/null
     }
 
     #[test]
+    fn resolved_runtime_env_materializes_default_github_forge_type_from_config_identity() {
+        let _lock = transcript_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env = EnvGuard::unset(&[
+            "GROUNDWORK_FORGE_TYPE",
+            "GROUNDWORK_FORGE_OWNER",
+            "GROUNDWORK_FORGE_NAME",
+            "GROUNDWORK_FORGE_TRACKER_ID",
+            "RUNA_TRANSCRIPT_DIR",
+            "RUNA_TRANSCRIPT_REDACT_ENV",
+        ]);
+        let temp = tempfile::tempdir().unwrap();
+        let config = libagent::Config {
+            methodology_path: "methodology.toml".to_string(),
+            logging: libagent::LoggingConfig::default(),
+            agent: libagent::project::AgentConfig::default(),
+            transcript: libagent::TranscriptConfig::default(),
+            forge: libagent::ForgeConfig {
+                forge_type: None,
+                owner: Some("tesserine".to_string()),
+                name: Some("runa".to_string()),
+                tracker_id: None,
+            },
+        };
+
+        let env = resolved_runtime_env(temp.path(), &config);
+
+        assert_eq!(
+            env.get("GROUNDWORK_FORGE_TYPE"),
+            Some(&"github".to_string())
+        );
+        assert_eq!(
+            env.get("GROUNDWORK_FORGE_OWNER"),
+            Some(&"tesserine".to_string())
+        );
+        assert_eq!(env.get("GROUNDWORK_FORGE_NAME"), Some(&"runa".to_string()));
+    }
+
+    #[test]
     fn build_mcp_config_includes_supplied_runtime_environment() {
         let runtime_env = BTreeMap::from([
             (

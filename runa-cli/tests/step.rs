@@ -660,6 +660,7 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     assert_eq!(
         execution_plan[0]["mcp_config"]["env"],
         serde_json::json!({
+            "GROUNDWORK_FORGE_TYPE": "github",
             "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
             "RUNA_WORKING_DIR": project_dir
         })
@@ -1133,6 +1134,7 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     assert_eq!(
         mcp_config["env"],
         serde_json::json!({
+            "GROUNDWORK_FORGE_TYPE": "github",
             "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
             "RUNA_WORKING_DIR": project_dir
         })
@@ -1195,6 +1197,7 @@ fn step_without_dry_run_launches_claude_named_agent_agnostically() {
     assert_eq!(
         mcp_config["env"],
         serde_json::json!({
+            "GROUNDWORK_FORGE_TYPE": "github",
             "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
             "RUNA_WORKING_DIR": project_dir
         })

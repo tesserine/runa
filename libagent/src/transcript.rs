@@ -251,48 +251,9 @@ mod tests {
         transcript_env_from_settings,
     };
     use crate::project::TranscriptConfig;
+    use crate::test_helpers::EnvGuard;
     use serde_json::json;
-    use std::ffi::OsString;
     use std::path::PathBuf;
-
-    struct EnvGuard {
-        previous: Vec<(&'static str, Option<OsString>)>,
-    }
-
-    impl EnvGuard {
-        fn set(values: &[(&'static str, &str)]) -> Self {
-            let previous = values
-                .iter()
-                .map(|(name, _)| (*name, std::env::var_os(name)))
-                .collect::<Vec<_>>();
-            for (name, value) in values {
-                unsafe { std::env::set_var(name, value) };
-            }
-            Self { previous }
-        }
-
-        fn unset(names: &[&'static str]) -> Self {
-            let previous = names
-                .iter()
-                .map(|name| (*name, std::env::var_os(name)))
-                .collect::<Vec<_>>();
-            for name in names {
-                unsafe { std::env::remove_var(name) };
-            }
-            Self { previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (name, value) in &self.previous {
-                match value {
-                    Some(value) => unsafe { std::env::set_var(name, value) },
-                    None => unsafe { std::env::remove_var(name) },
-                }
-            }
-        }
-    }
 
     #[test]
     fn redaction_replaces_configured_secret_values_in_text() {
@@ -374,10 +335,12 @@ mod tests {
 
     #[test]
     fn append_event_with_settings_writes_and_redacts_using_config_resolved_settings() {
-        let _env = EnvGuard::unset(&[TRANSCRIPT_DIR_ENV, REDACT_ENV_ENV]);
+        let _env = EnvGuard::unset_and_set(
+            &[TRANSCRIPT_DIR_ENV, REDACT_ENV_ENV],
+            &[("SECRET_TOKEN", "SECRET_VALUE")],
+        );
         let temp = tempfile::tempdir().unwrap();
         let transcript_dir = temp.path().join("transcript");
-        unsafe { std::env::set_var("SECRET_TOKEN", "SECRET_VALUE") };
         let settings = TranscriptSettings {
             dir: Some(transcript_dir.clone()),
             redact_env: vec!["SECRET_TOKEN".to_string()],

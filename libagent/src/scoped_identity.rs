@@ -100,6 +100,9 @@ pub fn resolve_forge_environment(config: &ForgeConfig) -> HashMap<String, String
         "GROUNDWORK_FORGE_TYPE",
         config.forge_type.as_deref(),
     );
+    environment
+        .entry("GROUNDWORK_FORGE_TYPE".to_string())
+        .or_insert_with(|| "github".to_string());
     insert_config_env(
         &mut environment,
         "GROUNDWORK_FORGE_OWNER",
@@ -324,52 +327,13 @@ fn instance_work_unit_number(instance_id: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_helpers::EnvGuard;
     use serde_json::json;
-    use std::ffi::OsString;
     use tempfile::TempDir;
 
     use super::*;
     use crate::project::ForgeConfig;
     use crate::{ArtifactStore, ArtifactType};
-
-    struct EnvGuard {
-        previous: Vec<(&'static str, Option<OsString>)>,
-    }
-
-    impl EnvGuard {
-        fn set(values: &[(&'static str, &str)]) -> Self {
-            let previous = values
-                .iter()
-                .map(|(name, _)| (*name, std::env::var_os(name)))
-                .collect::<Vec<_>>();
-            for (name, value) in values {
-                unsafe { std::env::set_var(name, value) };
-            }
-            Self { previous }
-        }
-
-        fn unset(names: &[&'static str]) -> Self {
-            let previous = names
-                .iter()
-                .map(|name| (*name, std::env::var_os(name)))
-                .collect::<Vec<_>>();
-            for name in names {
-                unsafe { std::env::remove_var(name) };
-            }
-            Self { previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (name, value) in &self.previous {
-                match value {
-                    Some(value) => unsafe { std::env::set_var(name, value) },
-                    None => unsafe { std::env::remove_var(name) },
-                }
-            }
-        }
-    }
 
     fn work_unit_store(dir: &TempDir) -> ArtifactStore {
         ArtifactStore::new(
@@ -513,6 +477,39 @@ mod tests {
                 .get("GROUNDWORK_FORGE_TRACKER_ID")
                 .map(String::as_str),
             Some("9")
+        );
+    }
+
+    #[test]
+    fn forge_environment_materializes_default_github_type_when_config_and_environment_omit_type() {
+        let _env = EnvGuard::unset(&[
+            "GROUNDWORK_FORGE_TYPE",
+            "GROUNDWORK_FORGE_OWNER",
+            "GROUNDWORK_FORGE_NAME",
+            "GROUNDWORK_FORGE_TRACKER_ID",
+        ]);
+        let config = ForgeConfig {
+            forge_type: None,
+            owner: Some("tesserine".to_string()),
+            name: Some("runa".to_string()),
+            tracker_id: None,
+        };
+
+        let environment = resolve_forge_environment(&config);
+
+        assert_eq!(
+            environment.get("GROUNDWORK_FORGE_TYPE").map(String::as_str),
+            Some("github")
+        );
+        assert_eq!(
+            environment
+                .get("GROUNDWORK_FORGE_OWNER")
+                .map(String::as_str),
+            Some("tesserine")
+        );
+        assert_eq!(
+            environment.get("GROUNDWORK_FORGE_NAME").map(String::as_str),
+            Some("runa")
         );
     }
 
