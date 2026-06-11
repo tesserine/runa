@@ -1961,16 +1961,32 @@ fn codex_adapter_translates_runa_mcp_config_to_mcp_server_overrides() {
     let argv = read_nul_separated_args(&argv_capture);
     assert_eq!(argv[0], "exec");
     assert_eq!(argv[1], "-c");
-    assert!(argv[2].starts_with("mcp_servers.runa.command="));
     assert_eq!(argv[3], "-c");
-    assert!(argv[4].starts_with("mcp_servers.runa.args="));
     assert_eq!(argv[5], "-c");
-    assert!(argv[6].starts_with("mcp_servers.runa.env="));
     assert_eq!(argv[7..], ["--model", "gpt-test"]);
 
-    let command_toml = argv[2].strip_prefix("mcp_servers.runa.command=").unwrap();
-    let args_toml = argv[4].strip_prefix("mcp_servers.runa.args=").unwrap();
-    let env_toml = argv[6].strip_prefix("mcp_servers.runa.env=").unwrap();
+    let (command_key, command_toml) = argv[2].split_once('=').unwrap();
+    let server_name = command_key
+        .strip_prefix("mcp_servers.")
+        .unwrap()
+        .strip_suffix(".command")
+        .unwrap();
+    assert_ne!(server_name, "runa");
+    assert!(server_name.starts_with("runa_session_"));
+    assert!(
+        server_name["runa_session_".len()..]
+            .chars()
+            .all(|ch| ch.is_ascii_digit()),
+        "{server_name}"
+    );
+    let server_prefix = format!("mcp_servers.{server_name}");
+    assert_eq!(command_key, format!("{server_prefix}.command"));
+
+    let (args_key, args_toml) = argv[4].split_once('=').unwrap();
+    assert_eq!(args_key, format!("{server_prefix}.args"));
+    let (env_key, env_toml) = argv[6].split_once('=').unwrap();
+    assert_eq!(env_key, format!("{server_prefix}.env"));
+
     let command_value: toml::Value = toml::from_str(&format!("value = {command_toml}")).unwrap();
     let args_value: toml::Value = toml::from_str(&format!("value = {args_toml}")).unwrap();
     let env_value: toml::Value = toml::from_str(&format!("value = {env_toml}")).unwrap();
