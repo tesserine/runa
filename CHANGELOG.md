@@ -7,6 +7,11 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Supported agent adapters now live in top-level `adapters/`, with launch
+  scripts for Codex and Claude Code that consume `RUNA_MCP_CONFIG`.
+
 ### Changed
 
 - Durable transcript capture settings and scoped forge identity can now live in

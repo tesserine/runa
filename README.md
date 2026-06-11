@@ -175,6 +175,11 @@ transcript capture, and scoped forge identity. Environment variables such as
 `RUNA_TRANSCRIPT_DIR` and `RUNA_FORGE_*` remain per-invocation overrides;
 config is the project-local default.
 
+Runa ships supported agent adapters for Codex and Claude Code in `adapters/`.
+Set `[agent].command` to `./adapters/agent-codex.sh` or
+`./adapters/agent-claude-code.sh`; the adapter translates `RUNA_MCP_CONFIG` for
+the selected runtime.
+
 ## Build
 
 Rust 2024 edition. Runa targets Linux.

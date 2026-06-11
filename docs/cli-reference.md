@@ -67,11 +67,16 @@ invocation may override it with `--agent-command -- <argv tokens>`:
 
 ```toml
 [agent]
-command = ["./examples/agent-claude-code.sh", "-p", "--dangerously-skip-permissions"]
+command = ["./adapters/agent-codex.sh", "--model", "gpt-5-codex"]
+```
+
+```toml
+[agent]
+command = ["./adapters/agent-claude-code.sh", "-p", "--dangerously-skip-permissions"]
 ```
 
 ```bash
-runa run --agent-command -- ./examples/agent-claude-code.sh -p --dangerously-skip-permissions
+runa run --agent-command -- ./adapters/agent-codex.sh --model gpt-5-codex
 ```
 
 Runa executes the configured argv unmodified in the project root with stdout
@@ -82,6 +87,12 @@ payload containing the resolved `runa-mcp` command, arguments, and environment
 — so the configured runtime or adapter can launch the MCP server as its own
 child process. Runtime-specific translation, such as wrapping that payload in a
 client-specific config file, belongs to the runtime or adapter, not to runa.
+
+The supported runtime adapters live in `adapters/`: `agent-codex.sh` for Codex
+and `agent-claude-code.sh` for Claude Code. Point `[agent].command` at one of
+those scripts and pass runtime-specific options after the script path. The
+Codex adapter requires `jq` because Codex accepts external MCP servers through
+`-c mcp_servers.<name>.*` TOML overrides rather than a JSON config file.
 
 When transcript capture is enabled through `[transcript].dir` or
 `RUNA_TRANSCRIPT_DIR`, live execution appends JSON Lines transcript events to

@@ -591,6 +591,18 @@ fn write_fake_claude(dir: &Path) -> std::path::PathBuf {
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     script_path
 }
+fn write_fake_codex(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_path = dir.join("codex");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nset -eu\n: > \"$FAKE_CODEX_ARGV_CAPTURE\"\nfor arg in \"$@\"; do\n  printf '%s\\0' \"$arg\" >> \"$FAKE_CODEX_ARGV_CAPTURE\"\ndone\ncat > \"$FAKE_CODEX_STDIN_CAPTURE\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
 fn write_producing_fake_claude(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1788,15 +1800,27 @@ fn step_without_dry_run_absolutizes_relative_config_override_and_path_entry() {
         serde_json::Value::String(project_dir.to_string_lossy().into_owned())
     );
 }
+fn read_nul_separated_args(path: &Path) -> Vec<String> {
+    fs::read(path)
+        .unwrap()
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| String::from_utf8(part.to_vec()).unwrap())
+        .collect()
+}
+
+fn adapter_path(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../adapters/{name}"))
+}
+
 #[test]
-fn claude_wrapper_wraps_runa_mcp_config_under_mcp_servers() {
+fn claude_code_adapter_wraps_runa_mcp_config_under_mcp_servers() {
     let dir = tempfile::tempdir().unwrap();
     let bin_dir = dir.path().join("bin");
     fs::create_dir(&bin_dir).unwrap();
     let fake_claude = write_fake_claude(&bin_dir);
     let capture_path = dir.path().join("captured-claude-config.json");
-    let wrapper_path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/agent-claude-code.sh");
+    let wrapper_path = adapter_path("agent-claude-code.sh");
 
     let output = Command::new(&wrapper_path)
         .arg("--print")
@@ -1837,6 +1861,147 @@ fn claude_wrapper_wraps_runa_mcp_config_under_mcp_servers() {
             }
         })
     );
+}
+
+#[test]
+fn claude_code_adapter_requires_runa_mcp_config() {
+    let output = Command::new(adapter_path("agent-claude-code.sh"))
+        .env_remove("RUNA_MCP_CONFIG")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("agent-claude-code requires RUNA_MCP_CONFIG"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn codex_adapter_requires_runa_mcp_config() {
+    let output = Command::new(adapter_path("agent-codex.sh"))
+        .env_remove("RUNA_MCP_CONFIG")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("agent-codex requires RUNA_MCP_CONFIG"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn codex_adapter_requires_jq_for_json_translation() {
+    let dir = tempfile::tempdir().unwrap();
+    let empty_path = dir.path().join("empty-path");
+    fs::create_dir(&empty_path).unwrap();
+
+    let output = Command::new(adapter_path("agent-codex.sh"))
+        .env(
+            "RUNA_MCP_CONFIG",
+            r#"{"command":"/tmp/runa-mcp","args":[],"env":{}}"#,
+        )
+        .env("PATH", &empty_path)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("agent-codex requires jq to parse RUNA_MCP_CONFIG"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn codex_adapter_translates_runa_mcp_config_to_mcp_server_overrides() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin_dir = dir.path().join("bin");
+    fs::create_dir(&bin_dir).unwrap();
+    let fake_codex = write_fake_codex(&bin_dir);
+    let argv_capture = dir.path().join("codex.argv");
+    let stdin_capture = dir.path().join("codex.stdin");
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let prompt = "advance one runa session tick\nwith stdin only";
+
+    let output = Command::new(adapter_path("agent-codex.sh"))
+        .arg("--model")
+        .arg("gpt-test")
+        .env(
+            "RUNA_MCP_CONFIG",
+            r#"{"command":"/tmp/runa mcp","args":["--session","--work-unit","wu-a","--sentinel=kept"],"env":{"RUNA_CONFIG":"/tmp/config.toml","RUNA_WORKING_DIR":"/tmp/project dir","EMPTY_VALUE":"","RUNA_FORGE_OWNER":"tesserine"}}"#,
+        )
+        .env("PATH", &path)
+        .env("FAKE_CODEX_ARGV_CAPTURE", &argv_capture)
+        .env("FAKE_CODEX_STDIN_CAPTURE", &stdin_capture)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+
+            child.stdin.as_mut().unwrap().write_all(prompt.as_bytes())?;
+            child.wait_with_output()
+        })
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fake_codex, bin_dir.join("codex"));
+
+    let argv = read_nul_separated_args(&argv_capture);
+    assert_eq!(argv[0], "exec");
+    assert_eq!(argv[1], "-c");
+    assert!(argv[2].starts_with("mcp_servers.runa.command="));
+    assert_eq!(argv[3], "-c");
+    assert!(argv[4].starts_with("mcp_servers.runa.args="));
+    assert_eq!(argv[5], "-c");
+    assert!(argv[6].starts_with("mcp_servers.runa.env="));
+    assert_eq!(argv[7..], ["--model", "gpt-test"]);
+
+    let command_toml = argv[2].strip_prefix("mcp_servers.runa.command=").unwrap();
+    let args_toml = argv[4].strip_prefix("mcp_servers.runa.args=").unwrap();
+    let env_toml = argv[6].strip_prefix("mcp_servers.runa.env=").unwrap();
+    let command_value: toml::Value = toml::from_str(&format!("value = {command_toml}")).unwrap();
+    let args_value: toml::Value = toml::from_str(&format!("value = {args_toml}")).unwrap();
+    let env_value: toml::Value = toml::from_str(&format!("value = {env_toml}")).unwrap();
+
+    assert_eq!(command_value["value"].as_str(), Some("/tmp/runa mcp"));
+    assert_eq!(
+        args_value["value"].as_array().unwrap(),
+        &vec![
+            toml::Value::String("--session".to_string()),
+            toml::Value::String("--work-unit".to_string()),
+            toml::Value::String("wu-a".to_string()),
+            toml::Value::String("--sentinel=kept".to_string()),
+        ]
+    );
+    let env_table = env_value["value"].as_table().unwrap();
+    assert_eq!(
+        env_table.get("RUNA_CONFIG").unwrap().as_str(),
+        Some("/tmp/config.toml")
+    );
+    assert_eq!(
+        env_table.get("RUNA_WORKING_DIR").unwrap().as_str(),
+        Some("/tmp/project dir")
+    );
+    assert_eq!(env_table.get("EMPTY_VALUE").unwrap().as_str(), Some(""));
+    assert_eq!(
+        env_table.get("RUNA_FORGE_OWNER").unwrap().as_str(),
+        Some("tesserine")
+    );
+    assert_eq!(env_table.len(), 4);
+    assert_eq!(fs::read_to_string(&stdin_capture).unwrap(), prompt);
+    assert!(!argv.iter().any(|arg| arg.contains(prompt)), "{argv:?}");
 }
 #[test]
 fn step_without_dry_run_reports_missing_runa_mcp_after_sibling_and_path_lookup() {
