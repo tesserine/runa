@@ -26,7 +26,7 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 6. **Protocol selection.** `selection::discover_ready_candidates` evaluates protocols in topological order under an explicit `EvaluationScope`. `EvaluationScope::Unscoped` evaluates only protocols with `scoped = false` and always uses `work_unit = None`. `EvaluationScope::Scoped(id)` evaluates only protocols with `scoped = true` for that exact delegated work unit. Readiness no longer discovers sibling work units from artifact instances. Current work is suppressed only when outputs are valid and trusted plus either: the current freshness-relevant input snapshot matches the last successful execution record for that `(protocol, work_unit)` pair, or no execution record exists and the timestamp fallback still shows outputs newer than all relevant inputs. Execution-record snapshots are mode-aware: `on_change`/`on_invalid` preserve any recorded matching instance, while `on_artifact` and `requires` compare only valid instances. The timestamp fallback still considers the latest recorded modification across relevant inputs.
 
-7. **Scoped work-unit identity validation.** After workspace scan and before scoped readiness evaluation, `runa state`, `runa step`, `runa run`, and `runa go` validate that the supplied `--work-unit` exactly matches a recorded `work-unit` instance id when any are recorded. Invalid and malformed recorded roots still establish canonical ids. Valid tracker-backed roots also enforce instance-id/handle number agreement, duplicate tracker-root rejection, and agreement with the active forge deployment identity resolved from `.runa/config.toml` with `GROUNDWORK_FORGE_*` env overrides. With no recorded `work-unit` roots, scoped evaluation remains inert.
+7. **Scoped work-unit identity validation.** After workspace scan and before scoped readiness evaluation, `runa state`, `runa step`, `runa run`, and `runa go` validate that the supplied `--work-unit` exactly matches a recorded `work-unit` instance id when any are recorded. Invalid and malformed recorded roots still establish canonical ids. Valid tracker-backed roots also enforce instance-id/handle number agreement, duplicate tracker-root rejection, and agreement with the active forge deployment identity resolved from `.runa/config.toml` with `RUNA_FORGE_*` env overrides. With no recorded `work-unit` roots, scoped evaluation remains inert.
 
 8. **Tracing bootstrap.** Both binaries bootstrap tracing with env/default settings before any config lookup, then reconfigure the shared subscriber from `config.toml` when logging settings are available. Tracing events always go to stderr; operator-facing command output stays on stdout.
 
@@ -122,7 +122,7 @@ Canonical scoped work-unit identity validation shared by CLI commands and
 including invalid and malformed records. Valid tracker-backed roots receive the
 runtime checks that schema validation cannot express: id/handle number
 agreement, duplicate tracker identity detection, and active deployment
-agreement from config-resolved `GROUNDWORK_FORGE_*` atoms.
+agreement from config-resolved `RUNA_FORGE_*` atoms.
 
 ## runa-mcp Modules
 

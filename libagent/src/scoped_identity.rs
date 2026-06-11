@@ -6,6 +6,60 @@ use serde_json::Value;
 use crate::project::ForgeConfig;
 use crate::store::{ArtifactStore, ValidationStatus};
 
+pub const RUNA_FORGE_TYPE: &str = "RUNA_FORGE_TYPE";
+pub const RUNA_FORGE_OWNER: &str = "RUNA_FORGE_OWNER";
+pub const RUNA_FORGE_NAME: &str = "RUNA_FORGE_NAME";
+pub const RUNA_FORGE_TRACKER_ID: &str = "RUNA_FORGE_TRACKER_ID";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedForgeIdentity {
+    pub forge_type: String,
+    pub owner: Option<String>,
+    pub name: Option<String>,
+    pub tracker_id: Option<String>,
+}
+
+impl ResolvedForgeIdentity {
+    fn environment(&self) -> HashMap<String, String> {
+        let mut environment =
+            HashMap::from([(RUNA_FORGE_TYPE.to_string(), self.forge_type.clone())]);
+        insert_if_present(&mut environment, RUNA_FORGE_OWNER, self.owner.as_deref());
+        insert_if_present(&mut environment, RUNA_FORGE_NAME, self.name.as_deref());
+        insert_if_present(
+            &mut environment,
+            RUNA_FORGE_TRACKER_ID,
+            self.tracker_id.as_deref(),
+        );
+        environment
+    }
+
+    fn active_deployment_identity(&self) -> Result<String, ScopedWorkUnitError> {
+        match self.forge_type.as_str() {
+            "github" => {
+                let owner = self.required_atom(RUNA_FORGE_OWNER, self.owner.as_deref())?;
+                let name = self.required_atom(RUNA_FORGE_NAME, self.name.as_deref())?;
+                Ok(format!("github:{owner}/{name}"))
+            }
+            "sourcehut" => {
+                let tracker_id =
+                    self.required_atom(RUNA_FORGE_TRACKER_ID, self.tracker_id.as_deref())?;
+                Ok(format!("sourcehut:{tracker_id}"))
+            }
+            other => Ok(other.to_string()),
+        }
+    }
+
+    fn required_atom<'a>(
+        &self,
+        variable: &'static str,
+        value: Option<&'a str>,
+    ) -> Result<&'a str, ScopedWorkUnitError> {
+        value
+            .filter(|value| !value.is_empty())
+            .ok_or(ScopedWorkUnitError::MissingDeploymentIdentity { variable })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScopedWorkUnitError {
     NonCanonical {
@@ -86,62 +140,52 @@ pub fn validate_scoped_work_unit(
     store: &ArtifactStore,
     supplied: &str,
 ) -> Result<(), ScopedWorkUnitError> {
-    let environment = resolve_forge_environment(&ForgeConfig::default());
-    validate_scoped_work_unit_with_env(store, supplied, &environment)
+    let identity = resolve_forge_identity(&ForgeConfig::default());
+    validate_scoped_work_unit_with_identity(store, supplied, &identity)
+}
+
+pub fn resolve_forge_identity(config: &ForgeConfig) -> ResolvedForgeIdentity {
+    ResolvedForgeIdentity {
+        forge_type: resolve_atom(RUNA_FORGE_TYPE, config.forge_type.as_deref())
+            .unwrap_or_else(|| "github".to_string()),
+        owner: resolve_atom(RUNA_FORGE_OWNER, config.owner.as_deref()),
+        name: resolve_atom(RUNA_FORGE_NAME, config.name.as_deref()),
+        tracker_id: resolve_atom(RUNA_FORGE_TRACKER_ID, config.tracker_id.as_deref()),
+    }
 }
 
 pub fn resolve_forge_environment(config: &ForgeConfig) -> HashMap<String, String> {
-    let mut environment: HashMap<String, String> = std::env::vars()
-        .filter(|(name, value)| name.starts_with("GROUNDWORK_") && !value.is_empty())
-        .collect();
-
-    insert_config_env(
-        &mut environment,
-        "GROUNDWORK_FORGE_TYPE",
-        config.forge_type.as_deref(),
-    );
-    environment
-        .entry("GROUNDWORK_FORGE_TYPE".to_string())
-        .or_insert_with(|| "github".to_string());
-    insert_config_env(
-        &mut environment,
-        "GROUNDWORK_FORGE_OWNER",
-        config.owner.as_deref(),
-    );
-    insert_config_env(
-        &mut environment,
-        "GROUNDWORK_FORGE_NAME",
-        config.name.as_deref(),
-    );
-    insert_config_env(
-        &mut environment,
-        "GROUNDWORK_FORGE_TRACKER_ID",
-        config.tracker_id.as_deref(),
-    );
-
-    environment
+    resolve_forge_identity(config).environment()
 }
 
-fn insert_config_env(
+fn resolve_atom(variable: &'static str, config_value: Option<&str>) -> Option<String> {
+    std::env::var(variable)
+        .ok()
+        .and_then(|value| normalize_atom(Some(value.as_str())))
+        .or_else(|| normalize_atom(config_value))
+}
+
+fn normalize_atom(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn insert_if_present(
     environment: &mut HashMap<String, String>,
     variable: &'static str,
     value: Option<&str>,
 ) {
-    if environment
-        .get(variable)
-        .is_some_and(|existing| !existing.is_empty())
-    {
-        return;
-    }
-    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
-        environment.insert(variable.to_string(), value.to_string());
+    if let Some(value) = normalize_atom(value) {
+        environment.insert(variable.to_string(), value);
     }
 }
 
-pub fn validate_scoped_work_unit_with_env(
+pub fn validate_scoped_work_unit_with_identity(
     store: &ArtifactStore,
     supplied: &str,
-    environment: &HashMap<String, String>,
+    identity: &ResolvedForgeIdentity,
 ) -> Result<(), ScopedWorkUnitError> {
     let available: Vec<String> = store
         .instances_of("work-unit", None)
@@ -150,7 +194,7 @@ pub fn validate_scoped_work_unit_with_env(
         .collect();
 
     if available.is_empty() || available.iter().any(|id| id == supplied) {
-        return validate_tracker_content(store, environment);
+        return validate_tracker_content(store, identity);
     }
 
     Err(ScopedWorkUnitError::NonCanonical {
@@ -161,7 +205,7 @@ pub fn validate_scoped_work_unit_with_env(
 
 fn validate_tracker_content(
     store: &ArtifactStore,
-    environment: &HashMap<String, String>,
+    identity: &ResolvedForgeIdentity,
 ) -> Result<(), ScopedWorkUnitError> {
     let mut tracker_roots = HashMap::new();
 
@@ -205,7 +249,7 @@ fn validate_tracker_content(
                 tracker_identity,
             });
         }
-        validate_deployment_identity(instance_id, handle, environment)?;
+        validate_deployment_identity(instance_id, handle, identity)?;
     }
 
     Ok(())
@@ -214,21 +258,16 @@ fn validate_tracker_content(
 fn validate_deployment_identity(
     instance_id: &str,
     handle: &serde_json::Map<String, Value>,
-    environment: &HashMap<String, String>,
+    identity: &ResolvedForgeIdentity,
 ) -> Result<(), ScopedWorkUnitError> {
-    let active_forge = environment
-        .get("GROUNDWORK_FORGE_TYPE")
-        .filter(|value| !value.is_empty())
-        .map(String::as_str)
-        .unwrap_or("github");
     let handle_forge = handle
         .get("forge_tag")
         .and_then(Value::as_str)
         .unwrap_or("");
 
     let handle_identity = deployment_identity_for_handle(handle)?;
-    let active_identity = active_deployment_identity(active_forge, environment)?;
-    if handle_forge != active_forge || handle_identity != active_identity {
+    let active_identity = identity.active_deployment_identity()?;
+    if handle_forge != identity.forge_type || handle_identity != active_identity {
         return Err(ScopedWorkUnitError::DeploymentDisagreement {
             instance_id: instance_id.to_string(),
             handle_identity,
@@ -266,35 +305,6 @@ fn deployment_identity_for_handle(
         }
         forge => Ok(forge.to_string()),
     }
-}
-
-fn active_deployment_identity(
-    active_forge: &str,
-    environment: &HashMap<String, String>,
-) -> Result<String, ScopedWorkUnitError> {
-    match active_forge {
-        "github" => {
-            let owner = required_env(environment, "GROUNDWORK_FORGE_OWNER")?;
-            let name = required_env(environment, "GROUNDWORK_FORGE_NAME")?;
-            Ok(format!("github:{owner}/{name}"))
-        }
-        "sourcehut" => {
-            let tracker_id = required_env(environment, "GROUNDWORK_FORGE_TRACKER_ID")?;
-            Ok(format!("sourcehut:{tracker_id}"))
-        }
-        other => Ok(other.to_string()),
-    }
-}
-
-fn required_env<'a>(
-    environment: &'a HashMap<String, String>,
-    variable: &'static str,
-) -> Result<&'a str, ScopedWorkUnitError> {
-    environment
-        .get(variable)
-        .filter(|value| !value.is_empty())
-        .map(String::as_str)
-        .ok_or(ScopedWorkUnitError::MissingDeploymentIdentity { variable })
 }
 
 fn tracker_identity(handle: &serde_json::Map<String, Value>) -> Option<String> {
@@ -384,31 +394,32 @@ mod tests {
         })
     }
 
-    fn github_environment(repository: &str) -> HashMap<String, String> {
+    fn github_identity(repository: &str) -> ResolvedForgeIdentity {
         let (owner, name) = repository.split_once('/').unwrap();
-        HashMap::from([
-            ("GROUNDWORK_FORGE_OWNER".to_string(), owner.to_string()),
-            ("GROUNDWORK_FORGE_NAME".to_string(), name.to_string()),
-        ])
+        ResolvedForgeIdentity {
+            forge_type: "github".to_string(),
+            owner: Some(owner.to_string()),
+            name: Some(name.to_string()),
+            tracker_id: None,
+        }
     }
 
-    fn sourcehut_environment(tracker_id: u64) -> HashMap<String, String> {
-        HashMap::from([
-            ("GROUNDWORK_FORGE_TYPE".to_string(), "sourcehut".to_string()),
-            (
-                "GROUNDWORK_FORGE_TRACKER_ID".to_string(),
-                tracker_id.to_string(),
-            ),
-        ])
+    fn sourcehut_identity(tracker_id: u64) -> ResolvedForgeIdentity {
+        ResolvedForgeIdentity {
+            forge_type: "sourcehut".to_string(),
+            owner: None,
+            name: None,
+            tracker_id: Some(tracker_id.to_string()),
+        }
     }
 
     #[test]
     fn forge_environment_resolves_config_values_when_environment_is_unset() {
         let _env = EnvGuard::unset(&[
-            "GROUNDWORK_FORGE_TYPE",
-            "GROUNDWORK_FORGE_OWNER",
-            "GROUNDWORK_FORGE_NAME",
-            "GROUNDWORK_FORGE_TRACKER_ID",
+            "RUNA_FORGE_TYPE",
+            "RUNA_FORGE_OWNER",
+            "RUNA_FORGE_NAME",
+            "RUNA_FORGE_TRACKER_ID",
         ]);
         let config = ForgeConfig {
             forge_type: Some("sourcehut".to_string()),
@@ -420,23 +431,19 @@ mod tests {
         let environment = resolve_forge_environment(&config);
 
         assert_eq!(
-            environment.get("GROUNDWORK_FORGE_TYPE").map(String::as_str),
+            environment.get("RUNA_FORGE_TYPE").map(String::as_str),
             Some("sourcehut")
         );
         assert_eq!(
-            environment
-                .get("GROUNDWORK_FORGE_OWNER")
-                .map(String::as_str),
+            environment.get("RUNA_FORGE_OWNER").map(String::as_str),
             Some("operator")
         );
         assert_eq!(
-            environment.get("GROUNDWORK_FORGE_NAME").map(String::as_str),
+            environment.get("RUNA_FORGE_NAME").map(String::as_str),
             Some("weforge")
         );
         assert_eq!(
-            environment
-                .get("GROUNDWORK_FORGE_TRACKER_ID")
-                .map(String::as_str),
+            environment.get("RUNA_FORGE_TRACKER_ID").map(String::as_str),
             Some("4")
         );
     }
@@ -444,10 +451,10 @@ mod tests {
     #[test]
     fn forge_environment_resolves_environment_values_over_config_values() {
         let _env = EnvGuard::set(&[
-            ("GROUNDWORK_FORGE_TYPE", "github"),
-            ("GROUNDWORK_FORGE_OWNER", "env-owner"),
-            ("GROUNDWORK_FORGE_NAME", "env-name"),
-            ("GROUNDWORK_FORGE_TRACKER_ID", "9"),
+            ("RUNA_FORGE_TYPE", "github"),
+            ("RUNA_FORGE_OWNER", "env-owner"),
+            ("RUNA_FORGE_NAME", "env-name"),
+            ("RUNA_FORGE_TRACKER_ID", "9"),
         ]);
         let config = ForgeConfig {
             forge_type: Some("sourcehut".to_string()),
@@ -459,23 +466,19 @@ mod tests {
         let environment = resolve_forge_environment(&config);
 
         assert_eq!(
-            environment.get("GROUNDWORK_FORGE_TYPE").map(String::as_str),
+            environment.get("RUNA_FORGE_TYPE").map(String::as_str),
             Some("github")
         );
         assert_eq!(
-            environment
-                .get("GROUNDWORK_FORGE_OWNER")
-                .map(String::as_str),
+            environment.get("RUNA_FORGE_OWNER").map(String::as_str),
             Some("env-owner")
         );
         assert_eq!(
-            environment.get("GROUNDWORK_FORGE_NAME").map(String::as_str),
+            environment.get("RUNA_FORGE_NAME").map(String::as_str),
             Some("env-name")
         );
         assert_eq!(
-            environment
-                .get("GROUNDWORK_FORGE_TRACKER_ID")
-                .map(String::as_str),
+            environment.get("RUNA_FORGE_TRACKER_ID").map(String::as_str),
             Some("9")
         );
     }
@@ -483,10 +486,10 @@ mod tests {
     #[test]
     fn forge_environment_materializes_default_github_type_when_config_and_environment_omit_type() {
         let _env = EnvGuard::unset(&[
-            "GROUNDWORK_FORGE_TYPE",
-            "GROUNDWORK_FORGE_OWNER",
-            "GROUNDWORK_FORGE_NAME",
-            "GROUNDWORK_FORGE_TRACKER_ID",
+            "RUNA_FORGE_TYPE",
+            "RUNA_FORGE_OWNER",
+            "RUNA_FORGE_NAME",
+            "RUNA_FORGE_TRACKER_ID",
         ]);
         let config = ForgeConfig {
             forge_type: None,
@@ -498,17 +501,15 @@ mod tests {
         let environment = resolve_forge_environment(&config);
 
         assert_eq!(
-            environment.get("GROUNDWORK_FORGE_TYPE").map(String::as_str),
+            environment.get("RUNA_FORGE_TYPE").map(String::as_str),
             Some("github")
         );
         assert_eq!(
-            environment
-                .get("GROUNDWORK_FORGE_OWNER")
-                .map(String::as_str),
+            environment.get("RUNA_FORGE_OWNER").map(String::as_str),
             Some("tesserine")
         );
         assert_eq!(
-            environment.get("GROUNDWORK_FORGE_NAME").map(String::as_str),
+            environment.get("RUNA_FORGE_NAME").map(String::as_str),
             Some("runa")
         );
     }
@@ -524,10 +525,10 @@ mod tests {
             .record_with_timestamp("work-unit", "work-unit-163", &artifact_path, &artifact, 1)
             .unwrap();
 
-        let result = validate_scoped_work_unit_with_env(
+        let result = validate_scoped_work_unit_with_identity(
             &store,
             "work-unit-163",
-            &github_environment("tesserine/runa"),
+            &github_identity("tesserine/runa"),
         );
 
         assert_eq!(result, Ok(()));
@@ -615,19 +616,10 @@ mod tests {
                 1,
             )
             .unwrap();
-        let environment = HashMap::from([
-            (
-                "GROUNDWORK_FORGE_OWNER".to_string(),
-                "tesserine".to_string(),
-            ),
-            (
-                "GROUNDWORK_FORGE_NAME".to_string(),
-                "groundwork".to_string(),
-            ),
-        ]);
+        let identity = github_identity("tesserine/groundwork");
 
         let result =
-            validate_scoped_work_unit_with_env(&store, "work-unit-163-scope", &environment);
+            validate_scoped_work_unit_with_identity(&store, "work-unit-163-scope", &identity);
 
         assert!(result.is_err());
     }
@@ -649,10 +641,10 @@ mod tests {
             )
             .unwrap();
 
-        let result = validate_scoped_work_unit_with_env(
+        let result = validate_scoped_work_unit_with_identity(
             &store,
             "work-unit-163-scope",
-            &github_environment("tesserine/runa"),
+            &github_identity("tesserine/runa"),
         );
 
         assert_eq!(result, Ok(()));
@@ -671,10 +663,10 @@ mod tests {
                 .unwrap();
         }
 
-        let result = validate_scoped_work_unit_with_env(
+        let result = validate_scoped_work_unit_with_identity(
             &store,
             "work-unit-163-scope-a",
-            &sourcehut_environment(4),
+            &sourcehut_identity(4),
         );
 
         assert!(result.is_err());
@@ -697,13 +689,48 @@ mod tests {
             )
             .unwrap();
 
-        let result = validate_scoped_work_unit_with_env(
+        let result = validate_scoped_work_unit_with_identity(
             &store,
             "work-unit-163-scope",
-            &sourcehut_environment(5),
+            &sourcehut_identity(5),
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn exact_work_unit_id_accepts_matching_sourcehut_deployment_from_config() {
+        let _env = EnvGuard::unset(&[
+            "RUNA_FORGE_TYPE",
+            "RUNA_FORGE_OWNER",
+            "RUNA_FORGE_NAME",
+            "RUNA_FORGE_TRACKER_ID",
+        ]);
+        let tmp = TempDir::new().unwrap();
+        let mut store = work_unit_store(&tmp);
+        let artifact = sourcehut_work_unit(4, 163);
+        let artifact_path = tmp.path().join("work-unit-163-scope.json");
+        std::fs::write(&artifact_path, artifact.to_string()).unwrap();
+        store
+            .record_with_timestamp(
+                "work-unit",
+                "work-unit-163-scope",
+                &artifact_path,
+                &artifact,
+                1,
+            )
+            .unwrap();
+        let identity = resolve_forge_identity(&ForgeConfig {
+            forge_type: Some("sourcehut".to_string()),
+            owner: Some("operator".to_string()),
+            name: Some("weforge".to_string()),
+            tracker_id: Some("4".to_string()),
+        });
+
+        let result =
+            validate_scoped_work_unit_with_identity(&store, "work-unit-163-scope", &identity);
+
+        assert_eq!(result, Ok(()));
     }
 
     #[test]

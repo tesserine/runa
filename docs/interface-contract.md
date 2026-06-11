@@ -9,7 +9,8 @@ a session, see the [Session Surface Contract](session-surface-contract.md).
 
 ## Three Primitives
 
-The interface consists of three primitive concepts. All runtime behavior derives from these.
+The methodology interface consists of three primitive concepts. Runtime-owned
+session and configuration surfaces are declared separately below.
 
 ### 1. Artifact Types
 
@@ -80,6 +81,43 @@ These compose through two operators:
 - **any_of(conditions...)** — at least one condition must be satisfied
 
 Nesting is permitted. `all_of(on_artifact("constraints"), any_of(on_change("review"), on_artifact("auto-approve")))` means: constraints must exist, and either a review change or an auto-approve artifact must be present.
+
+## Runtime-Owned Scoped Identity
+
+Scoped evaluation is a runtime capability. When the caller supplies
+`--work-unit <ID>`, runa validates that `<ID>` exactly matches a recorded
+`work-unit` artifact instance when any such instances exist. Tracker-looking
+aliases such as bare issue numbers are not accepted as scope identifiers.
+
+For tracker-backed delegated work, runa also owns the active deployment
+identity used by scoped work-unit validation. The durable operator surface is
+the project-local `[forge]` config section:
+
+```toml
+[forge]
+type = "github"
+owner = "tesserine"
+name = "runa"
+tracker_id = "4"
+```
+
+The matching per-invocation override and launched-runtime environment surface
+is runa-owned: `RUNA_FORGE_TYPE`, `RUNA_FORGE_OWNER`, `RUNA_FORGE_NAME`, and
+`RUNA_FORGE_TRACKER_ID`. Non-empty environment values override matching config
+fields, and `RUNA_FORGE_TYPE` defaults to `github` when omitted.
+
+Runa computes the active deployment identity from those atoms. For GitHub, the
+identity is `github:<owner>/<name>`. For SourceHut, the identity is
+`sourcehut:<tracker_id>`. Endpoint or host resolution is not part of scoped
+identity validation.
+
+When a valid recorded `work-unit` root contains a forge-tagged tracker handle,
+runa enforces the runtime checks that JSON Schema cannot express: the canonical
+instance id's tracker number agrees with the handle number, duplicate tracker
+roots are rejected, and the handle deployment identity agrees with the active
+runtime deployment identity. The methodology still owns the `work-unit` schema
+and the semantics of the artifact content; runa owns only the scope identity
+checks described here.
 
 ## What runa Does
 
