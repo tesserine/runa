@@ -64,8 +64,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     apply_transcript_settings(&working_dir, &loaded.config);
     libagent::scan(&loaded.workspace_dir, &mut loaded.store)?;
     if let Some(work_unit) = cli.work_unit.as_deref() {
-        let environment = libagent::resolve_forge_environment(&loaded.config.forge);
-        libagent::validate_scoped_work_unit_with_env(&loaded.store, work_unit, &environment)?;
+        let identity = libagent::resolve_forge_identity(&loaded.config.forge);
+        libagent::validate_scoped_work_unit_with_identity(&loaded.store, work_unit, &identity)?;
     }
     if cli.session {
         let handler = RunaHandler::new_session(working_dir.clone(), config_ref, cli.work_unit)?;

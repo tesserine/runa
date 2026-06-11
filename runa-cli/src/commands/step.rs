@@ -417,10 +417,10 @@ pub(crate) fn resolved_runtime_env(
 
     let forge_environment = libagent::resolve_forge_environment(&config.forge);
     for name in [
-        "GROUNDWORK_FORGE_TYPE",
-        "GROUNDWORK_FORGE_OWNER",
-        "GROUNDWORK_FORGE_NAME",
-        "GROUNDWORK_FORGE_TRACKER_ID",
+        "RUNA_FORGE_TYPE",
+        "RUNA_FORGE_OWNER",
+        "RUNA_FORGE_NAME",
+        "RUNA_FORGE_TRACKER_ID",
     ] {
         if let Some(value) = forge_environment
             .get(name)
@@ -1628,10 +1628,10 @@ cat >/dev/null
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _env = EnvGuard::unset(&[
-            "GROUNDWORK_FORGE_TYPE",
-            "GROUNDWORK_FORGE_OWNER",
-            "GROUNDWORK_FORGE_NAME",
-            "GROUNDWORK_FORGE_TRACKER_ID",
+            "RUNA_FORGE_TYPE",
+            "RUNA_FORGE_OWNER",
+            "RUNA_FORGE_NAME",
+            "RUNA_FORGE_TRACKER_ID",
             "RUNA_TRANSCRIPT_DIR",
             "RUNA_TRANSCRIPT_REDACT_ENV",
         ]);
@@ -1651,25 +1651,16 @@ cat >/dev/null
 
         let env = resolved_runtime_env(temp.path(), &config);
 
-        assert_eq!(
-            env.get("GROUNDWORK_FORGE_TYPE"),
-            Some(&"github".to_string())
-        );
-        assert_eq!(
-            env.get("GROUNDWORK_FORGE_OWNER"),
-            Some(&"tesserine".to_string())
-        );
-        assert_eq!(env.get("GROUNDWORK_FORGE_NAME"), Some(&"runa".to_string()));
+        assert_eq!(env.get("RUNA_FORGE_TYPE"), Some(&"github".to_string()));
+        assert_eq!(env.get("RUNA_FORGE_OWNER"), Some(&"tesserine".to_string()));
+        assert_eq!(env.get("RUNA_FORGE_NAME"), Some(&"runa".to_string()));
     }
 
     #[test]
     fn build_mcp_config_includes_supplied_runtime_environment() {
         let runtime_env = BTreeMap::from([
-            (
-                "GROUNDWORK_FORGE_OWNER".to_string(),
-                "tesserine".to_string(),
-            ),
-            ("GROUNDWORK_FORGE_NAME".to_string(), "runa".to_string()),
+            ("RUNA_FORGE_OWNER".to_string(), "tesserine".to_string()),
+            ("RUNA_FORGE_NAME".to_string(), "runa".to_string()),
         ]);
 
         let config = build_mcp_config(
@@ -1682,13 +1673,10 @@ cat >/dev/null
         );
 
         assert_eq!(
-            config.env.get("GROUNDWORK_FORGE_OWNER"),
+            config.env.get("RUNA_FORGE_OWNER"),
             Some(&"tesserine".to_string())
         );
-        assert_eq!(
-            config.env.get("GROUNDWORK_FORGE_NAME"),
-            Some(&"runa".to_string())
-        );
+        assert_eq!(config.env.get("RUNA_FORGE_NAME"), Some(&"runa".to_string()));
     }
 
     #[test]

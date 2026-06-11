@@ -39,9 +39,9 @@ configured list.
 
 `[forge]` supplies the active scoped work-unit deployment identity. Runa uses
 it when validating tracker-backed `work-unit` roots and injects the resolved
-`GROUNDWORK_FORGE_TYPE`, `GROUNDWORK_FORGE_OWNER`, `GROUNDWORK_FORGE_NAME`, and
-`GROUNDWORK_FORGE_TRACKER_ID` values into launched agent and MCP environments.
-Any non-empty matching `GROUNDWORK_FORGE_*` environment variable overrides the
+`RUNA_FORGE_TYPE`, `RUNA_FORGE_OWNER`, `RUNA_FORGE_NAME`, and
+`RUNA_FORGE_TRACKER_ID` values into launched agent and MCP environments.
+Any non-empty matching `RUNA_FORGE_*` environment variable overrides the
 configured field for that invocation. The forge type still defaults to `github`
 when neither config nor env specifies one.
 
@@ -325,7 +325,7 @@ process cwd to launch `runa-mcp`. Transcript environment variables are forwarded
 into the MCP config when transcript capture is enabled, which lets the MCP
 server append tool events to the same transcript stream as the CLI execution
 events. Configured forge identity is forwarded the same way through
-`GROUNDWORK_FORGE_*` entries so methodology tooling inside the agent session can
+`RUNA_FORGE_*` entries so tooling inside the agent session can
 use the project-local identity without user-global shell state.
 
 **Environment variables:**
@@ -335,7 +335,7 @@ use the project-local identity without user-global shell state.
 - `RUNA_TRANSCRIPT_DIR` — Transcript directory override for one invocation.
 - `RUNA_TRANSCRIPT_REDACT_ENV` — Comma-separated transcript redaction-name
   override for one invocation.
-- `GROUNDWORK_FORGE_TYPE`, `GROUNDWORK_FORGE_OWNER`, `GROUNDWORK_FORGE_NAME`,
-  `GROUNDWORK_FORGE_TRACKER_ID` — Forge identity field overrides for one
+- `RUNA_FORGE_TYPE`, `RUNA_FORGE_OWNER`, `RUNA_FORGE_NAME`,
+  `RUNA_FORGE_TRACKER_ID` — Forge identity field overrides for one
   invocation.
 - `RUST_LOG` — Tracing filter override for stderr diagnostics.

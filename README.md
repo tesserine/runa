@@ -172,7 +172,7 @@ See [CLI Reference](docs/cli-reference.md) for flags, exit codes, configuration,
 `runa init` creates `.runa/config.toml` with the methodology path. Operators
 may also set durable project defaults there for live agent command,
 transcript capture, and scoped forge identity. Environment variables such as
-`RUNA_TRANSCRIPT_DIR` and `GROUNDWORK_FORGE_*` remain per-invocation overrides;
+`RUNA_TRANSCRIPT_DIR` and `RUNA_FORGE_*` remain per-invocation overrides;
 config is the project-local default.
 
 ## Build

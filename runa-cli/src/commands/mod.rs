@@ -74,8 +74,8 @@ pub fn validate_scoped_work_unit(
     work_unit: Option<&str>,
 ) -> Result<(), CommandError> {
     if let Some(work_unit) = work_unit {
-        let environment = libagent::resolve_forge_environment(&loaded.config.forge);
-        libagent::validate_scoped_work_unit_with_env(&loaded.store, work_unit, &environment)?;
+        let identity = libagent::resolve_forge_identity(&loaded.config.forge);
+        libagent::validate_scoped_work_unit_with_identity(&loaded.store, work_unit, &identity)?;
     }
     Ok(())
 }

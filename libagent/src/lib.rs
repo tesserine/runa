@@ -59,8 +59,8 @@ pub use scan::{
     UnreadableArtifact, scan,
 };
 pub use scoped_identity::{
-    ScopedWorkUnitError, resolve_forge_environment, validate_scoped_work_unit,
-    validate_scoped_work_unit_with_env,
+    ResolvedForgeIdentity, ScopedWorkUnitError, resolve_forge_environment, resolve_forge_identity,
+    validate_scoped_work_unit, validate_scoped_work_unit_with_identity,
 };
 pub use selection::{
     Candidate, CandidateKey, CandidateStatus, ClassifiedCandidate, EvaluationScope,

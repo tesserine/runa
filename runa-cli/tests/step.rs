@@ -278,10 +278,10 @@ fn step_dry_run_accepts_exact_tracker_backed_work_unit_without_slug() {
         .arg("--dry-run")
         .arg("--work-unit")
         .arg("work-unit-163")
-        .env_remove("GROUNDWORK_FORGE_TYPE")
-        .env_remove("GROUNDWORK_FORGE_TRACKER_ID")
-        .env("GROUNDWORK_FORGE_OWNER", "tesserine")
-        .env("GROUNDWORK_FORGE_NAME", "runa")
+        .env_remove("RUNA_FORGE_TYPE")
+        .env_remove("RUNA_FORGE_TRACKER_ID")
+        .env("RUNA_FORGE_OWNER", "tesserine")
+        .env("RUNA_FORGE_NAME", "runa")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -660,7 +660,7 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     assert_eq!(
         execution_plan[0]["mcp_config"]["env"],
         serde_json::json!({
-            "GROUNDWORK_FORGE_TYPE": "github",
+            "RUNA_FORGE_TYPE": "github",
             "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
             "RUNA_WORKING_DIR": project_dir
         })
@@ -1134,7 +1134,7 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     assert_eq!(
         mcp_config["env"],
         serde_json::json!({
-            "GROUNDWORK_FORGE_TYPE": "github",
+            "RUNA_FORGE_TYPE": "github",
             "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
             "RUNA_WORKING_DIR": project_dir
         })
@@ -1197,7 +1197,7 @@ fn step_without_dry_run_launches_claude_named_agent_agnostically() {
     assert_eq!(
         mcp_config["env"],
         serde_json::json!({
-            "GROUNDWORK_FORGE_TYPE": "github",
+            "RUNA_FORGE_TYPE": "github",
             "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
             "RUNA_WORKING_DIR": project_dir
         })
