@@ -93,6 +93,10 @@ and `agent-claude-code.sh` for Claude Code. Point `[agent].command` at one of
 those scripts and pass runtime-specific options after the script path. The
 Codex adapter requires `jq` because Codex accepts external MCP servers through
 `-c mcp_servers.<name>.*` TOML overrides rather than a JSON config file.
+Migration note: older documentation used
+`./examples/agent-claude-code.sh` for Claude Code. That path no longer exists;
+repoint existing `[agent].command` values to
+`./adapters/agent-claude-code.sh`.
 
 When transcript capture is enabled through `[transcript].dir` or
 `RUNA_TRANSCRIPT_DIR`, live execution appends JSON Lines transcript events to

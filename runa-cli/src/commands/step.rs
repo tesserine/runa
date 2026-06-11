@@ -1377,9 +1377,9 @@ cat >/dev/null
         let temp = tempfile::tempdir().unwrap();
         let bin_dir = temp.path().join("bin");
         fs::create_dir(&bin_dir).unwrap();
-        let named = bin_dir.join("named-agent");
+        let claude = bin_dir.join("claude");
         let neutral = bin_dir.join("neutral-agent");
-        for command in [&named, &neutral] {
+        for command in [&claude, &neutral] {
             write_launch_capture_agent(command);
             let mut permissions = fs::metadata(command).unwrap().permissions();
             permissions.set_mode(0o755);
@@ -1396,12 +1396,13 @@ cat >/dev/null
         ]);
         let entry = minimal_plan_entry("implement", Some("issue-175"));
 
-        for command_name in ["named-agent", "neutral-agent"] {
+        for command_name in ["claude", "neutral-agent"] {
             execute_entry(
                 temp.path(),
                 &[
                     command_name.to_string(),
-                    "--operator-config=operator-config.json".to_string(),
+                    "--mcp-config".to_string(),
+                    "operator-mcp.json".to_string(),
                     "-p".to_string(),
                 ],
                 &entry,
@@ -1410,16 +1411,15 @@ cat >/dev/null
             .unwrap_or_else(|err| panic!("{command_name} should launch unmodified: {err}"));
         }
 
-        let expected_argv = "--operator-config=operator-config.json\n-p\n";
-        let named_argv = fs::read_to_string(temp.path().join("named-agent.argv")).unwrap();
+        let expected_argv = "--mcp-config\noperator-mcp.json\n-p\n";
+        let claude_argv = fs::read_to_string(temp.path().join("claude.argv")).unwrap();
         let neutral_argv = fs::read_to_string(temp.path().join("neutral-agent.argv")).unwrap();
-        assert_eq!(named_argv, expected_argv);
+        assert_eq!(claude_argv, expected_argv);
         assert_eq!(neutral_argv, expected_argv);
 
-        let named_config: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(temp.path().join("named-agent.mcp.json")).unwrap(),
-        )
-        .unwrap();
+        let claude_config: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(temp.path().join("claude.mcp.json")).unwrap())
+                .unwrap();
         let neutral_config: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(temp.path().join("neutral-agent.mcp.json")).unwrap(),
         )
@@ -1429,8 +1429,24 @@ cat >/dev/null
             "args": ["--protocol", "implement"],
             "env": {}
         });
-        assert_eq!(named_config, expected_config);
+        assert_eq!(claude_config, expected_config);
         assert_eq!(neutral_config, expected_config);
+    }
+
+    #[test]
+    fn production_launch_logic_has_no_claude_specific_core_path_tokens() {
+        let source = include_str!("step.rs");
+        let production_source = source
+            .split("\n#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source should precede tests module");
+
+        for token in ["claude", "--mcp-config", "--strict-mcp-config"] {
+            assert!(
+                !production_source.contains(token),
+                "production launch logic must not special-case {token}"
+            );
+        }
     }
 
     #[test]
