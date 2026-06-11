@@ -25,6 +25,12 @@ Semantic Versioning.
   `./adapters/agent-claude-code.sh`; the old `examples/` adapter path is not
   retained as a wrapper or symlink.
 
+### Fixed
+
+- The Codex adapter now registers runa's MCP session server under an
+  invocation-scoped `mcp_servers` key, avoiding deep-merge collisions with an
+  operator's existing `mcp_servers.runa` Codex config entry.
+
 ## [0.2.0-rc.1] — 2026-06-08
 
 ### Added

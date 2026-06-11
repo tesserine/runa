@@ -28,8 +28,10 @@ env_toml="$(
         jq -er '(.env // {}) | if type == "object" and all(.[]; type == "string") then to_entries | map((.key | @json) + " = " + (.value | @json)) | "{ " + join(", ") + " }" else error("RUNA_MCP_CONFIG.env must be a string object") end'
 )"
 
+server_name="runa_session_$$"
+
 exec codex exec \
-    -c "mcp_servers.runa.command=$command_toml" \
-    -c "mcp_servers.runa.args=$args_toml" \
-    -c "mcp_servers.runa.env=$env_toml" \
+    -c "mcp_servers.$server_name.command=$command_toml" \
+    -c "mcp_servers.$server_name.args=$args_toml" \
+    -c "mcp_servers.$server_name.env=$env_toml" \
     "$@"

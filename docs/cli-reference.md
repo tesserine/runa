@@ -92,7 +92,9 @@ The supported runtime adapters live in `adapters/`: `agent-codex.sh` for Codex
 and `agent-claude-code.sh` for Claude Code. Point `[agent].command` at one of
 those scripts and pass runtime-specific options after the script path. The
 Codex adapter requires `jq` because Codex accepts external MCP servers through
-`-c mcp_servers.<name>.*` TOML overrides rather than a JSON config file.
+`-c mcp_servers.<name>.*` TOML overrides rather than a JSON config file. It
+registers each invocation under a process-scoped server name so an existing
+operator-defined `mcp_servers.runa` entry is left untouched.
 Migration note: older documentation used
 `./examples/agent-claude-code.sh` for Claude Code. That path no longer exists;
 repoint existing `[agent].command` values to
