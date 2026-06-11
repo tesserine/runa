@@ -625,14 +625,14 @@ filter = "info"
 methodology_path = "/tmp/methodology.toml"
 
 [agent]
-command = ["codex", "exec"]
+command = ["agent-runtime", "exec"]
 "#,
         )
         .unwrap();
 
         assert_eq!(
             config.agent.command,
-            Some(vec!["codex".to_string(), "exec".to_string()])
+            Some(vec!["agent-runtime".to_string(), "exec".to_string()])
         );
     }
 

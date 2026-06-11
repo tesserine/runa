@@ -1401,7 +1401,8 @@ cat >/dev/null
                 temp.path(),
                 &[
                     command_name.to_string(),
-                    "--mcp-config=operator-config.json".to_string(),
+                    "--mcp-config".to_string(),
+                    "operator-mcp.json".to_string(),
                     "-p".to_string(),
                 ],
                 &entry,
@@ -1410,7 +1411,7 @@ cat >/dev/null
             .unwrap_or_else(|err| panic!("{command_name} should launch unmodified: {err}"));
         }
 
-        let expected_argv = "--mcp-config=operator-config.json\n-p\n";
+        let expected_argv = "--mcp-config\noperator-mcp.json\n-p\n";
         let claude_argv = fs::read_to_string(temp.path().join("claude.argv")).unwrap();
         let neutral_argv = fs::read_to_string(temp.path().join("neutral-agent.argv")).unwrap();
         assert_eq!(claude_argv, expected_argv);
@@ -1430,6 +1431,22 @@ cat >/dev/null
         });
         assert_eq!(claude_config, expected_config);
         assert_eq!(neutral_config, expected_config);
+    }
+
+    #[test]
+    fn production_launch_logic_has_no_claude_specific_core_path_tokens() {
+        let source = include_str!("step.rs");
+        let production_source = source
+            .split("\n#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source should precede tests module");
+
+        for token in ["claude", "--mcp-config", "--strict-mcp-config"] {
+            assert!(
+                !production_source.contains(token),
+                "production launch logic must not special-case {token}"
+            );
+        }
     }
 
     #[test]

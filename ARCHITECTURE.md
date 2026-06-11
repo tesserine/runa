@@ -10,6 +10,11 @@ Three crates, Rust 2024 edition, resolver v3:
 - **`runa-cli`** — Thin CLI binary. Clap-based argument parsing, delegates to libagent and the session MCP surface. No domain logic.
 - **`runa-mcp`** — MCP server binary. In fixed-protocol mode, serves one named protocol invocation per process. In session mode, serves one scoped work-unit session with driver verbs and current-step output tools in one MCP connection. Writes produced artifacts into the workspace through the same validation path in both modes.
 
+Supported runtime adapters live in top-level **`adapters/`**. They translate
+the runtime-agnostic `RUNA_MCP_CONFIG` payload into each runtime's MCP
+registration surface while keeping `runa-cli` launch logic argv-agnostic.
+Current adapters cover Codex and Claude Code.
+
 ## Data Flow
 
 These are library capabilities exposed by libagent and consumed by both the CLI and the MCP server.

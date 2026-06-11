@@ -20,6 +20,10 @@ Semantic Versioning.
   it receives the MCP session config through `RUNA_MCP_CONFIG` like every other
   runtime. Operators who relied on the old auto-injection should adapt by
   having their agent command or wrapper consume `RUNA_MCP_CONFIG`.
+- Breaking migration for Claude Code adapter configs: the previously documented
+  `./examples/agent-claude-code.sh` path is gone. Repoint `[agent].command` to
+  `./adapters/agent-claude-code.sh`; the old `examples/` adapter path is not
+  retained as a wrapper or symlink.
 
 ## [0.2.0-rc.1] — 2026-06-08
 
