@@ -9,6 +9,10 @@ Semantic Versioning.
 
 ### Added
 
+- README ecosystem links corrected: commons described as the
+  convention/ADR authority with principles at their canonical home
+  `pentaxis93/principles` (#181), and the agentd/groundwork links moved to
+  the `tesserine` org.
 - `docs/security.md` — consolidated index of runa's security guarantees
   (previously scattered across four documents), each mapped to its
   enforcement site and authoritative specification.
