@@ -529,6 +529,96 @@ fn run_ticket_reports_success_when_acquisition_is_the_only_work() {
     assert!(stdout.contains("Run outcome: success"), "stdout: {stdout}");
 }
 
+/// The acquisition triggers on `request` (which it does not require); the ticket
+/// substitutes that trigger.
+const TRIGGER_ONLY_ENTRY_MANIFEST: &str = r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "request"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "claim"
+
+[[protocols]]
+name = "decompose"
+produces = ["work-unit"]
+scoped = false
+trigger = { type = "on_artifact", name = "request" }
+
+[[protocols]]
+name = "take"
+requires = ["work-unit"]
+produces = ["claim"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+"#;
+
+fn setup_trigger_only_entry_project(dir: &Path) -> PathBuf {
+    let manifest_path = common::write_methodology(
+        dir,
+        TRIGGER_ONLY_ENTRY_MANIFEST,
+        &[
+            (
+                "request",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "work-unit",
+                r#"{"type":"object","required":["title","handle"],"properties":{"title":{"type":"string"},"handle":{"type":"object"}}}"#,
+            ),
+            (
+                "claim",
+                r#"{"type":"object","required":["work_unit","scope"],"properties":{"work_unit":{"type":"string"},"scope":{"type":"string"}}}"#,
+            ),
+        ],
+        &["decompose", "take"],
+    );
+    let project_dir = dir.join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    common::append_github_forge_config(&project_dir, "tesserine", "runa");
+    project_dir
+}
+
+#[test]
+fn run_ticket_admits_acquisition_when_only_trigger_type_partially_scanned() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_trigger_only_entry_project(dir.path());
+    // An unreadable `request` (the substituted trigger type, not a required
+    // input) leaves it only partially scanned.
+    let request_dir = project_dir.join(".runa/workspace/request");
+    fs::create_dir_all(&request_dir).unwrap();
+    let unreadable = request_dir.join("hidden.json");
+    fs::write(&unreadable, r#"{"title":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_entry_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("run")
+        .arg("--ticket")
+        .arg("#14")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    // The ticket replaces the trigger, so a partial scan of the trigger-only
+    // `request` must not block: acquisition runs and the cascade completes.
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(&log_path).unwrap(), "decompose\ntake\n");
+}
+
 #[test]
 fn run_ticket_blocks_when_acquisition_preconditions_unmet() {
     let dir = tempfile::tempdir().unwrap();

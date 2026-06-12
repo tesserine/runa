@@ -19,7 +19,7 @@ use crate::scoped_identity::{
     ResolvedForgeIdentity, ScopedWorkUnitError, find_work_unit_by_tracker_identity,
     validate_tracker_consistency,
 };
-use crate::selection::protocol_scan_incomplete_types;
+use crate::selection::precondition_scan_incomplete_types;
 use crate::store::ArtifactStore;
 
 /// Artifact type the runtime treats as the scope-identity seed. The acquisition
@@ -351,16 +351,18 @@ impl fmt::Display for AcquisitionBlock {
 /// Entry substitutes only the acquisition protocol's trigger (the operator's
 /// ticket reference stands in for it). Every other gate the canonical readiness
 /// path applies still holds: its `requires` preconditions, and scan trust over
-/// its input types. Currentness is intentionally omitted — the reference forces
-/// a fresh acquisition for this ticket regardless of unrelated outputs. The
-/// acquisition is always unscoped, so `work_unit` is `None`.
+/// those required inputs. Scan gaps on a trigger-only artifact type are ignored
+/// — the reference replaces the trigger, so that artifact is never consulted.
+/// Currentness is intentionally omitted — the reference forces a fresh
+/// acquisition regardless of unrelated outputs. The acquisition is always
+/// unscoped, so `work_unit` is `None`.
 pub fn check_acquisition_admissible(
     acquisition: &ProtocolDeclaration,
     store: &ArtifactStore,
     partially_scanned_types: &HashSet<String>,
 ) -> Result<(), AcquisitionBlock> {
     enforce_preconditions(acquisition, store, None).map_err(AcquisitionBlock::Precondition)?;
-    let incomplete = protocol_scan_incomplete_types(acquisition, partially_scanned_types);
+    let incomplete = precondition_scan_incomplete_types(acquisition, partially_scanned_types);
     if !incomplete.is_empty() {
         return Err(AcquisitionBlock::ScanIncomplete(incomplete));
     }
@@ -575,20 +577,44 @@ mod tests {
     }
 
     #[test]
-    fn acquisition_blocked_when_input_partially_scanned() {
+    fn acquisition_blocked_when_required_input_partially_scanned() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = crate::test_helpers::make_store(
+        let mut store = crate::test_helpers::make_store(
             &tmp.path().join("store"),
             vec!["request", "work-unit"],
         );
-        let acquisition = acquisition_protocol(&[]);
-        // The trigger input `request` was only partially scanned.
+        // A valid `request` satisfies preconditions...
+        store
+            .record(
+                "request",
+                "good",
+                std::path::Path::new("good.json"),
+                &serde_json::json!({"title": "good"}),
+            )
+            .unwrap();
+        // ...but `request` is a required input that was only partially scanned.
+        let acquisition = acquisition_protocol(&["request"]);
         let partials = HashSet::from(["request".to_string()]);
 
         assert!(matches!(
             check_acquisition_admissible(&acquisition, &store, &partials),
             Err(AcquisitionBlock::ScanIncomplete(types)) if types == vec!["request".to_string()]
         ));
+    }
+
+    #[test]
+    fn acquisition_admissible_when_only_substituted_trigger_partially_scanned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::test_helpers::make_store(
+            &tmp.path().join("store"),
+            vec!["request", "work-unit"],
+        );
+        // `request` is only the trigger (not required). The ticket replaces the
+        // trigger, so a partial scan of `request` must not block acquisition.
+        let acquisition = acquisition_protocol(&[]);
+        let partials = HashSet::from(["request".to_string()]);
+
+        assert!(check_acquisition_admissible(&acquisition, &store, &partials).is_ok());
     }
 
     #[test]

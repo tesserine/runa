@@ -995,8 +995,12 @@ fn trigger_scan_incomplete_failures(
     types
 }
 
-/// Collect scan-incomplete types from requires and produces.
-fn precondition_scan_incomplete_types(
+/// Collect scan-incomplete types from `requires` only (not trigger types).
+///
+/// Used by the normal readiness path for trigger-unsatisfied protocols, and by
+/// ticket entry — where the reference substitutes the trigger, so only the
+/// acquisition's required inputs still need scan trust.
+pub(crate) fn precondition_scan_incomplete_types(
     protocol: &ProtocolDeclaration,
     partially_scanned_types: &HashSet<String>,
 ) -> Vec<String> {
