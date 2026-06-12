@@ -9,6 +9,15 @@ Semantic Versioning.
 
 ### Fixed
 
+- Invariant-bearing modules now document their invariants at the code:
+  `session.rs` opens with the session state-machine contract (state derives
+  from artifacts, single current step, transactional `advance`,
+  session-scoped exhaustion, promised-scope single step) referencing the
+  session surface contract; `scoped_identity.rs` opens with the scope
+  identity invariants referencing the interface contract; `selection.rs`
+  documents the freshness/currentness machinery — input-set equality on
+  the execution-record path, the timestamp fallback, and the
+  `AnyRecorded`-wins mode merge.
 - `ARCHITECTURE.md` documented the `step --json` envelope version as `4`;
   the code emits `5`. The doc now matches, and a workspace-contract test
   asserts code, `ARCHITECTURE.md`, and `docs/cli-reference.md` agree so the

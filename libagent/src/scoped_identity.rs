@@ -1,3 +1,28 @@
+//! Canonical scoped work-unit identity validation, shared by the CLI
+//! commands and `runa-mcp`.
+//!
+//! Governing contract: [`docs/interface-contract.md`] — runa owns scope
+//! *identity*; the methodology owns the `work-unit` schema and the
+//! semantics of its content. This module holds the runtime checks that
+//! JSON Schema cannot express.
+//!
+//! Invariants:
+//!
+//! - **The canonical scope set is the recorded `work-unit` instance ids —
+//!   including invalid and malformed records.** A broken record still
+//!   occupies its identity; excluding it would let a session silently open
+//!   against a scope that exists but failed validation.
+//! - For valid tracker-backed roots: the canonical instance id's tracker
+//!   number must agree with the handle number; duplicate tracker
+//!   identities across roots are rejected; and the handle's deployment
+//!   identity must agree with the active deployment resolved from the
+//!   config-backed `RUNA_FORGE_*` atoms (`github:<owner>/<name>` or
+//!   `sourcehut:<tracker_id>`).
+//! - Endpoint and host resolution are deliberately outside scoped identity
+//!   validation; identity is textual agreement, not network reachability.
+//!
+//! [`docs/interface-contract.md`]: https://github.com/tesserine/runa/blob/main/docs/interface-contract.md
+
 use std::collections::HashMap;
 use std::fmt;
 
