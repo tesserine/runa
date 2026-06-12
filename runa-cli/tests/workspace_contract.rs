@@ -413,3 +413,51 @@ fn release_documentation_describes_runa_release_identity() {
         "RELEASING.md should describe the event-identity trust check"
     );
 }
+
+#[test]
+fn step_json_envelope_version_is_consistent_across_code_and_docs() {
+    fn extract(source: &str, pattern: &str, what: &str) -> u32 {
+        let versions: Vec<u32> = source
+            .match_indices(pattern)
+            .filter_map(|(start, _)| {
+                let digits: String = source[start + pattern.len()..]
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect();
+                digits.parse().ok()
+            })
+            .collect();
+        assert_eq!(
+            versions.len(),
+            1,
+            "{what} should contain exactly one integer-valued `{pattern}` occurrence, found {}",
+            versions.len()
+        );
+        versions[0]
+    }
+
+    let code_version = extract(
+        &read_workspace_file("runa-cli/src/commands/step.rs"),
+        "version: ",
+        "step.rs StepJson construction",
+    );
+    let architecture_version = extract(
+        &read_workspace_file("ARCHITECTURE.md"),
+        "the `step --json` envelope version is `",
+        "ARCHITECTURE.md step section",
+    );
+    let cli_reference_version = extract(
+        &read_workspace_file("docs/cli-reference.md"),
+        "Dry-run only. Emits a versioned JSON envelope: `{ \"version\": ",
+        "cli-reference.md step section",
+    );
+
+    assert_eq!(
+        architecture_version, code_version,
+        "ARCHITECTURE.md documents step --json envelope version {architecture_version}, but step.rs emits {code_version}"
+    );
+    assert_eq!(
+        cli_reference_version, code_version,
+        "cli-reference.md documents step --json envelope version {cli_reference_version}, but step.rs emits {code_version}"
+    );
+}

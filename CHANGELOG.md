@@ -7,6 +7,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- `ARCHITECTURE.md` documented the `step --json` envelope version as `4`;
+  the code emits `5`. The doc now matches, and a workspace-contract test
+  asserts code, `ARCHITECTURE.md`, and `docs/cli-reference.md` agree so the
+  envelope version cannot silently drift again.
+
 ### Added
 
 - Cold-start ticket entry: `runa run --ticket <REF>` and `runa go --ticket <REF>`

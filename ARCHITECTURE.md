@@ -2,6 +2,13 @@
 
 Runa is a cognitive runtime for AI agents. This document describes the codebase as it exists today.
 
+Related but distinct: commons holds an **exploratory draft** concept document,
+[`concepts/_drafts/cognitive-state-machine.md`](https://github.com/tesserine/commons/blob/main/concepts/_drafts/cognitive-state-machine.md),
+describing a possible type-theoretic trajectory for the ecosystem. It is not
+committed project direction and this document does not implement it; runa
+deliberately does not import its vocabulary. This document is canonical for
+runa's actual architecture.
+
 ## Workspace Structure
 
 Three crates, Rust 2024 edition, resolver v3:
@@ -220,7 +227,7 @@ Exits 0 for successful state evaluation regardless of whether protocols are read
 
 Runs the same implicit scan and shared candidate classification used by `runa state`, then narrows the plan to the single next concrete `READY` `(protocol, work_unit)` pair in scope-filtered execution order. Without `--work-unit`, it considers only unscoped protocols. With `--work-unit <ID>`, it considers only scoped protocols for that delegated work unit.
 
-With `--dry-run`, text output prints the next execution plus the grouped READY/BLOCKED/WAITING view. JSON output adds an `execution_plan` array plus an optional scope-filtered `cycle` path while reusing the same `protocols` status entries and `scan_warnings` envelope fields as `runa state`; the `step --json` envelope version is now `4`, and `execution_plan` contains at most one entry. Dry-run still emits MCP launch config for preview, but it does not fail if `runa-mcp` is not currently discoverable. The dry-run context payload is display-oriented; live execution keeps using the exact internal path handles when it reopens artifact content.
+With `--dry-run`, text output prints the next execution plus the grouped READY/BLOCKED/WAITING view. JSON output adds an `execution_plan` array plus an optional scope-filtered `cycle` path while reusing the same `protocols` status entries and `scan_warnings` envelope fields as `runa state`; the `step --json` envelope version is `5`, and `execution_plan` contains at most one entry. Dry-run still emits MCP launch config for preview, but it does not fail if `runa-mcp` is not currently discoverable. The dry-run context payload is display-oriented; live execution keeps using the exact internal path handles when it reopens artifact content.
 
 Without `--dry-run`, `step` requires `[agent].command` in config and Linux as the execution platform. It rejects `--json` with exit `2`. If the initial execution plan is empty it performs a final workspace re-scan and re-evaluates readiness before concluding there is no work. If that refreshed state exposes a READY candidate, `step` executes that one protocol in the same invocation. Only when the refreshed state still has no actionable work does it print `No READY protocols.` and exit: `3` when work remains blocked, waiting, or cyclic, `4` when no actionable work remains because outputs are current. Otherwise it resolves `runa-mcp`, builds the candidate's MCP launch config, exports it through `RUNA_MCP_CONFIG`, launches the configured agent argv unmodified, rescans the workspace, enforces postconditions for that candidate, and then prints the refreshed READY/BLOCKED/WAITING view. Attempted-work failures use exit `5`; bootstrap, scan, record, serialization, config, MCP lookup, and runtime failures use exit `6`.
 
