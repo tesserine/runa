@@ -10,13 +10,16 @@
 //! The runtime never reads ticket content. A reference carries identity only;
 //! the methodology performs all forge reads through its own mechanics.
 
+use std::collections::HashSet;
 use std::fmt;
 
+use crate::enforcement::{EnforcementError, enforce_preconditions};
 use crate::model::ProtocolDeclaration;
 use crate::scoped_identity::{
     ResolvedForgeIdentity, ScopedWorkUnitError, find_work_unit_by_tracker_identity,
     validate_tracker_consistency,
 };
+use crate::selection::protocol_scan_incomplete_types;
 use crate::store::ArtifactStore;
 
 /// Artifact type the runtime treats as the scope-identity seed. The acquisition
@@ -317,6 +320,53 @@ pub fn discover_acquisition_surface(
     }
 }
 
+/// Why a cold-start acquisition is not admissible, if it is not.
+///
+/// Mirrors the canonical readiness gates ([`crate::classify_candidates`]) with
+/// the trigger substituted by the operator's reference: a missing/invalid
+/// required input, or an input type left untrusted by a partial scan.
+#[derive(Debug)]
+pub enum AcquisitionBlock {
+    Precondition(EnforcementError),
+    ScanIncomplete(Vec<String>),
+}
+
+impl fmt::Display for AcquisitionBlock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AcquisitionBlock::Precondition(error) => write!(f, "{error}"),
+            AcquisitionBlock::ScanIncomplete(types) => write!(
+                f,
+                "acquisition input artifact type(s) {} were only partially scanned",
+                types.join(", ")
+            ),
+        }
+    }
+}
+
+/// The single admission gate for a cold-start acquisition — the one place that
+/// enumerates the readiness gates entry must honor, so the session, projection,
+/// and CLI entry surfaces cannot drift apart.
+///
+/// Entry substitutes only the acquisition protocol's trigger (the operator's
+/// ticket reference stands in for it). Every other gate the canonical readiness
+/// path applies still holds: its `requires` preconditions, and scan trust over
+/// its input types. Currentness is intentionally omitted — the reference forces
+/// a fresh acquisition for this ticket regardless of unrelated outputs. The
+/// acquisition is always unscoped, so `work_unit` is `None`.
+pub fn check_acquisition_admissible(
+    acquisition: &ProtocolDeclaration,
+    store: &ArtifactStore,
+    partially_scanned_types: &HashSet<String>,
+) -> Result<(), AcquisitionBlock> {
+    enforce_preconditions(acquisition, store, None).map_err(AcquisitionBlock::Precondition)?;
+    let incomplete = protocol_scan_incomplete_types(acquisition, partially_scanned_types);
+    if !incomplete.is_empty() {
+        return Err(AcquisitionBlock::ScanIncomplete(incomplete));
+    }
+    Ok(())
+}
+
 /// Resolve a ticket reference to the materialized `work-unit` instance.
 ///
 /// Returns the instance id whose tracker handle identity equals the reference,
@@ -482,6 +532,63 @@ mod tests {
                 "expected '{raw}' to be rejected"
             );
         }
+    }
+
+    fn acquisition_protocol(requires: &[&str]) -> ProtocolDeclaration {
+        ProtocolDeclaration {
+            name: "decompose".into(),
+            requires: requires.iter().map(|value| value.to_string()).collect(),
+            accepts: Vec::new(),
+            produces: vec![WORK_UNIT_ARTIFACT_TYPE.to_string()],
+            may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
+            scoped: false,
+            trigger: TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+            instructions: None,
+        }
+    }
+
+    #[test]
+    fn acquisition_admissible_when_preconditions_met_and_scan_complete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::test_helpers::make_store(&tmp.path().join("store"), vec!["work-unit"]);
+        let acquisition = acquisition_protocol(&[]);
+
+        assert!(check_acquisition_admissible(&acquisition, &store, &HashSet::new()).is_ok());
+    }
+
+    #[test]
+    fn acquisition_blocked_when_required_input_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::test_helpers::make_store(
+            &tmp.path().join("store"),
+            vec!["request", "work-unit"],
+        );
+        let acquisition = acquisition_protocol(&["request"]);
+
+        assert!(matches!(
+            check_acquisition_admissible(&acquisition, &store, &HashSet::new()),
+            Err(AcquisitionBlock::Precondition(_))
+        ));
+    }
+
+    #[test]
+    fn acquisition_blocked_when_input_partially_scanned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::test_helpers::make_store(
+            &tmp.path().join("store"),
+            vec!["request", "work-unit"],
+        );
+        let acquisition = acquisition_protocol(&[]);
+        // The trigger input `request` was only partially scanned.
+        let partials = HashSet::from(["request".to_string()]);
+
+        assert!(matches!(
+            check_acquisition_admissible(&acquisition, &store, &partials),
+            Err(AcquisitionBlock::ScanIncomplete(types)) if types == vec!["request".to_string()]
+        ));
     }
 
     #[test]

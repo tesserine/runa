@@ -159,15 +159,15 @@ pub fn project_entry_cascade(
     let Some(acquisition_protocol) = protocol_map.get(acquisition.protocol_name.as_str()) else {
         return plan;
     };
-    // Entry substitutes only the trigger; preconditions and scan trust still
-    // gate. When the acquisition's requires are unmet or an input type was only
-    // partially scanned, nothing projects from it.
-    if !preconditions_satisfied(
+    // Entry substitutes only the trigger; the canonical admission gate
+    // (preconditions + scan trust) still applies. When it blocks, nothing
+    // projects from the acquisition.
+    if crate::entry::check_acquisition_admissible(
         acquisition_protocol,
-        &projection,
-        acquisition.work_unit.as_deref(),
-    ) || !protocol_scan_incomplete_types(acquisition_protocol, partially_scanned_types)
-        .is_empty()
+        store,
+        partially_scanned_types,
+    )
+    .is_err()
     {
         return plan;
     }

@@ -26,22 +26,14 @@ pub(crate) fn acquisition_block_reason(
     acquisition: &ProtocolDeclaration,
     scan_result: &ScanResult,
 ) -> Option<String> {
-    if let Err(error) = libagent::enforce_preconditions(acquisition, &loaded.store, None) {
-        return Some(error.to_string());
-    }
     let partially_scanned: HashSet<String> = scan_result
         .partially_scanned_types
         .iter()
         .map(|partial| partial.artifact_type.clone())
         .collect();
-    let incomplete = libagent::protocol_scan_incomplete_types(acquisition, &partially_scanned);
-    if !incomplete.is_empty() {
-        return Some(format!(
-            "acquisition input artifact type(s) {} were only partially scanned",
-            incomplete.join(", ")
-        ));
-    }
-    None
+    libagent::check_acquisition_admissible(acquisition, &loaded.store, &partially_scanned)
+        .err()
+        .map(|block| block.to_string())
 }
 
 /// Parse and resolve a ticket reference against the project's forge deployment.

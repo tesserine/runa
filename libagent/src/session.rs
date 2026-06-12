@@ -210,6 +210,16 @@ fn partially_scanned_set(scan_result: &crate::ScanResult) -> HashSet<String> {
         .collect()
 }
 
+/// Map a canonical acquisition-admission block onto the session error surface.
+fn session_error_from_block(block: crate::AcquisitionBlock, protocol: String) -> SessionError {
+    match block {
+        crate::AcquisitionBlock::Precondition(error) => SessionError::Precondition(error),
+        crate::AcquisitionBlock::ScanIncomplete(types) => {
+            SessionError::ScanIncomplete { protocol, types }
+        }
+    }
+}
+
 impl SessionState {
     pub fn open(
         working_dir: PathBuf,
@@ -306,21 +316,15 @@ impl SessionState {
         };
         session.refresh_exhaustion_after_scan(&scan_result);
 
-        // The reference substitutes only the acquisition's trigger; its
-        // preconditions and scan-trust gates still apply, exactly as normal
-        // readiness would block a protocol with unmet inputs or a partial scan.
+        // The reference substitutes only the acquisition's trigger; the canonical
+        // admission gate (preconditions + scan trust) still applies.
         let acquisition = session.protocol(&acquisition_name)?;
-        crate::enforce_preconditions(acquisition, &session.loaded.store, None)
-            .map_err(SessionError::Precondition)?;
-        let incomplete = crate::protocol_scan_incomplete_types(
+        if let Err(block) = crate::check_acquisition_admissible(
             acquisition,
+            &session.loaded.store,
             &partially_scanned_set(&scan_result),
-        );
-        if !incomplete.is_empty() {
-            return Err(SessionError::ScanIncomplete {
-                protocol: acquisition_name,
-                types: incomplete,
-            });
+        ) {
+            return Err(session_error_from_block(block, acquisition_name));
         }
         let provenance_snapshot = crate::protocol_execution_record(
             acquisition,
@@ -593,24 +597,21 @@ impl SessionState {
                 .ok_or(SessionError::NoCurrentStep)?;
             // The operator's reference stands in for the acquisition step's
             // trigger, but its preconditions and scan-trust gates still apply. A
-            // bound step uses the normal readiness check; a promised step
-            // enforces the acquisition protocol's preconditions and scan trust
-            // directly.
+            // bound step uses the normal readiness check; a promised step uses
+            // the canonical acquisition-admission gate.
             if matches!(self.scope, SessionScope::Bound(_)) {
                 self.ensure_current_step_can_complete(&current_step, &evaluated)?;
             } else {
                 let protocol = self.protocol(&current_step.protocol)?;
-                crate::enforce_preconditions(protocol, &self.loaded.store, None)
-                    .map_err(SessionError::Precondition)?;
-                let incomplete = crate::protocol_scan_incomplete_types(
+                if let Err(block) = crate::check_acquisition_admissible(
                     protocol,
+                    &self.loaded.store,
                     &partially_scanned_set(&scan_result),
-                );
-                if !incomplete.is_empty() {
-                    return Err(SessionError::ScanIncomplete {
-                        protocol: current_step.protocol.clone(),
-                        types: incomplete,
-                    });
+                ) {
+                    return Err(session_error_from_block(
+                        block,
+                        current_step.protocol.clone(),
+                    ));
                 }
             }
         }

@@ -44,8 +44,8 @@ pub use enforcement::{
     enforce_preconditions,
 };
 pub use entry::{
-    EntryError, RUNA_ENTRY_TICKET, TicketRef, discover_acquisition_surface, resolve_promise,
-    resolve_ticket_reference,
+    AcquisitionBlock, EntryError, RUNA_ENTRY_TICKET, TicketRef, check_acquisition_admissible,
+    discover_acquisition_surface, resolve_promise, resolve_ticket_reference,
 };
 pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use logging::{LoggingError, ResolvedLoggingConfig, configure_tracing, resolve_logging_config};
@@ -75,8 +75,7 @@ pub use selection::{
     EvaluationTopology, ScanTrust, WaitingReason, classify_candidates,
     collect_unsatisfied_conditions, discover_ready_candidates, protocol_execution_input_snapshot,
     protocol_execution_record, protocol_relevant_input_types, protocol_relevant_inputs_changed,
-    protocol_scan_incomplete_types, refresh_exhausted_candidates_after_scan,
-    resolve_evaluation_topology,
+    refresh_exhausted_candidates_after_scan, resolve_evaluation_topology,
 };
 pub use session::{
     AdvanceOutcome, CurrentStep, SESSION_ADVANCE_RECEIPT_ENV, SessionError, SessionReadiness,
