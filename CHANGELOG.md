@@ -7,6 +7,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- README hero rewritten for the ecosystem README pass: runa positioned as
+  the runtime that makes agent work verifiable — emergent execution order,
+  validate-before-write with scan-detected invalid work never flowing, the
+  two-minute no-agent loop — with its place in the Tesserine stack.
+
 ### Added
 
 - README ecosystem links corrected: commons described as the

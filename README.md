@@ -1,10 +1,37 @@
 # runa
 
+**Contracts for cognition: the runtime that makes agent work verifiable
+instead of hoped-for.**
+
 Runa makes multi-step AI agent workflows reliable. When each step in a workflow declares what it needs and what it produces, runa validates every work product against its declared schema, computes which steps are ready to run, and delivers the right inputs to each agent invocation. The result: an orchestrator can compose agent steps into pipelines and trust that if a step completes, its output actually satisfies the contract — and that downstream steps receive only validated inputs.
 
 This means agent workflows become composable. Teams can define reusable schemas and step definitions, swap implementations behind stable contracts, and build multi-stage pipelines where each handoff is enforced. Runa handles the enforcement so the agents and the orchestrator don't have to.
 
-Runa is not an agent framework and does not include an AI model. It is the runtime layer between an orchestrator and the agents it directs.
+Three properties make this different from orchestration glue:
+
+- **Order is emergent, not scripted.** No step list exists anywhere; execution
+  order falls out of the dependency graph of what protocols require and
+  produce. Change the artifacts and the topology reorganizes itself.
+- **Invalid work cannot flow.** Artifacts delivered through the agent
+  interface are validated *before* they are written
+  ([the production contract](AGENTS.md#artifact-production-contract)) — a
+  failing output is rejected with details and never reaches disk. Anything
+  else that appears in the workspace is caught at scan: it never satisfies a
+  dependency and is never handed to an agent as validated input. Where each
+  guarantee is enforced: [docs/security.md](docs/security.md).
+- **You can feel the loop in two minutes, no agent required.** The
+  [quickstart](examples/quickstart-methodology/) walks the full
+  scan → READY → produce cascade by hand — every transition derived from
+  artifact state alone.
+
+Runa is not an agent framework and does not include an AI model. It is the
+runtime layer between an orchestrator and the agents it directs — the
+**Enforce** tier of the [Tesserine](https://github.com/tesserine) stack, and
+the engine both shipped methodologies
+([groundwork](https://github.com/tesserine/groundwork),
+[gazette](https://github.com/tesserine/gazette)) run on, unchanged. Any
+disciplined process you can declare as artifacts and protocols inherits the
+same guarantees.
 
 ## Core Concepts
 
