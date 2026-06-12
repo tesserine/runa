@@ -396,15 +396,12 @@ impl SessionState {
             .clone()
             .ok_or(SessionError::NoCurrentStep)?;
         let protocol = self.protocol(&current_step.protocol)?;
-        let mut context =
-            crate::context::build_context(protocol, &self.loaded.store, self.context_work_unit());
-        context.inputs.retain(|input| {
-            input.relationship == crate::context::ArtifactRelationship::Requires
-                || !reconciled
-                    .scan_findings
-                    .affected_types
-                    .contains(input.artifact_type.as_str())
-        });
+        let mut context = crate::context::build_execution_context(
+            protocol,
+            &self.loaded.store,
+            self.context_work_unit(),
+            &reconciled.scan_findings.affected_types,
+        );
         if let SessionScope::Promised { ticket, .. } = &self.scope {
             context.entry = Some(crate::context::EntryDelivery {
                 reference: ticket.display.clone(),

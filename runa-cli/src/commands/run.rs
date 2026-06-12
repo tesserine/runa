@@ -518,6 +518,7 @@ pub fn run(
             working_dir,
             config_override,
             &mut loaded,
+            &scan_result,
             &ticket_ref,
             &identity,
             &agent_command,
@@ -778,7 +779,8 @@ fn run_ticket_dry_run(
     let runtime_env = entry::entry_runtime_env(working_dir, &loaded.config, ticket_ref);
     let preview_command = preview_runa_mcp_command();
 
-    let entry_planned = entry::acquisition_planned_entry(loaded, &acquisition, ticket_ref);
+    let entry_planned =
+        entry::acquisition_planned_entry(loaded, &acquisition, ticket_ref, &scan_findings);
     let concrete = build_plan_entries(
         vec![entry_planned],
         &preview_command,
@@ -917,12 +919,15 @@ fn acquire_ticket(
     working_dir: &Path,
     config_override: Option<&Path>,
     loaded: &mut crate::project::LoadedProject,
+    scan_result: &libagent::ScanResult,
     ticket_ref: &libagent::TicketRef,
     identity: &libagent::ResolvedForgeIdentity,
     agent_command: &[String],
 ) -> Result<(String, libagent::ScanResult), RunError> {
     let acquisition = entry::acquisition_surface(loaded).map_err(RunError::from)?;
-    let entry_planned = entry::acquisition_planned_entry(loaded, &acquisition, ticket_ref);
+    let scan_findings = libagent::collect_scan_findings(scan_result, &loaded.workspace_dir);
+    let entry_planned =
+        entry::acquisition_planned_entry(loaded, &acquisition, ticket_ref, &scan_findings);
     let config_path = crate::project::resolve_config(working_dir, config_override)
         .map_err(CommandError::from)
         .map_err(StepError::from)

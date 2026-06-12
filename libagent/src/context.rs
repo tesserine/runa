@@ -5,6 +5,7 @@
 //! delivered to agents during `runa step`. [`build_context`] gathers the
 //! artifacts; [`render_context_prompt`] turns the context into prose.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -142,6 +143,29 @@ pub fn build_context(
         },
         entry: None,
     }
+}
+
+/// Build the agent-facing context for execution, withholding untrusted optional
+/// inputs.
+///
+/// Like [`build_context`], but `accepts` inputs whose artifact type is in
+/// `affected_types` (changed or only partially scanned this cycle) are dropped —
+/// the agent must not act on optional context that may be stale or incomplete.
+/// Required (`requires`) inputs are always retained. This is the single context
+/// builder for every execution surface (`step`, session ticks, and ticket
+/// entry) so the trust filter cannot be applied inconsistently.
+pub fn build_execution_context(
+    protocol: &ProtocolDeclaration,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+    affected_types: &HashSet<String>,
+) -> ContextInjection {
+    let mut context = build_context(protocol, store, work_unit);
+    context.inputs.retain(|input| {
+        input.relationship == ArtifactRelationship::Requires
+            || !affected_types.contains(input.artifact_type.as_str())
+    });
+    context
 }
 
 /// Render the agent-facing context as natural language prose.
@@ -355,6 +379,76 @@ mod tests {
     use crate::test_helpers::make_store;
     use serde_json::json;
     use std::path::Path;
+
+    fn require_accept_protocol() -> ProtocolDeclaration {
+        ProtocolDeclaration {
+            name: "implement".into(),
+            requires: vec!["constraints".into()],
+            accepts: vec!["notes".into()],
+            produces: Vec::new(),
+            may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
+            scoped: false,
+            trigger: crate::TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+            instructions: None,
+        }
+    }
+
+    #[test]
+    fn build_execution_context_withholds_accepts_from_affected_types() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["constraints", "notes"]);
+        store
+            .record(
+                "constraints",
+                "spec",
+                Path::new("c.json"),
+                &json!({"title": "c"}),
+            )
+            .unwrap();
+        store
+            .record("notes", "n", Path::new("n.json"), &json!({"title": "n"}))
+            .unwrap();
+        let protocol = require_accept_protocol();
+
+        // `notes` is untrusted this cycle: the optional input is withheld, the
+        // required `constraints` input is always kept.
+        let affected = HashSet::from(["notes".to_string()]);
+        let context = build_execution_context(&protocol, &store, None, &affected);
+        let types: Vec<&str> = context
+            .inputs
+            .iter()
+            .map(|input| input.artifact_type.as_str())
+            .collect();
+        assert_eq!(types, vec!["constraints"]);
+
+        // With nothing affected, the optional input is delivered.
+        let context = build_execution_context(&protocol, &store, None, &HashSet::new());
+        assert_eq!(context.inputs.len(), 2);
+    }
+
+    #[test]
+    fn build_execution_context_retains_required_input_even_when_affected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["constraints", "notes"]);
+        store
+            .record(
+                "constraints",
+                "spec",
+                Path::new("c.json"),
+                &json!({"title": "c"}),
+            )
+            .unwrap();
+        let protocol = require_accept_protocol();
+
+        // A required input is never withheld, even from an affected type.
+        let affected = HashSet::from(["constraints".to_string()]);
+        let context = build_execution_context(&protocol, &store, None, &affected);
+        assert_eq!(context.inputs.len(), 1);
+        assert_eq!(context.inputs[0].artifact_type, "constraints");
+    }
 
     #[test]
     fn build_context_collects_required_and_accepted_inputs() {

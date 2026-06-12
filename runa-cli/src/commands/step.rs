@@ -8,9 +8,7 @@ use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
 use std::thread;
 
 use libagent::ExecutionRecord;
-use libagent::context::{
-    ArtifactRelationship, ContextInjection, ContextInjectionView, render_context_prompt,
-};
+use libagent::context::{ContextInjection, ContextInjectionView, render_context_prompt};
 use serde::{Serialize, Serializer};
 use tracing::{info, warn};
 
@@ -213,7 +211,8 @@ impl StepError {
             StepError::TicketReference(err) => match err {
                 libagent::EntryError::InvalidReference { .. }
                 | libagent::EntryError::MissingDeploymentIdentity { .. }
-                | libagent::EntryError::DeploymentDisagreement { .. } => ExitCode::UsageError,
+                | libagent::EntryError::DeploymentDisagreement { .. }
+                | libagent::EntryError::UnsupportedForge { .. } => ExitCode::UsageError,
                 libagent::EntryError::Unresolved { .. } => ExitCode::WorkFailed,
                 libagent::EntryError::NoAcquisitionSurface { .. }
                 | libagent::EntryError::AmbiguousAcquisitionSurface { .. } => {
@@ -379,17 +378,12 @@ pub(crate) fn build_execution_plan(
             let protocol = protocol_map
                 .get(entry.name.as_str())
                 .expect("planned protocol must exist in manifest");
-            let mut context = libagent::context::build_context(
+            let context = libagent::context::build_execution_context(
                 protocol,
                 &loaded.store,
                 entry.work_unit.as_deref(),
+                &scan_findings.affected_types,
             );
-            context.inputs.retain(|input| {
-                input.relationship == ArtifactRelationship::Requires
-                    || !scan_findings
-                        .affected_types
-                        .contains(input.artifact_type.as_str())
-            });
             PlannedEntry {
                 protocol: entry.name.clone(),
                 work_unit: entry.work_unit.clone(),

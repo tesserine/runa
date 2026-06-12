@@ -74,6 +74,9 @@ pub enum EntryError {
     NoAcquisitionSurface { scoped_producers: Vec<String> },
     /// More than one unscoped protocol declares the `work-unit` artifact.
     AmbiguousAcquisitionSurface { candidates: Vec<String> },
+    /// A bare reference cannot inherit an active forge type that is neither
+    /// `github` nor `sourcehut`.
+    UnsupportedForge { forge_type: String },
     /// Acquisition completed its contract but materialized no matching work-unit.
     Unresolved { reference: String },
 }
@@ -114,6 +117,10 @@ impl fmt::Display for EntryError {
                 f,
                 "more than one unscoped protocol produces '{WORK_UNIT_ARTIFACT_TYPE}' ({}); cold-start ticket entry requires a single acquisition surface",
                 candidates.join(", ")
+            ),
+            EntryError::UnsupportedForge { forge_type } => write!(
+                f,
+                "active forge type '{forge_type}' is not supported for a bare ticket reference; use an explicit 'owner/repo#N' (github) or 'sourcehut:<tracker_id>#N' form, or set a supported RUNA_FORGE_TYPE"
             ),
             EntryError::Unresolved { reference } => write!(
                 f,
@@ -237,16 +244,19 @@ fn bind_reference_identity(
             Ok(sourcehut_ticket(tracker_id, number))
         }
         AssertedForge::None => match identity.forge_type.as_str() {
+            "github" => {
+                let owner = require_atom(identity.owner.as_deref(), "RUNA_FORGE_OWNER")?;
+                let name = require_atom(identity.name.as_deref(), "RUNA_FORGE_NAME")?;
+                Ok(github_ticket(owner, name, number))
+            }
             "sourcehut" => {
                 let tracker_id =
                     require_atom(identity.tracker_id.as_deref(), "RUNA_FORGE_TRACKER_ID")?;
                 Ok(sourcehut_ticket(tracker_id, number))
             }
-            _ => {
-                let owner = require_atom(identity.owner.as_deref(), "RUNA_FORGE_OWNER")?;
-                let name = require_atom(identity.name.as_deref(), "RUNA_FORGE_NAME")?;
-                Ok(github_ticket(owner, name, number))
-            }
+            other => Err(EntryError::UnsupportedForge {
+                forge_type: other.to_string(),
+            }),
         },
     }
 }
@@ -515,6 +525,22 @@ mod tests {
             EntryError::MissingDeploymentIdentity {
                 variable: "RUNA_FORGE_OWNER"
             }
+        ));
+    }
+
+    #[test]
+    fn bare_reference_on_unsupported_forge_is_rejected() {
+        // A typo or future custom forge type must not silently bind as GitHub.
+        let identity = ResolvedForgeIdentity {
+            forge_type: "gitlab".to_string(),
+            owner: Some("tesserine".to_string()),
+            name: Some("runa".to_string()),
+            tracker_id: None,
+        };
+
+        assert!(matches!(
+            resolve_ticket_reference("14", &identity),
+            Err(EntryError::UnsupportedForge { forge_type }) if forge_type == "gitlab"
         ));
     }
 

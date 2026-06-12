@@ -8,7 +8,9 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use libagent::{Config, ProtocolDeclaration, ResolvedForgeIdentity, ScanResult, TicketRef};
+use libagent::{
+    Config, ProtocolDeclaration, ResolvedForgeIdentity, ScanFindings, ScanResult, TicketRef,
+};
 
 use crate::commands::CommandError;
 use crate::commands::step::{PlannedEntry, StepError, resolved_runtime_env};
@@ -76,13 +78,20 @@ pub(crate) fn promised_scope_token(ticket: &TicketRef) -> String {
 ///
 /// The entry's trigger is the ticket reference; its context carries the
 /// reference (and nothing of the ticket's content) plus the acquisition
-/// protocol's own instructions and inputs.
+/// protocol's own instructions and inputs — withholding optional inputs from
+/// untrusted (changed or partially scanned) types, exactly as normal execution.
 pub(crate) fn acquisition_planned_entry(
     loaded: &LoadedProject,
     acquisition: &ProtocolDeclaration,
     ticket: &TicketRef,
+    scan_findings: &ScanFindings,
 ) -> PlannedEntry {
-    let mut context = libagent::context::build_context(acquisition, &loaded.store, None);
+    let mut context = libagent::context::build_execution_context(
+        acquisition,
+        &loaded.store,
+        None,
+        &scan_findings.affected_types,
+    );
     context.entry = Some(libagent::context::EntryDelivery {
         reference: ticket.display.clone(),
         ticket_number: ticket.number,

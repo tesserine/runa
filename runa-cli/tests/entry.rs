@@ -499,6 +499,87 @@ fn setup_acquisition_only_project(dir: &Path) -> PathBuf {
     project_dir
 }
 
+/// The acquisition optionally accepts `notes`; the ticket entry must withhold it
+/// when its type is untrusted.
+const ACCEPTS_NOTES_MANIFEST: &str = r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "notes"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[protocols]]
+name = "decompose"
+accepts = ["notes"]
+produces = ["work-unit"]
+scoped = false
+trigger = { type = "on_artifact", name = "work-unit" }
+"#;
+
+fn setup_accepts_notes_entry_project(dir: &Path) -> PathBuf {
+    let manifest_path = common::write_methodology(
+        dir,
+        ACCEPTS_NOTES_MANIFEST,
+        &[
+            (
+                "notes",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "work-unit",
+                r#"{"type":"object","required":["title","handle"],"properties":{"title":{"type":"string"},"handle":{"type":"object"}}}"#,
+            ),
+        ],
+        &["decompose"],
+    );
+    let project_dir = dir.join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    common::append_github_forge_config(&project_dir, "tesserine", "runa");
+    project_dir
+}
+
+#[test]
+fn run_ticket_dry_run_withholds_accepts_from_partially_scanned_type() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_accepts_notes_entry_project(dir.path());
+    // A valid `notes` exists, but an unreadable sibling leaves the type only
+    // partially scanned (untrusted).
+    let notes_dir = project_dir.join(".runa/workspace/notes");
+    fs::create_dir_all(&notes_dir).unwrap();
+    fs::write(notes_dir.join("good.json"), r#"{"title":"good"}"#).unwrap();
+    let unreadable = notes_dir.join("hidden.json");
+    fs::write(&unreadable, r#"{"title":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("run")
+        .arg("--ticket")
+        .arg("#14")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let acquisition = &value["execution_plan"][0];
+    assert_eq!(acquisition["protocol"], "decompose");
+    // The optional `notes` input is from an untrusted type and must be withheld.
+    let inputs = acquisition["context"]["inputs"].as_array().unwrap();
+    assert!(
+        inputs.iter().all(|input| input["artifact_type"] != "notes"),
+        "untrusted accepted input was exposed: {value:#}"
+    );
+}
+
 #[test]
 fn run_ticket_reports_success_when_acquisition_is_the_only_work() {
     let dir = tempfile::tempdir().unwrap();
