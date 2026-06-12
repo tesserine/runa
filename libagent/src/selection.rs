@@ -317,6 +317,29 @@ fn trigger_artifact_types<'a>(condition: &'a TriggerCondition, out: &mut HashSet
     }
 }
 
+/// Decide whether a protocol's outputs are *current* — the suppression
+/// that turns an already-satisfied protocol into output-current WAITING
+/// instead of reopening it.
+///
+/// Invariants, in evaluation order:
+///
+/// - A protocol that produces nothing is never current: it stays
+///   re-runnable by design.
+/// - A scan gap touching any produced (or present may-produce, or
+///   required-choice) type defeats currentness: if the store cannot vouch
+///   for the outputs, suppression would hide work behind unverifiable
+///   state.
+/// - With a persisted execution record, currentness is **input-set
+///   equality**: the snapshot of (instance id, content hash) pairs taken
+///   at execution time, recomputed under the record's own per-type input
+///   modes, must match exactly. Timestamps are irrelevant on this path —
+///   outputs stay current even when input mtimes churn without content
+///   change, and go stale the moment the input *set* differs.
+/// - Without a record (state predating execution records), currentness
+///   falls back to timestamps: every freshness input's latest modification
+///   must not postdate the derived completion timestamp. This path uses
+///   the conservative `AnyRecorded`-leaning modes from
+///   [`protocol_freshness_inputs`].
 fn protocol_is_current(
     protocol: &ProtocolDeclaration,
     store: &ArtifactStore,
@@ -385,6 +408,10 @@ fn protocol_is_current(
         .is_none_or(|latest_input| latest_input <= output_timestamp)
 }
 
+/// Merge a freshness mode for an artifact type that may appear under
+/// several edges. `AnyRecorded` always wins: if any edge is sensitive to
+/// invalid or malformed instances, narrowing to `ValidOnly` would let an
+/// invalid-input arrival go unnoticed by freshness.
 fn record_freshness_input(
     freshness_inputs: &mut HashMap<String, FreshnessInputMode>,
     artifact_type: &str,
@@ -400,6 +427,11 @@ fn record_freshness_input(
         .or_insert(mode);
 }
 
+/// Snapshot the current input set — ordered (instance id, content hash)
+/// pairs per artifact type, filtered by each type's input mode. Equality
+/// of two snapshots is the definition of output currentness on the
+/// execution-record path of [`protocol_is_current`]; determinism of the
+/// ordering is what makes that equality meaningful.
 pub(crate) fn execution_input_snapshot_for_freshness_inputs<'a, I>(
     store: &ArtifactStore,
     freshness_inputs: I,
@@ -465,6 +497,10 @@ fn trigger_freshness_inputs(
     }
 }
 
+/// Freshness inputs for the *timestamp fallback* path: every trigger and
+/// requires type at `AnyRecorded`. Without an execution record there is no
+/// per-execution mode evidence, so the fallback errs toward reopening —
+/// any recorded activity, valid or not, can defeat currentness.
 pub(crate) fn protocol_freshness_inputs(
     protocol: &ProtocolDeclaration,
 ) -> HashMap<String, FreshnessInputMode> {
@@ -480,6 +516,12 @@ pub(crate) fn protocol_freshness_inputs(
     freshness_inputs
 }
 
+/// Collect the input modes persisted into an execution record, from the
+/// *satisfied* trigger branches only. Mode assignment is the subtle part:
+/// `on_artifact` is satisfied by valid instances, so it snapshots
+/// `ValidOnly`; `on_change` and `on_invalid` are sensitive to any recorded
+/// state, so they snapshot `AnyRecorded`. Unsatisfied branches contributed
+/// nothing to this execution and are excluded from its freshness identity.
 pub(crate) fn collect_satisfied_execution_record_inputs<F>(
     condition: &TriggerCondition,
     out: &mut HashMap<String, FreshnessInputMode>,
@@ -506,6 +548,10 @@ pub(crate) fn collect_satisfied_execution_record_inputs<F>(
     }
 }
 
+/// Input modes recorded at execution time: satisfied trigger branches per
+/// [`collect_satisfied_execution_record_inputs`], plus every `requires`
+/// type at `ValidOnly` (requires inputs are guaranteed valid when
+/// delivered, so only the valid set defines this execution's identity).
 pub(crate) fn protocol_execution_record_inputs(
     protocol: &ProtocolDeclaration,
     store: &ArtifactStore,

@@ -143,8 +143,8 @@ READY:
 
 Runa is the enforcement layer in a larger agent toolchain:
 
-- [**agentd**](https://github.com/pentaxis93/agentd) — a process runtime that orchestrates autonomous agents through runa-managed workflows.
-- [**groundwork**](https://github.com/pentaxis93/groundwork) — a methodology plugin that provides protocols and artifact types for runa.
+- [**agentd**](https://github.com/tesserine/agentd) — a process runtime that orchestrates autonomous agents through runa-managed workflows.
+- [**groundwork**](https://github.com/tesserine/groundwork) — a methodology plugin that provides protocols and artifact types for runa.
 
 Both projects are in early development.
 
@@ -154,11 +154,12 @@ Both projects are in early development.
 - [Methodology Authoring Guide](docs/methodology-authoring-guide.md) — Building a first methodology from scratch
 - [Interface Contract](docs/interface-contract.md) — The three primitives defining the methodology-runtime boundary
 - [Session Surface Contract](docs/session-surface-contract.md) — The mode-agnostic driver/agent boundary for session invocation and lifecycle movement
+- [Security and Safety Surface](docs/security.md) — Index of guarantees: path safety, validate-before-write, ticket-content blindness, redaction, and where each is enforced
 - [Architecture](ARCHITECTURE.md) — Workspace structure, data flow, module descriptions, disk layout
 - [Contributing](CONTRIBUTING.md) — Conventions for landing PRs
 - [Releasing](RELEASING.md) — Repository release operation and verification
 - [Quickstart Example](examples/quickstart-methodology/) — A two-protocol review pipeline you can browse and run
-- [Commons](https://github.com/tesserine/commons) — Shared governance for the ecosystem: bedrock principles, design principles, and architectural decision records. All development on runa follows commons as active guidelines, not optional reading
+- [Commons](https://github.com/tesserine/commons) — The ecosystem's convention and ADR authority: cross-component contracts, release conventions, and the [source-of-truth map](https://github.com/tesserine/commons/blob/main/SOURCE-OF-TRUTH.md). The principles themselves live at their canonical home, [pentaxis93/principles](https://github.com/pentaxis93/principles). All development on runa follows both as active guidelines, not optional reading
 
 ## Commands
 

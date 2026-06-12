@@ -9,6 +9,47 @@ Semantic Versioning.
 
 ### Added
 
+- README ecosystem links corrected: commons described as the
+  convention/ADR authority with principles at their canonical home
+  `pentaxis93/principles` (#181), and the agentd/groundwork links moved to
+  the `tesserine` org.
+- `docs/security.md` — consolidated index of runa's security guarantees
+  (previously scattered across four documents), each mapped to its
+  enforcement site and authoritative specification.
+- `CONTRIBUTING.md` test map: where unit, CLI-integration, MCP, and
+  docs-coherence gates live.
+- The quickstart methodology README now walks the full
+  scan → READY → produce loop without requiring an agent: entry artifact,
+  cascade advance on artifact appearance, quiescence, and freshness-driven
+  reopening — verified against the built binary.
+- The `commons_exit_codes_match_specification` test now verifies the
+  `ExitCode` enum against a vendored copy of the commons exit-code table
+  (`runa-cli/tests/fixtures/commons-exit-codes.json`, provenance-pinned to
+  commons `v0.3.0-rc.1`) instead of re-stated literals, making the
+  commons-conformance claim in its name mechanically true. The enum carries
+  a `canonical: commons/EXIT-CODES.md` back-reference.
+- `RELEASING.md` Tooling Provenance section and a `scripts/release-check`
+  provenance header: the script is runa-owned, the ceremony convention is
+  canonical in commons, and no repo is the tooling upstream.
+
+### Fixed
+
+- Invariant-bearing modules now document their invariants at the code:
+  `session.rs` opens with the session state-machine contract (state derives
+  from artifacts, single current step, transactional `advance`,
+  session-scoped exhaustion, promised-scope single step) referencing the
+  session surface contract; `scoped_identity.rs` opens with the scope
+  identity invariants referencing the interface contract; `selection.rs`
+  documents the freshness/currentness machinery — input-set equality on
+  the execution-record path, the timestamp fallback, and the
+  `AnyRecorded`-wins mode merge.
+- `ARCHITECTURE.md` documented the `step --json` envelope version as `4`;
+  the code emits `5`. The doc now matches, and a workspace-contract test
+  asserts code, `ARCHITECTURE.md`, and `docs/cli-reference.md` agree so the
+  envelope version cannot silently drift again.
+
+### Added
+
 - Cold-start ticket entry: `runa run --ticket <REF>` and `runa go --ticket <REF>`
   open a scoped session from a forge ticket reference (a bare number, `#<N>`,
   `owner/repo#<N>`, a GitHub issue URL, or `sourcehut:<tracker_id>#<N>`) when no

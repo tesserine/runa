@@ -1,0 +1,21 @@
+{
+  "$comment": "Vendored copy of the application-defined exit-code table from commons/EXIT-CODES.md. runa vendors it so the exit_codes.rs conformance test verifies against the commons contract rather than against re-stated literals. When commons changes the table, re-vendor with updated provenance; drift between this copy and its declared canonical is a review-time governance failure (commons ADR-0005 pattern).",
+  "x-tesserine-canonical": {
+    "doc_url": "https://raw.githubusercontent.com/tesserine/commons/v0.3.0-rc.1/EXIT-CODES.md",
+    "commons_ref": "v0.3.0-rc.1"
+  },
+  "application_defined": {
+    "success": 0,
+    "generic_failure": 1,
+    "usage_error": 2,
+    "blocked": 3,
+    "nothing_ready": 4,
+    "work_failed": 5,
+    "infrastructure_failure": 6
+  },
+  "reserved_external": {
+    "command_not_executable": 126,
+    "command_not_found": 127,
+    "terminated_by_signal": "128+N"
+  }
+}

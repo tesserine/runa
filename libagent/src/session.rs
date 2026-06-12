@@ -1,3 +1,37 @@
+//! Scoped session state machine: one work unit, one current step, and
+//! `advance` as a single transactional operation.
+//!
+//! Governing contract: [`docs/session-surface-contract.md`] — this module
+//! is the inner cascade behind the one operator verb, *advance the session
+//! by one step* (commons ADR-0015: mode is a property of the session).
+//! Drivers — `runa go`, the `runa-mcp` session mode — are clients of this
+//! state machine; no driver reimplements readiness, context delivery, or
+//! transition authority.
+//!
+//! Invariants:
+//!
+//! - **State derives from artifacts, never from driver assertion.** Every
+//!   lifecycle operation (`open*`, `readiness`, `next_context`, `advance`)
+//!   reconciles against a real workspace scan before acting; a driver
+//!   cannot move the session by claiming a state.
+//! - **One current step.** The session holds at most one
+//!   `(protocol, work_unit)` pair; an empty session lets readiness select
+//!   the first ready step.
+//! - **`advance` is one operation:** rescan, enforce the current step's
+//!   postconditions, stage its execution record (the freshness snapshot
+//!   `selection.rs` uses for input-set currentness), validate the next
+//!   selected step, then persist and move. A postcondition failure leaves
+//!   the session on the current step with no transition.
+//! - **Exhaustion is session-scoped.** Failed candidates are skipped for
+//!   the lifetime of this `SessionState` only; nothing about failure is
+//!   persisted as artifact state.
+//! - **Promised scope admits exactly one step.** A session opened from a
+//!   ticket reference (`SessionScope::Promised`) can only run the
+//!   methodology's acquisition surface until the work-unit materializes
+//!   and the scope binds.
+//!
+//! [`docs/session-surface-contract.md`]: https://github.com/tesserine/runa/blob/main/docs/session-surface-contract.md
+
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};

@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# runa-owned implementation of the Tesserine release ceremony.
+# Convention canonical: commons RELEASE.md + ADR-0006/0011/0012
+# (https://github.com/tesserine/commons). This script verifies runa's own
+# release surface. Sibling implementations in agentd, base, commons, runa,
+# and groundwork share ancestry (commons#21) but are independently owned:
+# no repo is the tooling upstream and fixes do not propagate automatically.
+
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 
