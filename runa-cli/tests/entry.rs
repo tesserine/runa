@@ -134,6 +134,45 @@ fn setup_entry_project(dir: &Path) -> PathBuf {
     project_dir
 }
 
+/// Like `ENTRY_MANIFEST`, but the acquisition declares `work-unit` via
+/// `may_produce` (the groundwork shape) instead of `produces`.
+const MAY_PRODUCE_ENTRY_MANIFEST: &str = r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "claim"
+
+[[protocols]]
+name = "decompose"
+may_produce = ["work-unit"]
+scoped = false
+trigger = { type = "on_artifact", name = "work-unit" }
+
+[[protocols]]
+name = "take"
+requires = ["work-unit"]
+produces = ["claim"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+"#;
+
+fn setup_may_produce_entry_project(dir: &Path) -> PathBuf {
+    let manifest_path = common::write_methodology(
+        dir,
+        MAY_PRODUCE_ENTRY_MANIFEST,
+        entry_schemas(),
+        &["decompose", "take"],
+    );
+    let project_dir = dir.join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    common::append_github_forge_config(&project_dir, "tesserine", "runa");
+    project_dir
+}
+
 /// Drop forge atoms from the inherited environment so the test resolves the
 /// deployment identity from `.runa/config.toml` deterministically.
 fn clear_forge_env(command: &mut Command) -> &mut Command {
@@ -167,6 +206,34 @@ case "$payload" in
     printf 'take\n' >> "$log_file"
     mkdir -p .runa/workspace/claim
     printf '%s\n' '{"work_unit":"work-unit-14-cold-start","scope":"acquired"}' > .runa/workspace/claim/claim-1.json
+    ;;
+  *)
+    printf '%s\n' "$payload" > "$log_file.unexpected"
+    exit 19
+    ;;
+esac
+"####,
+    )
+    .unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    script_path
+}
+
+/// An agent that satisfies `decompose`'s postconditions by producing a valid
+/// work-unit, but for a *different* ticket (number 99), so the promised #14
+/// never binds.
+fn write_mismatched_ticket_agent(dir: &Path) -> PathBuf {
+    let script_path = dir.join("mismatched-agent.sh");
+    fs::write(
+        &script_path,
+        r####"#!/bin/sh
+log_file="$1"
+payload=$(cat)
+case "$payload" in
+  *"# Protocol: decompose"*)
+    printf 'decompose\n' >> "$log_file"
+    mkdir -p .runa/workspace/work-unit
+    printf '%s\n' '{"title":"Other","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/99","number":99}}' > .runa/workspace/work-unit/work-unit-99-other.json
     ;;
   *)
     printf '%s\n' "$payload" > "$log_file.unexpected"
@@ -267,6 +334,69 @@ fn run_ticket_cold_acquires_then_cascades_to_take() {
             .is_file()
     );
     assert!(workspace.join("claim/claim-1.json").is_file());
+}
+
+#[test]
+fn run_ticket_dry_run_projects_take_for_may_produce_acquisition() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_may_produce_entry_project(dir.path());
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("run")
+        .arg("--ticket")
+        .arg("#14")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let plan = value["execution_plan"].as_array().unwrap();
+    // The acquisition declares work-unit via may_produce, yet `take` must still
+    // project on the acquired work-unit.
+    assert_eq!(plan.len(), 2, "{value:#}");
+    assert_eq!(plan[0]["protocol"], "decompose");
+    assert_eq!(plan[1]["protocol"], "take");
+    assert_eq!(plan[1]["work_unit"], "work-unit-14");
+    assert_eq!(plan[1]["projection"], "projected");
+}
+
+#[test]
+fn run_ticket_unresolved_leaves_no_acquisition_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_entry_project(dir.path());
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_mismatched_ticket_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("run")
+        .arg("--ticket")
+        .arg("#14")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    // The acquisition ran and satisfied postconditions, but produced a work-unit
+    // for a different ticket: the entry is unresolved (exit 5)...
+    assert_eq!(output.status.code(), Some(5), "{output:?}");
+    assert_eq!(fs::read_to_string(&log_path).unwrap(), "decompose\n");
+
+    // ...and no execution record claims the acquisition step completed.
+    let records_path = project_dir.join(".runa/store/execution-records.json");
+    if records_path.is_file() {
+        let records = fs::read_to_string(&records_path).unwrap();
+        assert!(
+            !records.contains("decompose"),
+            "stale acquisition record: {records}"
+        );
+    }
 }
 
 #[test]

@@ -957,16 +957,40 @@ fn acquire_ticket(
         "Executed: {} (entry from ticket {})",
         acquisition.name, ticket_ref.display
     );
-    let work_unit = entry::resolve_existing(loaded, identity, ticket_ref)
-        .map_err(RunError::from)?
-        .ok_or_else(|| {
-            RunError::from(StepError::TicketReference(
+    // The acquisition record is persisted; it only stands if the promise binds.
+    // When acquisition satisfied its contract but did not materialize a work-unit
+    // for this ticket, clear the record so no metadata claims the step completed.
+    match entry::resolve_existing(loaded, identity, ticket_ref) {
+        Ok(Some(work_unit)) => Ok((work_unit, post_scan)),
+        Ok(None) => {
+            clear_acquisition_record(loaded, &acquisition.name)?;
+            Err(RunError::from(StepError::TicketReference(
                 libagent::EntryError::Unresolved {
                     reference: ticket_ref.display.clone(),
                 },
-            ))
-        })?;
-    Ok((work_unit, post_scan))
+            )))
+        }
+        Err(error) => {
+            clear_acquisition_record(loaded, &acquisition.name)?;
+            Err(RunError::from(error))
+        }
+    }
+}
+
+fn clear_acquisition_record(
+    loaded: &mut crate::project::LoadedProject,
+    acquisition: &str,
+) -> Result<(), RunError> {
+    loaded
+        .store
+        .clear_execution_record(acquisition, None)
+        .map_err(|source| {
+            RunError::from(StepError::PostExecutionRecord {
+                protocol: acquisition.to_string(),
+                work_unit: None,
+                source,
+            })
+        })
 }
 
 #[cfg(test)]

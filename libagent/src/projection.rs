@@ -182,6 +182,21 @@ pub fn project_entry_cascade(
         acquisition.work_unit.as_deref(),
         execution_record,
     );
+    // discover_acquisition_surface guarantees `work-unit` is an output, but it
+    // may be declared via may_produce or a required choice — which the generic
+    // recording above does not project from a cold store. Seed it explicitly so
+    // the scoped follow-ups (take) project, matching live behavior.
+    if !acquisition_protocol
+        .produces
+        .iter()
+        .any(|artifact_type| artifact_type == crate::entry::WORK_UNIT_ARTIFACT_TYPE)
+    {
+        projection.project_seed_output(
+            &acquisition_key,
+            crate::entry::WORK_UNIT_ARTIFACT_TYPE,
+            acquisition.work_unit.as_deref(),
+        );
+    }
 
     let scope = EvaluationScope::Scoped(promised_scope);
     let mut exhausted = HashSet::from([acquisition_key]);
@@ -531,6 +546,45 @@ impl<'a> ProjectionState<'a> {
         changes
     }
 
+    /// Project a single named output for `producer`, replacing any prior
+    /// projection of the same `(artifact_type, producer, work_unit)`.
+    ///
+    /// Used to seed the acquisition's `work-unit` in entry projection when the
+    /// surface declares it via `may_produce` or a required output choice, which
+    /// [`record_protocol_outputs`](Self::record_protocol_outputs) does not
+    /// project from a cold store.
+    fn project_seed_output(
+        &mut self,
+        producer: &CandidateKey,
+        artifact_type: &str,
+        work_unit: Option<&str>,
+    ) {
+        let scoped_work_unit = work_unit.map(str::to_owned);
+        self.projected_outputs.retain(|output| {
+            !(output.artifact_type == artifact_type
+                && &output.producer == producer
+                && output.work_unit == scoped_work_unit)
+        });
+        let timestamp_ms = self.next_timestamp_ms;
+        self.projected_outputs.push(ProjectedOutput {
+            artifact_type: artifact_type.to_string(),
+            work_unit: scoped_work_unit,
+            producer: producer.clone(),
+            input: ExecutionInput {
+                instance_id: projected_instance_id(producer, artifact_type),
+                content_hash: raw_content_hash(
+                    format!(
+                        "{}:{}:{:?}:{}",
+                        producer.protocol_name, artifact_type, producer.work_unit, timestamp_ms
+                    )
+                    .as_bytes(),
+                ),
+            },
+            timestamp_ms,
+        });
+        self.next_timestamp_ms += 1;
+    }
+
     fn projected_protocol_output_types(
         &self,
         protocol: &ProtocolDeclaration,
@@ -814,6 +868,114 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn entry_cascade_projects_take_when_acquisition_uses_may_produce() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp.path().join("store"), vec!["work-unit", "claim"]);
+
+        // The acquisition declares work-unit via may_produce (the groundwork
+        // shape), which generic output recording does not project.
+        let mut decompose = protocol(
+            "decompose",
+            &[],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        decompose.may_produce = vec!["work-unit".into()];
+        let mut take = protocol(
+            "take",
+            &["work-unit"],
+            &["claim"],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        take.scoped = true;
+        let protocols = vec![decompose, take];
+
+        let plan = project_entry_cascade(
+            &protocols,
+            &store,
+            &["decompose", "take"],
+            &Candidate {
+                protocol_name: "decompose".into(),
+                work_unit: None,
+            },
+            "work-unit-14",
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            plan,
+            vec![
+                ProjectionCandidate {
+                    protocol_name: "decompose".into(),
+                    work_unit: None,
+                    projection: ProjectionClass::Current,
+                },
+                ProjectionCandidate {
+                    protocol_name: "take".into(),
+                    work_unit: Some("work-unit-14".into()),
+                    projection: ProjectionClass::Projected,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn entry_cascade_projects_take_when_acquisition_uses_required_choice() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(
+            &tmp.path().join("store"),
+            vec!["work-unit", "deferral", "claim"],
+        );
+
+        // The acquisition declares work-unit via a required output choice; no
+        // member is recorded cold, so generic recording projects nothing.
+        let mut decompose = protocol(
+            "decompose",
+            &[],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        decompose.required_output_choices = vec![RequiredOutputChoice {
+            name: "delivery".into(),
+            members: vec!["work-unit".into(), "deferral".into()],
+        }];
+        let mut take = protocol(
+            "take",
+            &["work-unit"],
+            &["claim"],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        take.scoped = true;
+        let protocols = vec![decompose, take];
+
+        let plan = project_entry_cascade(
+            &protocols,
+            &store,
+            &["decompose", "take"],
+            &Candidate {
+                protocol_name: "decompose".into(),
+                work_unit: None,
+            },
+            "work-unit-14",
+            &HashSet::new(),
+        );
+
+        assert_eq!(plan.len(), 2, "{plan:?}");
+        assert_eq!(plan[0].protocol_name, "decompose");
+        assert_eq!(plan[1].protocol_name, "take");
+        assert_eq!(plan[1].work_unit.as_deref(), Some("work-unit-14"));
+        assert_eq!(plan[1].projection, ProjectionClass::Projected);
     }
 
     #[test]

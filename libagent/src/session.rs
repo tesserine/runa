@@ -164,6 +164,7 @@ pub struct SessionTransition<T> {
 /// surface, evaluated unscoped — and resolves to a `Bound` scope when that step
 /// materializes the work-unit. Downstream of binding the two are
 /// indistinguishable.
+#[derive(Clone)]
 enum SessionScope {
     Bound(String),
     Promised {
@@ -468,10 +469,15 @@ impl SessionState {
 
         // A promised scope binds here: acquisition has produced the work-unit,
         // and the session becomes an ordinary bound scoped session for the next
-        // step. On failure the staged execution record is restored.
+        // step. Binding must precede selection (select_next needs the bound
+        // scope to find the next scoped step), so capture the prior scope and
+        // restore it — along with the staged execution record — on any failure,
+        // leaving a retried tick still representing the promised entry.
+        let previous_scope = self.scope.clone();
         if matches!(self.scope, SessionScope::Promised { .. })
             && let Err(error) = self.bind_promise()
         {
+            // bind_promise mutates scope only on success, so no scope restore.
             self.loaded.store.restore_execution_record(
                 &completed_step.protocol,
                 completed_step.work_unit.as_deref(),
@@ -494,6 +500,7 @@ impl SessionState {
                     completed_step.work_unit.as_deref(),
                     previous_record,
                 );
+                self.scope = previous_scope;
                 return Err(error);
             }
         };
@@ -505,6 +512,7 @@ impl SessionState {
                     completed_step.work_unit.as_deref(),
                     previous_record,
                 );
+                self.scope = previous_scope;
                 return Err(error);
             }
         };
@@ -514,6 +522,7 @@ impl SessionState {
                 completed_step.work_unit.as_deref(),
                 previous_record,
             );
+            self.scope = previous_scope;
             return Err(SessionError::Record(error));
         }
 
@@ -1020,6 +1029,45 @@ trigger = {{ type = "on_artifact", name = "work-unit" }}
             Some("take")
         );
         assert!(matches!(session.scope, SessionScope::Bound(_)));
+    }
+
+    #[test]
+    fn advance_restores_promised_scope_when_post_bind_commit_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = write_entry_project(dir.path(), false);
+        let mut session =
+            SessionState::open_entry(project_dir.clone(), None, ticket_14(), |_, _| Ok(()))
+                .unwrap();
+
+        // Acquisition materializes the work-unit, so bind_promise succeeds; the
+        // selector then fails, exercising a post-bind rollback path.
+        write_acquired_work_unit(&project_dir.join(".runa/workspace"));
+
+        let advance = session.advance_with_selector_and_validator(
+            |_session, _evaluated, _scan_findings, _exhausted| {
+                Err(SessionError::CurrentStepMissing("synthetic".to_string()))
+            },
+            |_next_protocol, _store| Ok(()),
+        );
+
+        assert!(advance.is_err(), "advance unexpectedly succeeded");
+        // The promised scope must be restored, not left bound, so a retried tick
+        // still represents the entry.
+        assert!(
+            matches!(session.scope, SessionScope::Promised { .. }),
+            "scope was not restored to Promised after a failed commit"
+        );
+        assert_eq!(
+            session.current_step().map(|step| step.protocol.as_str()),
+            Some("decompose")
+        );
+        assert!(
+            session
+                .store()
+                .execution_record("decompose", None)
+                .is_none()
+        );
+        assert_no_execution_record(&project_dir, "decompose");
     }
 
     #[test]
