@@ -5,14 +5,44 @@
 //! the acquisition step the runtime serves. All forge identity logic lives in
 //! libagent; this module only adapts it to the CLI's plan/execution types.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use libagent::{Config, ProtocolDeclaration, ResolvedForgeIdentity, ScanFindings, TicketRef};
+use libagent::{
+    Config, ProtocolDeclaration, ResolvedForgeIdentity, ScanFindings, ScanResult, TicketRef,
+};
 
 use crate::commands::CommandError;
 use crate::commands::step::{PlannedEntry, StepError, resolved_runtime_env};
 use crate::project::LoadedProject;
+
+/// Why a cold-start acquisition cannot be served, if it cannot.
+///
+/// Entry substitutes only the acquisition's trigger; its `requires`
+/// preconditions and scan-trust gates still apply, exactly as normal readiness
+/// would block a protocol. Returns `None` when the acquisition is servable.
+pub(crate) fn acquisition_block_reason(
+    loaded: &LoadedProject,
+    acquisition: &ProtocolDeclaration,
+    scan_result: &ScanResult,
+) -> Option<String> {
+    if let Err(error) = libagent::enforce_preconditions(acquisition, &loaded.store, None) {
+        return Some(error.to_string());
+    }
+    let partially_scanned: HashSet<String> = scan_result
+        .partially_scanned_types
+        .iter()
+        .map(|partial| partial.artifact_type.clone())
+        .collect();
+    let incomplete = libagent::protocol_scan_incomplete_types(acquisition, &partially_scanned);
+    if !incomplete.is_empty() {
+        return Some(format!(
+            "acquisition input artifact type(s) {} were only partially scanned",
+            incomplete.join(", ")
+        ));
+    }
+    None
+}
 
 /// Parse and resolve a ticket reference against the project's forge deployment.
 pub(crate) fn resolve_reference(

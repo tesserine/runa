@@ -500,11 +500,11 @@ pub fn run(
             );
         }
         // Entry substitutes only the trigger; the acquisition's preconditions
-        // still gate. Block before launching the agent when they are unmet.
+        // and scan trust still gate. Block before launching the agent when unmet.
         let acquisition = entry::acquisition_surface(&loaded).map_err(RunError::from)?;
-        if let Err(blocked) = libagent::enforce_preconditions(&acquisition, &loaded.store, None) {
+        if let Some(reason) = entry::acquisition_block_reason(&loaded, &acquisition, &scan_result) {
             println!("Run outcome: {}", RunOutcome::QuiescentBlocked.label());
-            println!("{blocked}");
+            println!("{reason}");
             return Ok(RunOutcome::QuiescentBlocked);
         }
         let agent_command = resolve_agent_command(
@@ -761,12 +761,10 @@ fn run_ticket_dry_run(
     json_output: bool,
 ) -> Result<RunOutcome, RunError> {
     let acquisition = entry::acquisition_surface(loaded).map_err(RunError::from)?;
-    // Entry substitutes only the trigger; the acquisition's preconditions still
-    // gate. When they are unmet the cascade projects nothing and the outcome is
-    // blocked.
-    let precondition_failure = libagent::enforce_preconditions(&acquisition, &loaded.store, None)
-        .err()
-        .map(|error| error.to_string());
+    // Entry substitutes only the trigger; the acquisition's preconditions and
+    // scan trust still gate. When unmet the cascade projects nothing and the
+    // outcome is blocked.
+    let block_reason = entry::acquisition_block_reason(loaded, &acquisition, scan_result);
     let scan_findings = libagent::collect_scan_findings(scan_result, &loaded.workspace_dir);
     let config_path = crate::project::resolve_config(working_dir, config_override)
         .map_err(CommandError::from)
@@ -879,7 +877,7 @@ fn run_ticket_dry_run(
             ticket_ref.display, acquisition.name
         );
         println!();
-        if let Some(reason) = &precondition_failure {
+        if let Some(reason) = &block_reason {
             println!("Execution plan: none (acquisition blocked)");
             println!();
             println!("{reason}");
@@ -902,7 +900,7 @@ fn run_ticket_dry_run(
         }
     }
 
-    if precondition_failure.is_some() {
+    if block_reason.is_some() {
         Ok(RunOutcome::QuiescentBlocked)
     } else {
         Ok(RunOutcome::AllComplete)

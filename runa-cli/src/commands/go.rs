@@ -80,9 +80,11 @@ fn run_ticket(
     config_override: Option<&Path>,
     ticket: &str,
 ) -> Result<StepOutcome, StepError> {
-    let (loaded, _scan_result) = super::load_and_scan(working_dir, config_override)?;
+    let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
     let (ticket_ref, identity) = entry::resolve_reference(&loaded, ticket)?;
 
+    // Re-entry (the work-unit already exists) degrades to a bound session and
+    // needs no acquisition surface — resolve before discovering it.
     if let Some(work_unit) = entry::resolve_existing(&loaded, &identity, &ticket_ref)? {
         println!(
             "Ticket {} resolves to recorded work-unit {work_unit}",
@@ -93,9 +95,9 @@ fn run_ticket(
 
     let acquisition = entry::acquisition_surface(&loaded)?;
 
-    // Entry substitutes only the trigger; the acquisition's preconditions still
-    // gate. Block before launching the agent when they are unmet.
-    if libagent::enforce_preconditions(&acquisition, &loaded.store, None).is_err() {
+    // Entry substitutes only the trigger; the acquisition's preconditions and
+    // scan trust still gate. Block before launching the agent when unmet.
+    if entry::acquisition_block_reason(&loaded, &acquisition, &scan_result).is_some() {
         println!("No READY protocols.");
         return Ok(StepOutcome::Blocked);
     }

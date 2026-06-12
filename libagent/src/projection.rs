@@ -159,13 +159,16 @@ pub fn project_entry_cascade(
     let Some(acquisition_protocol) = protocol_map.get(acquisition.protocol_name.as_str()) else {
         return plan;
     };
-    // Entry substitutes only the trigger; preconditions still gate. When the
-    // acquisition's requires are unmet, nothing projects from it.
+    // Entry substitutes only the trigger; preconditions and scan trust still
+    // gate. When the acquisition's requires are unmet or an input type was only
+    // partially scanned, nothing projects from it.
     if !preconditions_satisfied(
         acquisition_protocol,
         &projection,
         acquisition.work_unit.as_deref(),
-    ) {
+    ) || !protocol_scan_incomplete_types(acquisition_protocol, partially_scanned_types)
+        .is_empty()
+    {
         return plan;
     }
     let acquisition_key =
@@ -976,6 +979,60 @@ mod tests {
         assert_eq!(plan[1].protocol_name, "take");
         assert_eq!(plan[1].work_unit.as_deref(), Some("work-unit-14"));
         assert_eq!(plan[1].projection, ProjectionClass::Projected);
+    }
+
+    #[test]
+    fn entry_cascade_projects_nothing_when_acquisition_input_partially_scanned() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("store"),
+            vec!["request", "work-unit", "claim"],
+        );
+        // A valid request exists, so preconditions are satisfied...
+        store
+            .record(
+                "request",
+                "good",
+                Path::new("good.json"),
+                &json!({"title":"good"}),
+            )
+            .unwrap();
+
+        let decompose = protocol(
+            "decompose",
+            &["request"],
+            &["work-unit"],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+        let mut take = protocol(
+            "take",
+            &["work-unit"],
+            &["claim"],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        take.scoped = true;
+        let protocols = vec![decompose, take];
+
+        // ...but `request` was only partially scanned, so the acquisition is
+        // untrusted and nothing projects.
+        let partials = HashSet::from(["request".to_string()]);
+        let plan = project_entry_cascade(
+            &protocols,
+            &store,
+            &["decompose", "take"],
+            &Candidate {
+                protocol_name: "decompose".into(),
+                work_unit: None,
+            },
+            "work-unit-14",
+            &partials,
+        );
+
+        assert!(plan.is_empty());
     }
 
     #[test]

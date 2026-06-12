@@ -111,6 +111,32 @@ fn setup_blocked_entry_project(dir: &Path) -> PathBuf {
     project_dir
 }
 
+/// Reuses the `seed`-requiring manifest, but here a valid `seed` satisfies
+/// preconditions and a partial scan (not a missing input) blocks entry.
+fn setup_partial_scan_entry_project(dir: &Path) -> PathBuf {
+    let manifest_path = common::write_methodology(
+        dir,
+        BLOCKED_ENTRY_MANIFEST,
+        blocked_entry_schemas(),
+        &["decompose", "take"],
+    );
+    let project_dir = dir.join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    common::append_github_forge_config(&project_dir, "tesserine", "runa");
+
+    // A valid `seed` satisfies preconditions, but an unreadable sibling under
+    // the same required type leaves it only partially scanned.
+    let seed_dir = project_dir.join(".runa/workspace/seed");
+    fs::create_dir_all(&seed_dir).unwrap();
+    fs::write(seed_dir.join("good.json"), r#"{"title":"good"}"#).unwrap();
+    let unreadable = seed_dir.join("unreadable.json");
+    fs::write(&unreadable, r#"{"title":"hidden"}"#).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+
+    project_dir
+}
+
 fn entry_schemas() -> &'static [(&'static str, &'static str)] {
     &[
         (
@@ -397,6 +423,48 @@ fn run_ticket_unresolved_leaves_no_acquisition_record() {
             "stale acquisition record: {records}"
         );
     }
+}
+
+#[test]
+fn run_ticket_blocks_when_acquisition_input_partially_scanned() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_partial_scan_entry_project(dir.path());
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_entry_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("run")
+        .arg("--ticket")
+        .arg("#14")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    // Preconditions are met (a valid seed exists), but the partial scan makes
+    // the input untrusted: blocked (exit 3), agent never launched.
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(!log_path.exists(), "acquisition agent should not run");
+}
+
+#[test]
+fn go_ticket_blocks_when_acquisition_input_partially_scanned() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_partial_scan_entry_project(dir.path());
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_entry_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("go")
+        .arg("--ticket")
+        .arg("#14")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(!log_path.exists(), "acquisition agent should not run");
 }
 
 #[test]
