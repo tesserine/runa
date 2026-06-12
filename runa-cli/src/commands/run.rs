@@ -483,6 +483,7 @@ pub fn run(
                 loaded,
                 scan_result,
                 Some(work_unit),
+                false,
                 cli_agent_command_present,
                 cli_agent_command_argv,
             );
@@ -517,11 +518,12 @@ pub fn run(
             working_dir,
             config_override,
             &mut loaded,
-            &scan_result,
             &ticket_ref,
             &identity,
             &agent_command,
         )?;
+        // Acquisition already executed; carry that into the downstream outcome
+        // so a quiescent post-acquisition scope reports success, not nothing-ready.
         return run_with_scope(
             working_dir,
             config_override,
@@ -530,6 +532,7 @@ pub fn run(
             loaded,
             scan_result,
             Some(work_unit),
+            true,
             cli_agent_command_present,
             cli_agent_command_argv,
         );
@@ -543,6 +546,7 @@ pub fn run(
         loaded,
         scan_result,
         work_unit.map(str::to_owned),
+        false,
         cli_agent_command_present,
         cli_agent_command_argv,
     )
@@ -558,6 +562,7 @@ fn run_with_scope(
     mut loaded: crate::project::LoadedProject,
     scan_result: libagent::ScanResult,
     work_unit: Option<String>,
+    prior_execution: bool,
     cli_agent_command_present: bool,
     cli_agent_command_argv: &[String],
 ) -> Result<RunOutcome, RunError> {
@@ -644,7 +649,7 @@ fn run_with_scope(
     )?;
     let mut state = initial_state;
     if state.planned_entries.is_empty() {
-        let outcome = classify_live_outcome(&state.evaluated, false, false);
+        let outcome = classify_live_outcome(&state.evaluated, false, prior_execution);
         println!("Run outcome: {}", outcome.label());
         return Ok(outcome);
     }
@@ -657,7 +662,7 @@ fn run_with_scope(
     let runtime_env = crate::commands::step::resolved_runtime_env(working_dir, &loaded.config);
     let mut exhausted = HashSet::new();
     let mut failed = HashSet::new();
-    let mut executed_any = false;
+    let mut executed_any = prior_execution;
 
     loop {
         let next_entry = state.planned_entries.clone().into_iter().find(|entry| {
@@ -773,8 +778,7 @@ fn run_ticket_dry_run(
     let runtime_env = entry::entry_runtime_env(working_dir, &loaded.config, ticket_ref);
     let preview_command = preview_runa_mcp_command();
 
-    let entry_planned =
-        entry::acquisition_planned_entry(loaded, &acquisition, ticket_ref, &scan_findings);
+    let entry_planned = entry::acquisition_planned_entry(loaded, &acquisition, ticket_ref);
     let concrete = build_plan_entries(
         vec![entry_planned],
         &preview_command,
@@ -913,15 +917,12 @@ fn acquire_ticket(
     working_dir: &Path,
     config_override: Option<&Path>,
     loaded: &mut crate::project::LoadedProject,
-    scan_result: &libagent::ScanResult,
     ticket_ref: &libagent::TicketRef,
     identity: &libagent::ResolvedForgeIdentity,
     agent_command: &[String],
 ) -> Result<(String, libagent::ScanResult), RunError> {
     let acquisition = entry::acquisition_surface(loaded).map_err(RunError::from)?;
-    let scan_findings = libagent::collect_scan_findings(scan_result, &loaded.workspace_dir);
-    let entry_planned =
-        entry::acquisition_planned_entry(loaded, &acquisition, ticket_ref, &scan_findings);
+    let entry_planned = entry::acquisition_planned_entry(loaded, &acquisition, ticket_ref);
     let config_path = crate::project::resolve_config(working_dir, config_override)
         .map_err(CommandError::from)
         .map_err(StepError::from)

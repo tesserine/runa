@@ -326,12 +326,11 @@ impl SessionState {
         ) {
             return Err(session_error_from_block(block, acquisition_name));
         }
-        let provenance_snapshot = crate::protocol_execution_record(
-            acquisition,
-            &session.loaded.store,
-            None,
-            &scan_findings.affected_types,
-        );
+        // The ticket substitutes the trigger, so record the full trigger
+        // freshness baseline; otherwise a later normal activation of this
+        // acquisition could be falsely treated as current.
+        let provenance_snapshot =
+            crate::protocol_entry_execution_record(acquisition, &session.loaded.store, None);
         let step = CurrentStep {
             protocol: acquisition_name,
             work_unit: None,
@@ -775,12 +774,19 @@ impl SessionState {
             return Ok(());
         };
         let protocol = self.protocol(&current.protocol)?;
-        let provenance_snapshot = crate::protocol_execution_record(
-            protocol,
-            &self.loaded.store,
-            current.work_unit.as_deref(),
-            &scan_findings.affected_types,
-        );
+        // A promised acquisition's trigger is substituted by the ticket, so it
+        // records the full trigger freshness baseline rather than the
+        // satisfied-only set, keeping later normal activations honest.
+        let provenance_snapshot = if matches!(self.scope, SessionScope::Promised { .. }) {
+            crate::protocol_entry_execution_record(protocol, &self.loaded.store, None)
+        } else {
+            crate::protocol_execution_record(
+                protocol,
+                &self.loaded.store,
+                current.work_unit.as_deref(),
+                &scan_findings.affected_types,
+            )
+        };
         if let Some(current_step) = &mut self.current_step {
             current_step.provenance_snapshot = Some(provenance_snapshot);
         }

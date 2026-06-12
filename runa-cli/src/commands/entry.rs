@@ -8,9 +8,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use libagent::{
-    Config, ProtocolDeclaration, ResolvedForgeIdentity, ScanFindings, ScanResult, TicketRef,
-};
+use libagent::{Config, ProtocolDeclaration, ResolvedForgeIdentity, ScanResult, TicketRef};
 
 use crate::commands::CommandError;
 use crate::commands::step::{PlannedEntry, StepError, resolved_runtime_env};
@@ -83,7 +81,6 @@ pub(crate) fn acquisition_planned_entry(
     loaded: &LoadedProject,
     acquisition: &ProtocolDeclaration,
     ticket: &TicketRef,
-    scan_findings: &ScanFindings,
 ) -> PlannedEntry {
     let mut context = libagent::context::build_context(acquisition, &loaded.store, None);
     context.entry = Some(libagent::context::EntryDelivery {
@@ -96,11 +93,13 @@ pub(crate) fn acquisition_planned_entry(
         work_unit: None,
         trigger: "ticket_entry".to_string(),
         context,
-        execution_record: libagent::protocol_execution_record(
+        // The ticket substitutes the trigger, so record the full trigger
+        // freshness baseline; a satisfied-only record would falsely suppress a
+        // later normal activation of this acquisition.
+        execution_record: libagent::protocol_entry_execution_record(
             acquisition,
             &loaded.store,
             None,
-            &scan_findings.affected_types,
         ),
     }
 }

@@ -467,6 +467,68 @@ fn go_ticket_blocks_when_acquisition_input_partially_scanned() {
     assert!(!log_path.exists(), "acquisition agent should not run");
 }
 
+/// A methodology whose only protocol is the acquisition itself — there is no
+/// further scoped work after the work-unit is materialized.
+const ACQUISITION_ONLY_MANIFEST: &str = r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[protocols]]
+name = "decompose"
+produces = ["work-unit"]
+scoped = false
+trigger = { type = "on_artifact", name = "work-unit" }
+"#;
+
+fn setup_acquisition_only_project(dir: &Path) -> PathBuf {
+    let manifest_path = common::write_methodology(
+        dir,
+        ACQUISITION_ONLY_MANIFEST,
+        &[(
+            "work-unit",
+            r#"{"type":"object","required":["title","handle"],"properties":{"title":{"type":"string"},"handle":{"type":"object"}}}"#,
+        )],
+        &["decompose"],
+    );
+    let project_dir = dir.join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    common::append_github_forge_config(&project_dir, "tesserine", "runa");
+    project_dir
+}
+
+#[test]
+fn run_ticket_reports_success_when_acquisition_is_the_only_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_acquisition_only_project(dir.path());
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_entry_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("run")
+        .arg("--ticket")
+        .arg("#14")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    // Acquisition ran and there is no further scoped work: the command must
+    // report success, not nothing-ready (exit 4).
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(&log_path).unwrap(), "decompose\n");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Run outcome: success"), "stdout: {stdout}");
+}
+
 #[test]
 fn run_ticket_blocks_when_acquisition_preconditions_unmet() {
     let dir = tempfile::tempdir().unwrap();

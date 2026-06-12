@@ -557,6 +557,38 @@ pub fn protocol_execution_record(
     }
 }
 
+/// Build an execution record for an acquisition opened from a ticket reference.
+///
+/// The operator's reference substitutes the protocol's trigger, which is often
+/// unsatisfied at entry time, so [`protocol_execution_record`] would register no
+/// trigger freshness inputs and the persisted record could falsely mark a later
+/// normal activation as current. This variant registers the protocol's full
+/// trigger freshness inputs as if the trigger were satisfied (plus `requires`),
+/// so a subsequent activation re-fires when its real trigger artifact changes.
+pub fn protocol_entry_execution_record(
+    protocol: &ProtocolDeclaration,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+) -> ExecutionRecord {
+    let mut freshness_inputs = HashMap::new();
+    collect_satisfied_execution_record_inputs(&protocol.trigger, &mut freshness_inputs, &|_| true);
+    for name in &protocol.requires {
+        record_freshness_input(
+            &mut freshness_inputs,
+            name.as_str(),
+            FreshnessInputMode::ValidOnly,
+        );
+    }
+    let input_modes: BTreeMap<_, _> = freshness_inputs.into_iter().collect();
+    let inputs =
+        execution_input_snapshot_for_freshness_inputs(store, input_modes.iter(), work_unit);
+
+    ExecutionRecord {
+        input_modes,
+        inputs,
+    }
+}
+
 // --- Trigger trust evaluation (moved from runa-cli/src/commands/protocol_eval.rs) ---
 
 struct TriggerEvaluation {
@@ -1178,6 +1210,35 @@ mod tests {
         let inputs = protocol_execution_record_inputs(&protocol, &store, None, &HashSet::new());
 
         assert_eq!(inputs.get("request"), Some(&FreshnessInputMode::ValidOnly));
+    }
+
+    #[test]
+    fn entry_execution_record_registers_trigger_freshness_despite_unsatisfied_trigger() {
+        let tmp = TempDir::new().unwrap();
+        // No `request` exists: the trigger is unsatisfied, as in a ticket entry.
+        let store = make_store(&tmp.path().join("s"), vec!["request", "work-unit"]);
+        let acquisition = make_protocol(
+            "decompose",
+            &[],
+            &[],
+            &["work-unit"],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+
+        // The satisfied-only record omits the trigger type — the bug that lets a
+        // later normal activation be falsely treated as current.
+        let satisfied_only = protocol_execution_record(&acquisition, &store, None, &HashSet::new());
+        assert!(!satisfied_only.input_modes.contains_key("request"));
+
+        // The entry record registers the trigger freshness baseline regardless.
+        let entry = protocol_entry_execution_record(&acquisition, &store, None);
+        assert_eq!(
+            entry.input_modes.get("request"),
+            Some(&FreshnessInputMode::ValidOnly)
+        );
     }
 
     #[test]
