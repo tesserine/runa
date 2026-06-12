@@ -80,7 +80,6 @@ fn run_ticket(
     config_override: Option<&Path>,
     ticket: &str,
 ) -> Result<StepOutcome, StepError> {
-    let agent_command = configured_agent_command(working_dir, config_override)?;
     let (loaded, _scan_result) = super::load_and_scan(working_dir, config_override)?;
     let (ticket_ref, identity) = entry::resolve_reference(&loaded, ticket)?;
 
@@ -101,6 +100,10 @@ fn run_ticket(
         return Ok(StepOutcome::Blocked);
     }
 
+    // The agent is required only once the ticket and acquisition surface are
+    // validated, so a bad reference or unsupported manifest reports its own
+    // error class rather than a missing-agent config failure.
+    let agent_command = configured_agent_command(working_dir, config_override)?;
     let config_path = crate::project::resolve_config(working_dir, config_override)
         .map_err(CommandError::from)
         .map_err(StepError::from)?;

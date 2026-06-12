@@ -575,6 +575,29 @@ fi
 }
 
 #[test]
+fn go_ticket_invalid_reference_is_usage_error_without_agent() {
+    // No `[agent].command` is configured. An invalid reference must still report
+    // a usage error (2), not a missing-agent config failure (6).
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_entry_project(dir.path());
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("go")
+        .arg("--ticket")
+        .arg("not-a-ticket")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not a recognized forge ticket reference"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
 fn go_requires_work_unit_or_ticket() {
     let output = runa_bin().arg("go").output().unwrap();
     assert_eq!(output.status.code(), Some(2), "{output:?}");
