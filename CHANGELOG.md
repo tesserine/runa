@@ -9,6 +9,12 @@ Semantic Versioning.
 
 ### Added
 
+- The `commons_exit_codes_match_specification` test now verifies the
+  `ExitCode` enum against a vendored copy of the commons exit-code table
+  (`runa-cli/tests/fixtures/commons-exit-codes.json`, provenance-pinned to
+  commons `v0.3.0-rc.1`) instead of re-stated literals, making the
+  commons-conformance claim in its name mechanically true. The enum carries
+  a `canonical: commons/EXIT-CODES.md` back-reference.
 - `RELEASING.md` Tooling Provenance section and a `scripts/release-check`
   provenance header: the script is runa-owned, the ceremony convention is
   canonical in commons, and no repo is the tooling upstream.
