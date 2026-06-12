@@ -538,6 +538,71 @@ fn go_ticket_blocks_when_acquisition_preconditions_unmet() {
     assert!(!log_path.exists(), "acquisition agent should not run");
 }
 
+/// Leave an unreadable `work-unit/*.json` so the type is only partially scanned.
+fn taint_work_unit_scan(project_dir: &Path) {
+    let wu_dir = project_dir.join(".runa/workspace/work-unit");
+    fs::create_dir_all(&wu_dir).unwrap();
+    let unreadable = wu_dir.join("hidden.json");
+    fs::write(
+        &unreadable,
+        r#"{"title":"hidden","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/14","number":14}}"#,
+    )
+    .unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+}
+
+#[test]
+fn run_ticket_blocks_when_work_unit_scan_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_entry_project(dir.path());
+    taint_work_unit_scan(&project_dir);
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_entry_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("run")
+        .arg("--ticket")
+        .arg("#14")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    // A no-match result is untrustworthy under a partial work-unit scan, so the
+    // ticket does not cold-start acquisition.
+    assert_eq!(output.status.code(), Some(6), "{output:?}");
+    assert!(
+        !log_path.exists(),
+        "must not cold-start under an incomplete work-unit scan"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("partially scanned"), "stderr: {stderr}");
+}
+
+#[test]
+fn go_ticket_blocks_when_work_unit_scan_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_entry_project(dir.path());
+    taint_work_unit_scan(&project_dir);
+    let log_path = dir.path().join("executed.log");
+    let agent_path = write_entry_agent(dir.path());
+    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("go")
+        .arg("--ticket")
+        .arg("#14")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(6), "{output:?}");
+    assert!(
+        !log_path.exists(),
+        "must not cold-start under an incomplete work-unit scan"
+    );
+}
+
 #[test]
 fn run_ticket_rejects_foreign_deployment_reference() {
     let dir = tempfile::tempdir().unwrap();

@@ -86,6 +86,7 @@ pub enum ScopedWorkUnitError {
         handle_identity: String,
         active_identity: String,
     },
+    WorkUnitScanIncomplete,
 }
 
 impl fmt::Display for ScopedWorkUnitError {
@@ -129,6 +130,10 @@ impl fmt::Display for ScopedWorkUnitError {
             } => write!(
                 f,
                 "work-unit instance '{instance_id}' belongs to {handle_identity}, which disagrees with active deployment {active_identity}"
+            ),
+            ScopedWorkUnitError::WorkUnitScanIncomplete => write!(
+                f,
+                "the 'work-unit' artifact type was only partially scanned; the ticket cannot be resolved without complete work-unit scan trust"
             ),
         }
     }

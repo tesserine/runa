@@ -323,16 +323,25 @@ pub fn discover_acquisition_surface(
 /// or `None` when no such instance exists yet (cold store). Tracker-handle
 /// consistency is enforced first, so a `ScopedWorkUnitError` here signals a
 /// malformed or conflicting recorded work-unit rather than a missing one.
+///
+/// A `None` result authorizes cold-start acquisition, so it must be trustworthy:
+/// when the `work-unit` type was only partially scanned (an unreadable instance
+/// file could hide a matching or duplicate root), resolution fails with
+/// [`ScopedWorkUnitError::WorkUnitScanIncomplete`] rather than falling through to
+/// acquisition and risking duplicate work for an existing ticket.
 pub fn resolve_promise(
     store: &ArtifactStore,
     identity: &ResolvedForgeIdentity,
     ticket: &TicketRef,
 ) -> Result<Option<String>, ScopedWorkUnitError> {
     validate_tracker_consistency(store, identity)?;
-    Ok(find_work_unit_by_tracker_identity(
-        store,
-        &ticket.tracker_identity,
-    ))
+    match find_work_unit_by_tracker_identity(store, &ticket.tracker_identity) {
+        Some(instance_id) => Ok(Some(instance_id)),
+        None if store.has_any_scan_gap_for_type(WORK_UNIT_ARTIFACT_TYPE) => {
+            Err(ScopedWorkUnitError::WorkUnitScanIncomplete)
+        }
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]
@@ -473,6 +482,63 @@ mod tests {
                 "expected '{raw}' to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn resolve_promise_blocks_on_work_unit_scan_gap_without_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store =
+            crate::test_helpers::make_store(&tmp.path().join("store"), vec!["work-unit"]);
+        // An unreadable work-unit file leaves the type only partially scanned, so
+        // a no-match result is untrustworthy and must not authorize cold-start.
+        store.mark_instance_scan_gap("work-unit", "hidden");
+        let identity = github_identity("tesserine", "runa");
+        let ticket = resolve_ticket_reference("14", &identity).unwrap();
+
+        assert_eq!(
+            resolve_promise(&store, &identity, &ticket),
+            Err(ScopedWorkUnitError::WorkUnitScanIncomplete)
+        );
+    }
+
+    #[test]
+    fn resolve_promise_returns_none_when_scan_complete_and_no_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::test_helpers::make_store(&tmp.path().join("store"), vec!["work-unit"]);
+        let identity = github_identity("tesserine", "runa");
+        let ticket = resolve_ticket_reference("14", &identity).unwrap();
+
+        assert_eq!(resolve_promise(&store, &identity, &ticket), Ok(None));
+    }
+
+    #[test]
+    fn resolve_promise_returns_match_despite_scan_gap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store =
+            crate::test_helpers::make_store(&tmp.path().join("store"), vec!["work-unit"]);
+        let artifact = serde_json::json!({
+            "title": "Cold start",
+            "handle": {
+                "forge_tag": "github",
+                "url": "https://github.com/tesserine/runa/issues/14",
+                "number": 14
+            }
+        });
+        let path = tmp.path().join("work-unit-14.json");
+        std::fs::write(&path, artifact.to_string()).unwrap();
+        store
+            .record_with_timestamp("work-unit", "work-unit-14", &path, &artifact, 1)
+            .unwrap();
+        // A gap on an unrelated hidden instance must not suppress the found match
+        // — re-entry still binds.
+        store.mark_instance_scan_gap("work-unit", "hidden");
+        let identity = github_identity("tesserine", "runa");
+        let ticket = resolve_ticket_reference("14", &identity).unwrap();
+
+        assert_eq!(
+            resolve_promise(&store, &identity, &ticket),
+            Ok(Some("work-unit-14".to_string()))
+        );
     }
 
     #[test]
