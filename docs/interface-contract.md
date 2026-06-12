@@ -119,6 +119,36 @@ runtime deployment identity. The methodology still owns the `work-unit` schema
 and the semantics of the artifact content; runa owns only the scope identity
 checks described here.
 
+### Entry References and the Acquisition Surface
+
+A session may be opened from a forge ticket reference instead of a recorded
+`work-unit` instance id, via `runa run --ticket <REF>` or
+`runa go --ticket <REF>`. The accepted reference forms are a bare ticket number,
+`#<N>`, `owner/repo#<N>`, a GitHub issue URL, or `sourcehut:<tracker_id>#<N>`.
+runa parses the reference and normalizes it to a tracker identity
+(`github:<owner>/<name>:<N>` or `sourcehut:<tracker_id>:<N>`); a reference that
+asserts a deployment other than the active one is rejected, and a bare reference
+inherits the active deployment identity. **runa never reads ticket content** —
+the reference carries identity only, and the methodology performs all forge
+reads through its own mechanics. During entry, runa exports `RUNA_ENTRY_TICKET`
+(the ticket number) alongside the `RUNA_FORGE_*` atoms so those mechanics can
+resolve the ticket.
+
+The acquisition surface runa serves is the single unscoped protocol whose
+declared outputs (`produces`, `may_produce`, or required output choice members)
+include the `work-unit` artifact type. A manifest with zero or more than one
+such protocol does not support ticket entry; runa names the offending
+declarations.
+
+Entry substitutes only the acquisition protocol's trigger: the operator's
+reference is that step's activation condition. The protocol's preconditions,
+output validation, postconditions, execution recording, and scoped-identity
+checks all apply unchanged. The promised scope resolves to the unique valid
+`work-unit` instance whose tracker handle identity equals the reference
+identity. If that instance already exists when the session opens, no acquisition
+step runs; a session opened from a reference and a session opened from the
+materialized work-unit id are indistinguishable downstream of acquisition.
+
 ## What runa Does
 
 runa is an event-driven runtime. The CLI commands (init, scan, list, state, step, doctor) are windows into its state. The runtime itself is the monitoring loop.

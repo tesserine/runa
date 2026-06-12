@@ -590,6 +590,21 @@ impl ArtifactStore {
         self.persist_execution_records()
     }
 
+    /// Remove the execution record for `(protocol, work_unit)` and persist.
+    ///
+    /// Used to roll back a recorded step whose downstream commit did not hold —
+    /// e.g. a cold-start acquisition that produced an artifact but did not bind
+    /// the promised ticket. A no-op when no such record exists.
+    pub fn clear_execution_record(
+        &mut self,
+        protocol: &str,
+        work_unit: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.execution_records
+            .remove(&(protocol.to_string(), work_unit.map(str::to_owned)));
+        self.persist_execution_records()
+    }
+
     pub(crate) fn stage_execution_record(
         &mut self,
         protocol: &str,

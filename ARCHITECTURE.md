@@ -33,6 +33,8 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 7. **Scoped work-unit identity validation.** After workspace scan and before scoped readiness evaluation, `runa state`, `runa step`, `runa run`, and `runa go` validate that the supplied `--work-unit` exactly matches a recorded `work-unit` instance id when any are recorded. Invalid and malformed recorded roots still establish canonical ids. Valid tracker-backed roots also enforce instance-id/handle number agreement, duplicate tracker-root rejection, and agreement with the active forge deployment identity resolved from `.runa/config.toml` with `RUNA_FORGE_*` env overrides. With no recorded `work-unit` roots, scoped evaluation remains inert.
 
+   **Cold-start ticket entry.** `entry::resolve_ticket_reference` parses a `--ticket <REF>` into a tracker identity against the active deployment (no forge read; identity only). `entry::discover_acquisition_surface` derives the methodology's acquisition surface — the sole unscoped producer of the `work-unit` artifact — from the manifest alone. `entry::resolve_promise` matches the reference to a recorded `work-unit` by tracker identity. `SessionState::open_entry` opens a *promised scope* that pins that acquisition step (the reference substitutes its trigger) until `advance` resolves the promise and binds the session to the materialized work-unit; a reference that already resolves opens bound directly. `runa run --ticket` mirrors this in the cascade — `projection::project_entry_cascade` seeds the acquisition output so the dry-run shows `take` projected next.
+
 8. **Tracing bootstrap.** Both binaries bootstrap tracing with env/default settings before any config lookup, then reconfigure the shared subscriber from `config.toml` when logging settings are available. Tracing events always go to stderr; operator-facing command output stays on stdout.
 
 9. **Status and session evaluation.** `status::evaluate_protocols` is the shared readiness classification path used by CLI state reporting and MCP session readiness. `session::SessionState` layers current-step lifecycle state over that evaluator for scoped sessions: every public operation scans first, immediately revalidates the scoped work-unit identity for the session, readiness preserves an existing current step but may select the first ready step when none is active, exhausted work is reopened by the same relevant-input-change rule used by the live runner, and only `advance` retires the current step after postcondition enforcement, next-step validation, and execution-record persistence.
@@ -128,6 +130,19 @@ including invalid and malformed records. Valid tracker-backed roots receive the
 runtime checks that schema validation cannot express: id/handle number
 agreement, duplicate tracker identity detection, and active deployment
 agreement from config-resolved `RUNA_FORGE_*` atoms.
+
+### `entry.rs`
+
+Cold-start ticket entry. `resolve_ticket_reference` parses a forge ticket
+reference (bare number, `#<N>`, `owner/repo#<N>`, GitHub issue URL, or
+`sourcehut:<tracker_id>#<N>`) and resolves it to a `TicketRef` carrying the
+canonical tracker identity against the active deployment — identity only, never a
+forge read. `discover_acquisition_surface` derives the methodology's acquisition
+surface as the single unscoped protocol declaring `work-unit` among its outputs,
+naming the offending declarations when zero or many exist. `resolve_promise`
+matches a reference to the recorded `work-unit` instance of equal tracker
+identity (after tracker-consistency validation). `RUNA_ENTRY_TICKET` carries the
+ticket number to acquisition mechanics.
 
 ## runa-mcp Modules
 

@@ -8,9 +8,7 @@ use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
 use std::thread;
 
 use libagent::ExecutionRecord;
-use libagent::context::{
-    ArtifactRelationship, ContextInjection, ContextInjectionView, render_context_prompt,
-};
+use libagent::context::{ContextInjection, ContextInjectionView, render_context_prompt};
 use serde::{Serialize, Serializer};
 use tracing::{info, warn};
 
@@ -58,6 +56,7 @@ pub enum StepError {
         work_unit: Option<String>,
         source: libagent::StoreError,
     },
+    TicketReference(libagent::EntryError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +170,7 @@ impl fmt::Display for StepError {
                     "post-execution reconciliation failed for protocol '{protocol}': agent command succeeded but execution metadata could not be recorded: {source}"
                 ),
             },
+            StepError::TicketReference(err) => write!(f, "{err}"),
         }
     }
 }
@@ -189,6 +189,7 @@ impl std::error::Error for StepError {
             StepError::PostExecutionScan { source, .. } => Some(source),
             StepError::PostExecutionEnforcement { source, .. } => Some(source),
             StepError::PostExecutionRecord { source, .. } => Some(source),
+            StepError::TicketReference(source) => Some(source),
         }
     }
 }
@@ -207,6 +208,17 @@ impl StepError {
                 ExitCode::WorkFailed
             }
             StepError::SessionDidNotAdvance { .. } => ExitCode::WorkFailed,
+            StepError::TicketReference(err) => match err {
+                libagent::EntryError::InvalidReference { .. }
+                | libagent::EntryError::MissingDeploymentIdentity { .. }
+                | libagent::EntryError::DeploymentDisagreement { .. }
+                | libagent::EntryError::UnsupportedForge { .. } => ExitCode::UsageError,
+                libagent::EntryError::Unresolved { .. } => ExitCode::WorkFailed,
+                libagent::EntryError::NoAcquisitionSurface { .. }
+                | libagent::EntryError::AmbiguousAcquisitionSurface { .. } => {
+                    ExitCode::InfrastructureFailure
+                }
+            },
             StepError::Command(_)
             | StepError::Json(_)
             | StepError::AgentCommandNotConfigured
@@ -366,17 +378,12 @@ pub(crate) fn build_execution_plan(
             let protocol = protocol_map
                 .get(entry.name.as_str())
                 .expect("planned protocol must exist in manifest");
-            let mut context = libagent::context::build_context(
+            let context = libagent::context::build_execution_context(
                 protocol,
                 &loaded.store,
                 entry.work_unit.as_deref(),
+                &scan_findings.affected_types,
             );
-            context.inputs.retain(|input| {
-                input.relationship == ArtifactRelationship::Requires
-                    || !scan_findings
-                        .affected_types
-                        .contains(input.artifact_type.as_str())
-            });
             PlannedEntry {
                 protocol: entry.name.clone(),
                 work_unit: entry.work_unit.clone(),
@@ -1178,6 +1185,38 @@ pub(crate) fn build_session_mcp_config(
     }
 }
 
+pub(crate) fn build_session_ticket_mcp_config(
+    mcp_command: &str,
+    working_dir: &Path,
+    config_path: &Path,
+    ticket: &str,
+    runtime_env: &BTreeMap<String, String>,
+) -> McpServerConfig {
+    let working_dir = absolutize_path(working_dir, working_dir);
+    let config_path = absolutize_path(config_path, &working_dir);
+    let mut env = BTreeMap::new();
+    env.insert(
+        "RUNA_CONFIG".to_string(),
+        config_path.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "RUNA_WORKING_DIR".to_string(),
+        working_dir.to_string_lossy().into_owned(),
+    );
+    env.extend(libagent::transcript::transcript_env());
+    env.extend(runtime_env.clone());
+
+    McpServerConfig {
+        command: normalize_mcp_command(mcp_command, &working_dir),
+        args: vec![
+            "--session".to_string(),
+            "--ticket".to_string(),
+            ticket.to_string(),
+        ],
+        env,
+    }
+}
+
 fn normalize_mcp_command(command: &str, working_dir: &Path) -> String {
     let command_path = Path::new(command);
     if command_path.is_absolute() {
@@ -1325,6 +1364,7 @@ mod tests {
                 work_unit: work_unit.map(str::to_string),
                 instructions: "Tell the operator about SECRET_VALUE.".to_string(),
                 inputs: Vec::new(),
+                entry: None,
                 expected_outputs: libagent::context::ExpectedOutputs {
                     produces: vec!["claim".to_string()],
                     may_produce: Vec::new(),
@@ -1871,6 +1911,7 @@ cat >/dev/null
                 work_unit: None,
                 instructions: String::new(),
                 inputs: Vec::new(),
+                entry: None,
                 expected_outputs: libagent::context::ExpectedOutputs {
                     produces: vec!["implementation".to_string()],
                     may_produce: Vec::new(),

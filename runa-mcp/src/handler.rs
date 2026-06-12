@@ -78,6 +78,31 @@ impl RunaHandler {
         })
     }
 
+    pub fn new_session_entry(
+        working_dir: PathBuf,
+        config_override: Option<&Path>,
+        ticket: libagent::TicketRef,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let session = SessionState::open_entry(
+            working_dir,
+            config_override,
+            ticket,
+            validate_session_step_output_types,
+        )?;
+
+        Ok(Self {
+            protocol: None,
+            work_unit: session
+                .current_step()
+                .and_then(|step| step.work_unit.clone()),
+            state: None,
+            workspace_dir: session.workspace_dir().to_path_buf(),
+            tools: Vec::new(),
+            tool_schemas: HashMap::new(),
+            session: Some(Mutex::new(session)),
+        })
+    }
+
     async fn call_session_tool(
         &self,
         session: &Mutex<SessionState>,

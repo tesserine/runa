@@ -132,6 +132,122 @@ pub fn project_cascade(
     plan
 }
 
+/// Project the cascade for a cold-start ticket entry.
+///
+/// The `acquisition` candidate is the operator-activated entry step: its
+/// trigger is the ticket reference, so it is emitted [`ProjectionClass::Current`]
+/// and its assumed `work-unit` output seeds the projection. Everything reachable
+/// from there under the promised scope is [`ProjectionClass::Projected`] — this
+/// makes `take` observably next on the acquired work-unit without running any
+/// agent. `promised_scope` is the provisional scope id (e.g. `work-unit-<N>`);
+/// the projected `work-unit` is unpartitioned, so a scoped `take` sees it.
+pub fn project_entry_cascade(
+    protocols: &[ProtocolDeclaration],
+    store: &ArtifactStore,
+    topological_order: &[&str],
+    acquisition: &Candidate,
+    promised_scope: &str,
+    partially_scanned_types: &HashSet<String>,
+) -> Vec<ProjectionCandidate> {
+    let protocol_map: HashMap<&str, &ProtocolDeclaration> = protocols
+        .iter()
+        .map(|protocol| (protocol.name.as_str(), protocol))
+        .collect();
+    let mut projection = ProjectionState::new(store, partially_scanned_types);
+    let mut plan = Vec::new();
+
+    let Some(acquisition_protocol) = protocol_map.get(acquisition.protocol_name.as_str()) else {
+        return plan;
+    };
+    // Entry substitutes only the trigger; the canonical admission gate
+    // (preconditions + scan trust) still applies. When it blocks, nothing
+    // projects from the acquisition.
+    if crate::entry::check_acquisition_admissible(
+        acquisition_protocol,
+        store,
+        partially_scanned_types,
+    )
+    .is_err()
+    {
+        return plan;
+    }
+    let acquisition_key =
+        candidate_key(&acquisition.protocol_name, acquisition.work_unit.as_deref());
+    plan.push(ProjectionCandidate {
+        protocol_name: acquisition.protocol_name.clone(),
+        work_unit: acquisition.work_unit.clone(),
+        projection: ProjectionClass::Current,
+    });
+    let execution_record = projection
+        .protocol_execution_record(acquisition_protocol, acquisition.work_unit.as_deref());
+    projection.record_protocol_outputs(
+        acquisition_protocol,
+        acquisition.work_unit.as_deref(),
+        execution_record,
+    );
+    // discover_acquisition_surface guarantees `work-unit` is an output, but it
+    // may be declared via may_produce or a required choice — which the generic
+    // recording above does not project from a cold store. Seed it explicitly so
+    // the scoped follow-ups (take) project, matching live behavior.
+    if !acquisition_protocol
+        .produces
+        .iter()
+        .any(|artifact_type| artifact_type == crate::entry::WORK_UNIT_ARTIFACT_TYPE)
+    {
+        projection.project_seed_output(
+            &acquisition_key,
+            crate::entry::WORK_UNIT_ARTIFACT_TYPE,
+            acquisition.work_unit.as_deref(),
+        );
+    }
+
+    let scope = EvaluationScope::Scoped(promised_scope);
+    let mut exhausted = HashSet::from([acquisition_key]);
+
+    while let Some(next) =
+        discover_ready_candidates_projection(protocols, &projection, topological_order, scope)
+            .into_iter()
+            .find(|candidate| {
+                !exhausted.contains(&candidate_key(
+                    &candidate.protocol_name,
+                    candidate.work_unit.as_deref(),
+                ))
+            })
+    {
+        let key = candidate_key(&next.protocol_name, next.work_unit.as_deref());
+        plan.push(ProjectionCandidate {
+            protocol_name: next.protocol_name.clone(),
+            work_unit: next.work_unit.clone(),
+            projection: ProjectionClass::Projected,
+        });
+        exhausted.insert(key);
+
+        let protocol = protocol_map
+            .get(next.protocol_name.as_str())
+            .expect("projected protocol must exist");
+        let execution_record =
+            projection.protocol_execution_record(protocol, next.work_unit.as_deref());
+        let changes = projection.record_protocol_outputs(
+            protocol,
+            next.work_unit.as_deref(),
+            execution_record,
+        );
+        exhausted.retain(|candidate| {
+            if candidate
+                == &candidate_key(&acquisition.protocol_name, acquisition.work_unit.as_deref())
+            {
+                return true;
+            }
+            let protocol = protocol_map
+                .get(candidate.protocol_name.as_str())
+                .expect("projected protocol must exist");
+            !changes_affect_candidate(protocol, candidate.work_unit.as_deref(), &changes)
+        });
+    }
+
+    plan
+}
+
 fn discover_ready_candidates_projection(
     protocols: &[ProtocolDeclaration],
     projection: &ProjectionState<'_>,
@@ -433,6 +549,45 @@ impl<'a> ProjectionState<'a> {
         changes
     }
 
+    /// Project a single named output for `producer`, replacing any prior
+    /// projection of the same `(artifact_type, producer, work_unit)`.
+    ///
+    /// Used to seed the acquisition's `work-unit` in entry projection when the
+    /// surface declares it via `may_produce` or a required output choice, which
+    /// [`record_protocol_outputs`](Self::record_protocol_outputs) does not
+    /// project from a cold store.
+    fn project_seed_output(
+        &mut self,
+        producer: &CandidateKey,
+        artifact_type: &str,
+        work_unit: Option<&str>,
+    ) {
+        let scoped_work_unit = work_unit.map(str::to_owned);
+        self.projected_outputs.retain(|output| {
+            !(output.artifact_type == artifact_type
+                && &output.producer == producer
+                && output.work_unit == scoped_work_unit)
+        });
+        let timestamp_ms = self.next_timestamp_ms;
+        self.projected_outputs.push(ProjectedOutput {
+            artifact_type: artifact_type.to_string(),
+            work_unit: scoped_work_unit,
+            producer: producer.clone(),
+            input: ExecutionInput {
+                instance_id: projected_instance_id(producer, artifact_type),
+                content_hash: raw_content_hash(
+                    format!(
+                        "{}:{}:{:?}:{}",
+                        producer.protocol_name, artifact_type, producer.work_unit, timestamp_ms
+                    )
+                    .as_bytes(),
+                ),
+            },
+            timestamp_ms,
+        });
+        self.next_timestamp_ms += 1;
+    }
+
     fn projected_protocol_output_types(
         &self,
         protocol: &ProtocolDeclaration,
@@ -660,6 +815,268 @@ mod tests {
             trigger,
             instructions: None,
         }
+    }
+
+    #[test]
+    fn entry_cascade_projects_take_after_acquisition() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(
+            &tmp.path().join("store"),
+            vec!["request", "work-unit", "claim"],
+        );
+
+        let decompose = protocol(
+            "decompose",
+            &[],
+            &["work-unit"],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+        let mut take = protocol(
+            "take",
+            &["work-unit"],
+            &["claim"],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        take.scoped = true;
+        let protocols = vec![decompose, take];
+
+        let plan = project_entry_cascade(
+            &protocols,
+            &store,
+            &["decompose", "take"],
+            &Candidate {
+                protocol_name: "decompose".into(),
+                work_unit: None,
+            },
+            "work-unit-14",
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            plan,
+            vec![
+                ProjectionCandidate {
+                    protocol_name: "decompose".into(),
+                    work_unit: None,
+                    projection: ProjectionClass::Current,
+                },
+                ProjectionCandidate {
+                    protocol_name: "take".into(),
+                    work_unit: Some("work-unit-14".into()),
+                    projection: ProjectionClass::Projected,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn entry_cascade_projects_take_when_acquisition_uses_may_produce() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(&tmp.path().join("store"), vec!["work-unit", "claim"]);
+
+        // The acquisition declares work-unit via may_produce (the groundwork
+        // shape), which generic output recording does not project.
+        let mut decompose = protocol(
+            "decompose",
+            &[],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        decompose.may_produce = vec!["work-unit".into()];
+        let mut take = protocol(
+            "take",
+            &["work-unit"],
+            &["claim"],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        take.scoped = true;
+        let protocols = vec![decompose, take];
+
+        let plan = project_entry_cascade(
+            &protocols,
+            &store,
+            &["decompose", "take"],
+            &Candidate {
+                protocol_name: "decompose".into(),
+                work_unit: None,
+            },
+            "work-unit-14",
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            plan,
+            vec![
+                ProjectionCandidate {
+                    protocol_name: "decompose".into(),
+                    work_unit: None,
+                    projection: ProjectionClass::Current,
+                },
+                ProjectionCandidate {
+                    protocol_name: "take".into(),
+                    work_unit: Some("work-unit-14".into()),
+                    projection: ProjectionClass::Projected,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn entry_cascade_projects_take_when_acquisition_uses_required_choice() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(
+            &tmp.path().join("store"),
+            vec!["work-unit", "deferral", "claim"],
+        );
+
+        // The acquisition declares work-unit via a required output choice; no
+        // member is recorded cold, so generic recording projects nothing.
+        let mut decompose = protocol(
+            "decompose",
+            &[],
+            &[],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        decompose.required_output_choices = vec![RequiredOutputChoice {
+            name: "delivery".into(),
+            members: vec!["work-unit".into(), "deferral".into()],
+        }];
+        let mut take = protocol(
+            "take",
+            &["work-unit"],
+            &["claim"],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        take.scoped = true;
+        let protocols = vec![decompose, take];
+
+        let plan = project_entry_cascade(
+            &protocols,
+            &store,
+            &["decompose", "take"],
+            &Candidate {
+                protocol_name: "decompose".into(),
+                work_unit: None,
+            },
+            "work-unit-14",
+            &HashSet::new(),
+        );
+
+        assert_eq!(plan.len(), 2, "{plan:?}");
+        assert_eq!(plan[0].protocol_name, "decompose");
+        assert_eq!(plan[1].protocol_name, "take");
+        assert_eq!(plan[1].work_unit.as_deref(), Some("work-unit-14"));
+        assert_eq!(plan[1].projection, ProjectionClass::Projected);
+    }
+
+    #[test]
+    fn entry_cascade_projects_nothing_when_acquisition_input_partially_scanned() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = make_store(
+            &tmp.path().join("store"),
+            vec!["request", "work-unit", "claim"],
+        );
+        // A valid request exists, so preconditions are satisfied...
+        store
+            .record(
+                "request",
+                "good",
+                Path::new("good.json"),
+                &json!({"title":"good"}),
+            )
+            .unwrap();
+
+        let decompose = protocol(
+            "decompose",
+            &["request"],
+            &["work-unit"],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+        let mut take = protocol(
+            "take",
+            &["work-unit"],
+            &["claim"],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        take.scoped = true;
+        let protocols = vec![decompose, take];
+
+        // ...but `request` was only partially scanned, so the acquisition is
+        // untrusted and nothing projects.
+        let partials = HashSet::from(["request".to_string()]);
+        let plan = project_entry_cascade(
+            &protocols,
+            &store,
+            &["decompose", "take"],
+            &Candidate {
+                protocol_name: "decompose".into(),
+                work_unit: None,
+            },
+            "work-unit-14",
+            &partials,
+        );
+
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn entry_cascade_projects_nothing_when_acquisition_preconditions_unmet() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(
+            &tmp.path().join("store"),
+            vec!["request", "work-unit", "claim"],
+        );
+
+        // decompose requires `request`, which is absent: entry substitutes the
+        // trigger only, so the unmet precondition blocks the whole projection.
+        let decompose = protocol(
+            "decompose",
+            &["request"],
+            &["work-unit"],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+        let mut take = protocol(
+            "take",
+            &["work-unit"],
+            &["claim"],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        take.scoped = true;
+        let protocols = vec![decompose, take];
+
+        let plan = project_entry_cascade(
+            &protocols,
+            &store,
+            &["decompose", "take"],
+            &Candidate {
+                protocol_name: "decompose".into(),
+                work_unit: None,
+            },
+            "work-unit-14",
+            &HashSet::new(),
+        );
+
+        assert!(plan.is_empty());
     }
 
     #[test]

@@ -126,6 +126,34 @@ pause is explicitly requested — so that automation is the path and any
 human-in-the-cascade interruption is the deliberate exception. No such pause is
 specified now, and none is required.
 
+## Session Entry: the Promised Scope
+
+A session's scope is either **bound** — a recorded `work-unit` instance id — or
+**promised** — a forge ticket reference standing for a work-unit that does not
+yet exist. A promised scope is opened with `--ticket <REF>`. It is not a new
+verb and not a third mode: the operator still issues the single outer verb, and
+mode remains which cadence issues that verb (ADR-0015). Autonomous and
+interactive clients open a promised scope through the same surface with the same
+meaning.
+
+While the scope is promised, the select stage admits exactly one step: the
+methodology's acquisition surface — the single unscoped protocol that produces
+the `work-unit` artifact — evaluated unscoped. The operator's reference stands in
+for that step's trigger; its preconditions, output validation, and
+postconditions apply unchanged. Context construction delivers that protocol's
+instructions and validated inputs plus the entry reference; the runtime delivers
+the reference and nothing of the ticket's content, performing no forge read
+itself.
+
+The postcondition-gated commit of the acquisition step additionally **resolves
+the promise**: the session binds to the unique valid `work-unit` whose tracker
+identity equals the reference. An acquisition step that satisfies its protocol
+contract but materializes no matching work-unit does not advance. Once bound, the
+session is an ordinary scoped session; a session opened from a reference and one
+opened from the materialized work-unit id are indistinguishable downstream of
+acquisition. When the referenced work-unit already exists at open, no acquisition
+step runs and the session is bound immediately.
+
 ## Disposition-Authority Contract
 
 Authority over a lifecycle transition is conformance, not per-operation human

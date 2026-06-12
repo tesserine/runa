@@ -5,6 +5,7 @@
 //! delivered to agents during `runa step`. [`build_context`] gathers the
 //! artifacts; [`render_context_prompt`] turns the context into prose.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -47,6 +48,21 @@ pub struct ArtifactRefView {
     pub relationship: ArtifactRelationship,
 }
 
+/// The forge ticket reference an entry session was opened from.
+///
+/// Present only on the acquisition step of a session opened from a ticket
+/// reference. Carries the reference's identity, never the ticket's content —
+/// the runtime delivers the reference, the methodology performs the forge read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EntryDelivery {
+    /// Canonical operator-facing reference, e.g. `github:tesserine/runa#188`.
+    pub reference: String,
+    /// The ticket number.
+    pub ticket_number: u64,
+    /// Canonical tracker identity, e.g. `github:tesserine/runa:188`.
+    pub tracker_identity: String,
+}
+
 /// Artifact type names the agent is expected to produce for this protocol invocation.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExpectedOutputs {
@@ -71,6 +87,8 @@ pub struct ContextInjection {
     pub instructions: String,
     pub inputs: Vec<ArtifactRef>,
     pub expected_outputs: ExpectedOutputs,
+    /// Present only on a ticket-entry acquisition step.
+    pub entry: Option<EntryDelivery>,
 }
 
 /// Serialization-safe view of [`ContextInjection`] that uses
@@ -82,6 +100,8 @@ pub struct ContextInjectionView {
     pub instructions: String,
     pub inputs: Vec<ArtifactRefView>,
     pub expected_outputs: ExpectedOutputs,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry: Option<EntryDelivery>,
 }
 
 /// Build the agent-facing context for a single protocol invocation.
@@ -121,7 +141,31 @@ pub fn build_context(
             may_produce: protocol.may_produce.clone(),
             required_output_choices: protocol.required_output_choices.clone(),
         },
+        entry: None,
     }
+}
+
+/// Build the agent-facing context for execution, withholding untrusted optional
+/// inputs.
+///
+/// Like [`build_context`], but `accepts` inputs whose artifact type is in
+/// `affected_types` (changed or only partially scanned this cycle) are dropped —
+/// the agent must not act on optional context that may be stale or incomplete.
+/// Required (`requires`) inputs are always retained. This is the single context
+/// builder for every execution surface (`step`, session ticks, and ticket
+/// entry) so the trust filter cannot be applied inconsistently.
+pub fn build_execution_context(
+    protocol: &ProtocolDeclaration,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+    affected_types: &HashSet<String>,
+) -> ContextInjection {
+    let mut context = build_context(protocol, store, work_unit);
+    context.inputs.retain(|input| {
+        input.relationship == ArtifactRelationship::Requires
+            || !affected_types.contains(input.artifact_type.as_str())
+    });
+    context
 }
 
 /// Render the agent-facing context as natural language prose.
@@ -135,6 +179,18 @@ pub fn render_context_prompt(context: &ContextInjection) -> String {
         Some(work_unit) => format!("# Protocol: {} (work_unit={work_unit})", context.protocol),
         None => format!("# Protocol: {}", context.protocol),
     });
+
+    if let Some(entry) = &context.entry {
+        sections.push("\n## Session entry".to_string());
+        sections.push(format!(
+            "This session was opened from forge ticket {} (ticket_number={}). \
+             No work-unit artifact exists yet for this ticket. The runtime has \
+             delivered only this reference; acquire the ticket according to the \
+             protocol instructions below and deliver your outputs through the \
+             listed output tools.",
+            entry.reference, entry.ticket_number
+        ));
+    }
 
     if !context.instructions.is_empty() {
         sections.push("\n## Protocol instructions".to_string());
@@ -312,6 +368,7 @@ impl From<&ContextInjection> for ContextInjectionView {
             instructions: context.instructions.clone(),
             inputs: context.inputs.iter().map(ArtifactRefView::from).collect(),
             expected_outputs: context.expected_outputs.clone(),
+            entry: context.entry.clone(),
         }
     }
 }
@@ -322,6 +379,76 @@ mod tests {
     use crate::test_helpers::make_store;
     use serde_json::json;
     use std::path::Path;
+
+    fn require_accept_protocol() -> ProtocolDeclaration {
+        ProtocolDeclaration {
+            name: "implement".into(),
+            requires: vec!["constraints".into()],
+            accepts: vec!["notes".into()],
+            produces: Vec::new(),
+            may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
+            scoped: false,
+            trigger: crate::TriggerCondition::OnArtifact {
+                name: "constraints".into(),
+            },
+            instructions: None,
+        }
+    }
+
+    #[test]
+    fn build_execution_context_withholds_accepts_from_affected_types() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["constraints", "notes"]);
+        store
+            .record(
+                "constraints",
+                "spec",
+                Path::new("c.json"),
+                &json!({"title": "c"}),
+            )
+            .unwrap();
+        store
+            .record("notes", "n", Path::new("n.json"), &json!({"title": "n"}))
+            .unwrap();
+        let protocol = require_accept_protocol();
+
+        // `notes` is untrusted this cycle: the optional input is withheld, the
+        // required `constraints` input is always kept.
+        let affected = HashSet::from(["notes".to_string()]);
+        let context = build_execution_context(&protocol, &store, None, &affected);
+        let types: Vec<&str> = context
+            .inputs
+            .iter()
+            .map(|input| input.artifact_type.as_str())
+            .collect();
+        assert_eq!(types, vec!["constraints"]);
+
+        // With nothing affected, the optional input is delivered.
+        let context = build_execution_context(&protocol, &store, None, &HashSet::new());
+        assert_eq!(context.inputs.len(), 2);
+    }
+
+    #[test]
+    fn build_execution_context_retains_required_input_even_when_affected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = make_store(&tmp.path().join("store"), vec!["constraints", "notes"]);
+        store
+            .record(
+                "constraints",
+                "spec",
+                Path::new("c.json"),
+                &json!({"title": "c"}),
+            )
+            .unwrap();
+        let protocol = require_accept_protocol();
+
+        // A required input is never withheld, even from an affected type.
+        let affected = HashSet::from(["constraints".to_string()]);
+        let context = build_execution_context(&protocol, &store, None, &affected);
+        assert_eq!(context.inputs.len(), 1);
+        assert_eq!(context.inputs[0].artifact_type, "constraints");
+    }
 
     #[test]
     fn build_context_collects_required_and_accepted_inputs() {
@@ -477,6 +604,7 @@ mod tests {
                 content_hash: "sha256:test".into(),
                 relationship: ArtifactRelationship::Requires,
             }],
+            entry: None,
             expected_outputs: ExpectedOutputs {
                 produces: vec!["implementation".into()],
                 may_produce: Vec::new(),
@@ -583,6 +711,7 @@ mod tests {
             work_unit: None,
             instructions: "# Follow the protocol\n".into(),
             inputs: Vec::new(),
+            entry: None,
             expected_outputs: ExpectedOutputs {
                 produces: vec!["implementation".into()],
                 may_produce: vec!["notes".into()],
@@ -601,12 +730,43 @@ mod tests {
     }
 
     #[test]
+    fn render_context_prompt_includes_entry_reference_before_instructions() {
+        let prompt = render_context_prompt(&ContextInjection {
+            protocol: "decompose".into(),
+            work_unit: None,
+            instructions: "# decompose\n".into(),
+            inputs: Vec::new(),
+            entry: Some(EntryDelivery {
+                reference: "github:tesserine/runa#188".into(),
+                ticket_number: 188,
+                tracker_identity: "github:tesserine/runa:188".into(),
+            }),
+            expected_outputs: ExpectedOutputs {
+                produces: vec!["work-unit".into()],
+                may_produce: Vec::new(),
+                required_output_choices: Vec::new(),
+            },
+        });
+
+        let entry_index = prompt
+            .find("## Session entry")
+            .expect("entry section present");
+        let instructions_index = prompt
+            .find("## Protocol instructions")
+            .expect("instructions section present");
+        assert!(entry_index < instructions_index);
+        assert!(prompt.contains("github:tesserine/runa#188"));
+        assert!(prompt.contains("ticket_number=188"));
+    }
+
+    #[test]
     fn render_context_prompt_includes_work_unit_in_heading() {
         let prompt = render_context_prompt(&ContextInjection {
             protocol: "implement".into(),
             work_unit: Some("wu-a".into()),
             instructions: String::new(),
             inputs: Vec::new(),
+            entry: None,
             expected_outputs: ExpectedOutputs {
                 produces: vec!["implementation".into()],
                 may_produce: Vec::new(),
@@ -631,6 +791,7 @@ mod tests {
                 content_hash: "sha256:test".into(),
                 relationship: ArtifactRelationship::Requires,
             }],
+            entry: None,
             expected_outputs: ExpectedOutputs {
                 produces: vec!["implementation".into()],
                 may_produce: Vec::new(),

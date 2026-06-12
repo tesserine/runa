@@ -1,6 +1,9 @@
 # Rust build artifacts
 /target
 
+# Local runa project state (this repo is a Rust project, not a runa-managed one)
+/.runa/
+
 # Editor swap files
 *.swp
 *.swo

@@ -86,6 +86,7 @@ pub enum ScopedWorkUnitError {
         handle_identity: String,
         active_identity: String,
     },
+    WorkUnitScanIncomplete,
 }
 
 impl fmt::Display for ScopedWorkUnitError {
@@ -130,6 +131,10 @@ impl fmt::Display for ScopedWorkUnitError {
                 f,
                 "work-unit instance '{instance_id}' belongs to {handle_identity}, which disagrees with active deployment {active_identity}"
             ),
+            ScopedWorkUnitError::WorkUnitScanIncomplete => write!(
+                f,
+                "the 'work-unit' artifact type was only partially scanned; the ticket cannot be resolved without complete work-unit scan trust"
+            ),
         }
     }
 }
@@ -142,6 +147,48 @@ pub fn validate_scoped_work_unit(
 ) -> Result<(), ScopedWorkUnitError> {
     let identity = resolve_forge_identity(&ForgeConfig::default());
     validate_scoped_work_unit_with_identity(store, supplied, &identity)
+}
+
+/// Enforce tracker-handle consistency across all recorded `work-unit` instances
+/// without requiring a supplied canonical id.
+///
+/// Used during promised-scope entry, where the session has a forge ticket
+/// reference rather than a recorded instance id. Runs the same content checks as
+/// [`validate_scoped_work_unit_with_identity`] (tracker-number agreement,
+/// duplicate-root rejection, deployment-identity agreement) over the store.
+pub fn validate_tracker_consistency(
+    store: &ArtifactStore,
+    identity: &ResolvedForgeIdentity,
+) -> Result<(), ScopedWorkUnitError> {
+    validate_tracker_content(store, identity)
+}
+
+/// Find the valid `work-unit` instance whose tracker handle identity equals
+/// `target` (e.g. `github:owner/name:14`), if any.
+///
+/// Reads handles from the local store only; performs no forge access. Returns
+/// the first match in store iteration order; callers run
+/// [`validate_tracker_consistency`] first to reject duplicate tracker roots, so
+/// at most one instance can match a given identity in a consistent store.
+pub fn find_work_unit_by_tracker_identity(store: &ArtifactStore, target: &str) -> Option<String> {
+    for (instance_id, state) in store.instances_of("work-unit", None) {
+        if !matches!(state.status, ValidationStatus::Valid) {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&state.path) else {
+            continue;
+        };
+        let Ok(data) = serde_json::from_str::<Value>(&content) else {
+            continue;
+        };
+        let Some(handle) = data.get("handle").and_then(Value::as_object) else {
+            continue;
+        };
+        if tracker_identity(handle).as_deref() == Some(target) {
+            return Some(instance_id.to_string());
+        }
+    }
+    None
 }
 
 pub fn resolve_forge_identity(config: &ForgeConfig) -> ResolvedForgeIdentity {

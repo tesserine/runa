@@ -14,11 +14,17 @@ pub enum SessionError {
     Project(crate::ProjectError),
     Scan(crate::ScanError),
     WorkUnitScope(crate::ScopedWorkUnitError),
+    Entry(crate::EntryError),
     MissingWorkUnit,
     NoCurrentStep,
     CurrentStepMissing(String),
     CurrentStepNotReady(String),
     CurrentStepUnservable(String),
+    Precondition(crate::EnforcementError),
+    ScanIncomplete {
+        protocol: String,
+        types: Vec<String>,
+    },
     Postcondition(crate::EnforcementError),
     Record(crate::StoreError),
 }
@@ -29,6 +35,7 @@ impl fmt::Display for SessionError {
             SessionError::Project(err) => write!(f, "{err}"),
             SessionError::Scan(err) => write!(f, "{err}"),
             SessionError::WorkUnitScope(err) => write!(f, "{err}"),
+            SessionError::Entry(err) => write!(f, "{err}"),
             SessionError::MissingWorkUnit => write!(f, "--session requires --work-unit"),
             SessionError::NoCurrentStep => write!(f, "session has no current ready step"),
             SessionError::CurrentStepMissing(protocol) => {
@@ -46,6 +53,12 @@ impl fmt::Display for SessionError {
             SessionError::CurrentStepUnservable(message) => {
                 write!(f, "current session step cannot be served: {message}")
             }
+            SessionError::Precondition(err) => write!(f, "{err}"),
+            SessionError::ScanIncomplete { protocol, types } => write!(
+                f,
+                "acquisition protocol '{protocol}' cannot be served: input artifact type(s) {} were only partially scanned",
+                types.join(", ")
+            ),
             SessionError::Postcondition(err) => write!(f, "{err}"),
             SessionError::Record(err) => write!(f, "{err}"),
         }
@@ -58,13 +71,16 @@ impl std::error::Error for SessionError {
             SessionError::Project(err) => Some(err),
             SessionError::Scan(err) => Some(err),
             SessionError::WorkUnitScope(err) => Some(err),
+            SessionError::Entry(err) => Some(err),
+            SessionError::Precondition(err) => Some(err),
             SessionError::Postcondition(err) => Some(err),
             SessionError::Record(err) => Some(err),
             SessionError::MissingWorkUnit
             | SessionError::NoCurrentStep
             | SessionError::CurrentStepMissing(_)
             | SessionError::CurrentStepNotReady(_)
-            | SessionError::CurrentStepUnservable(_) => None,
+            | SessionError::CurrentStepUnservable(_)
+            | SessionError::ScanIncomplete { .. } => None,
         }
     }
 }
@@ -84,6 +100,12 @@ impl From<crate::ScanError> for SessionError {
 impl From<crate::ScopedWorkUnitError> for SessionError {
     fn from(err: crate::ScopedWorkUnitError) -> Self {
         SessionError::WorkUnitScope(err)
+    }
+}
+
+impl From<crate::EntryError> for SessionError {
+    fn from(err: crate::EntryError) -> Self {
+        SessionError::Entry(err)
     }
 }
 
@@ -145,10 +167,23 @@ pub struct SessionTransition<T> {
     pub current_step_changed: bool,
 }
 
+/// A session's scope: a recorded work-unit (`Bound`) or a forge ticket
+/// reference standing for a work-unit not yet materialized (`Promised`).
+///
+/// A promised scope admits exactly one step — the methodology's acquisition
+/// surface, evaluated unscoped — and resolves to a `Bound` scope when that step
+/// materializes the work-unit. Downstream of binding the two are
+/// indistinguishable.
+#[derive(Clone)]
+enum SessionScope {
+    Bound(String),
+    Promised { ticket: crate::TicketRef },
+}
+
 pub struct SessionState {
     working_dir: PathBuf,
     pub loaded: crate::LoadedProject,
-    work_unit: String,
+    scope: SessionScope,
     current_step: Option<CurrentStep>,
     exhausted: HashSet<crate::CandidateKey>,
 }
@@ -162,6 +197,26 @@ struct ReconciledScan {
 impl From<&CurrentStep> for crate::CandidateKey {
     fn from(step: &CurrentStep) -> Self {
         Self::new(&step.protocol, step.work_unit.as_deref())
+    }
+}
+
+/// The set of artifact type names that were only partially scanned (some
+/// entries unreadable), used to gate readiness on scan trust.
+fn partially_scanned_set(scan_result: &crate::ScanResult) -> HashSet<String> {
+    scan_result
+        .partially_scanned_types
+        .iter()
+        .map(|partial| partial.artifact_type.clone())
+        .collect()
+}
+
+/// Map a canonical acquisition-admission block onto the session error surface.
+fn session_error_from_block(block: crate::AcquisitionBlock, protocol: String) -> SessionError {
+    match block {
+        crate::AcquisitionBlock::Precondition(error) => SessionError::Precondition(error),
+        crate::AcquisitionBlock::ScanIncomplete(types) => {
+            SessionError::ScanIncomplete { protocol, types }
+        }
     }
 }
 
@@ -193,7 +248,7 @@ impl SessionState {
         let mut session = Self {
             working_dir,
             loaded,
-            work_unit,
+            scope: SessionScope::Bound(work_unit),
             current_step: None,
             exhausted: HashSet::new(),
         };
@@ -204,6 +259,84 @@ impl SessionState {
             &session.exhausted,
         )?;
         session.current_step = session.validate_selected_step(next_step, validate_step)?;
+        Ok(session)
+    }
+
+    /// Open a session from a forge ticket reference.
+    ///
+    /// When the referenced work-unit already exists, the session opens bound to
+    /// it — indistinguishable from [`open`](Self::open). Otherwise the session
+    /// opens in a promised scope pinned to the methodology's acquisition
+    /// surface; the reference is that step's activation, and the agent's
+    /// acquisition materializes the work-unit, which [`advance`] then binds.
+    pub fn open_entry<F>(
+        working_dir: PathBuf,
+        config_override: Option<&Path>,
+        ticket: crate::TicketRef,
+        validate_step: F,
+    ) -> Result<Self, SessionError>
+    where
+        F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
+    {
+        let mut loaded = crate::project::load(&working_dir, config_override)?;
+        let scan_result = crate::scan(&loaded.workspace_dir, &mut loaded.store)?;
+        let scan_findings = crate::collect_scan_findings(&scan_result, &loaded.workspace_dir);
+        let identity = crate::resolve_forge_identity(&loaded.config.forge);
+
+        // Resolve the promise first. Re-entry (the work-unit already exists)
+        // degrades to an ordinary bound session and needs no acquisition surface;
+        // only a cold start requires one.
+        if let Some(work_unit) = crate::resolve_promise(&loaded.store, &identity, &ticket)? {
+            crate::validate_scoped_work_unit_with_identity(&loaded.store, &work_unit, &identity)?;
+            let mut session = Self {
+                working_dir,
+                loaded,
+                scope: SessionScope::Bound(work_unit),
+                current_step: None,
+                exhausted: HashSet::new(),
+            };
+            session.refresh_exhaustion_after_scan(&scan_result);
+            let evaluated = session.evaluate(&scan_findings);
+            let next_step = session.select_next(&evaluated, &scan_findings, &session.exhausted)?;
+            session.current_step = session.validate_selected_step(next_step, validate_step)?;
+            return Ok(session);
+        }
+
+        // Cold start: the acquisition surface is required.
+        crate::validate_tracker_consistency(&loaded.store, &identity)?;
+        let acquisition_name = crate::discover_acquisition_surface(&loaded.manifest.protocols)?
+            .name
+            .clone();
+        let mut session = Self {
+            working_dir,
+            loaded,
+            scope: SessionScope::Promised { ticket },
+            current_step: None,
+            exhausted: HashSet::new(),
+        };
+        session.refresh_exhaustion_after_scan(&scan_result);
+
+        // The reference substitutes only the acquisition's trigger; the canonical
+        // admission gate (preconditions + scan trust) still applies.
+        let acquisition = session.protocol(&acquisition_name)?;
+        if let Err(block) = crate::check_acquisition_admissible(
+            acquisition,
+            &session.loaded.store,
+            &partially_scanned_set(&scan_result),
+        ) {
+            return Err(session_error_from_block(block, acquisition_name));
+        }
+        // The ticket substitutes the trigger, so record the full trigger
+        // freshness baseline; otherwise a later normal activation of this
+        // acquisition could be falsely treated as current.
+        let provenance_snapshot =
+            crate::protocol_entry_execution_record(acquisition, &session.loaded.store, None);
+        let step = CurrentStep {
+            protocol: acquisition_name,
+            work_unit: None,
+            provenance_snapshot: Some(provenance_snapshot),
+        };
+        session.current_step = session.validate_selected_step(Some(step), validate_step)?;
         Ok(session)
     }
 
@@ -263,15 +396,19 @@ impl SessionState {
             .clone()
             .ok_or(SessionError::NoCurrentStep)?;
         let protocol = self.protocol(&current_step.protocol)?;
-        let mut context =
-            crate::context::build_context(protocol, &self.loaded.store, Some(&self.work_unit));
-        context.inputs.retain(|input| {
-            input.relationship == crate::context::ArtifactRelationship::Requires
-                || !reconciled
-                    .scan_findings
-                    .affected_types
-                    .contains(input.artifact_type.as_str())
-        });
+        let mut context = crate::context::build_execution_context(
+            protocol,
+            &self.loaded.store,
+            self.context_work_unit(),
+            &reconciled.scan_findings.affected_types,
+        );
+        if let SessionScope::Promised { ticket, .. } = &self.scope {
+            context.entry = Some(crate::context::EntryDelivery {
+                reference: ticket.display.clone(),
+                ticket_number: ticket.number,
+                tracker_identity: ticket.tracker_identity.clone(),
+            });
+        }
         let rendered = render_context_prompt(&context);
         self.refresh_current_provenance_snapshot(&reconciled.scan_findings)?;
         Ok((context, rendered))
@@ -352,6 +489,25 @@ impl SessionState {
             &reconciled.scan_result,
         );
 
+        // A promised scope binds here: acquisition has produced the work-unit,
+        // and the session becomes an ordinary bound scoped session for the next
+        // step. Binding must precede selection (select_next needs the bound
+        // scope to find the next scoped step), so capture the prior scope and
+        // restore it — along with the staged execution record — on any failure,
+        // leaving a retried tick still representing the promised entry.
+        let previous_scope = self.scope.clone();
+        if matches!(self.scope, SessionScope::Promised { .. })
+            && let Err(error) = self.bind_promise()
+        {
+            // bind_promise mutates scope only on success, so no scope restore.
+            self.loaded.store.restore_execution_record(
+                &completed_step.protocol,
+                completed_step.work_unit.as_deref(),
+                previous_record,
+            );
+            return Err(error);
+        }
+
         let evaluated = self.evaluate(&reconciled.scan_findings);
         let next_step = match select_next(
             self,
@@ -366,6 +522,7 @@ impl SessionState {
                     completed_step.work_unit.as_deref(),
                     previous_record,
                 );
+                self.scope = previous_scope;
                 return Err(error);
             }
         };
@@ -377,6 +534,7 @@ impl SessionState {
                     completed_step.work_unit.as_deref(),
                     previous_record,
                 );
+                self.scope = previous_scope;
                 return Err(error);
             }
         };
@@ -386,6 +544,7 @@ impl SessionState {
                 completed_step.work_unit.as_deref(),
                 previous_record,
             );
+            self.scope = previous_scope;
             return Err(SessionError::Record(error));
         }
 
@@ -412,11 +571,18 @@ impl SessionState {
     ) -> Result<ReconciledScan, SessionError> {
         let scan_result = self.scan_workspace()?;
         let identity = crate::resolve_forge_identity(&self.loaded.config.forge);
-        crate::validate_scoped_work_unit_with_identity(
-            &self.loaded.store,
-            &self.work_unit,
-            &identity,
-        )?;
+        match &self.scope {
+            SessionScope::Bound(work_unit) => {
+                crate::validate_scoped_work_unit_with_identity(
+                    &self.loaded.store,
+                    work_unit,
+                    &identity,
+                )?;
+            }
+            SessionScope::Promised { .. } => {
+                crate::validate_tracker_consistency(&self.loaded.store, &identity)?;
+            }
+        }
         self.refresh_exhaustion_after_scan(&scan_result);
         let scan_findings = crate::collect_scan_findings(&scan_result, &self.loaded.workspace_dir);
         let evaluated = self.evaluate(&scan_findings);
@@ -425,7 +591,25 @@ impl SessionState {
                 .current_step
                 .clone()
                 .ok_or(SessionError::NoCurrentStep)?;
-            self.ensure_current_step_can_complete(&current_step, &evaluated)?;
+            // The operator's reference stands in for the acquisition step's
+            // trigger, but its preconditions and scan-trust gates still apply. A
+            // bound step uses the normal readiness check; a promised step uses
+            // the canonical acquisition-admission gate.
+            if matches!(self.scope, SessionScope::Bound(_)) {
+                self.ensure_current_step_can_complete(&current_step, &evaluated)?;
+            } else {
+                let protocol = self.protocol(&current_step.protocol)?;
+                if let Err(block) = crate::check_acquisition_admissible(
+                    protocol,
+                    &self.loaded.store,
+                    &partially_scanned_set(&scan_result),
+                ) {
+                    return Err(session_error_from_block(
+                        block,
+                        current_step.protocol.clone(),
+                    ));
+                }
+            }
         }
         Ok(ReconciledScan {
             scan_result,
@@ -446,8 +630,49 @@ impl SessionState {
             &self.loaded,
             &self.working_dir,
             scan_findings,
-            crate::EvaluationScope::Scoped(&self.work_unit),
+            self.evaluation_scope(),
         )
+    }
+
+    fn evaluation_scope(&self) -> crate::EvaluationScope<'_> {
+        match &self.scope {
+            SessionScope::Bound(work_unit) => crate::EvaluationScope::Scoped(work_unit),
+            SessionScope::Promised { .. } => crate::EvaluationScope::Unscoped,
+        }
+    }
+
+    fn context_work_unit(&self) -> Option<&str> {
+        match &self.scope {
+            SessionScope::Bound(work_unit) => Some(work_unit),
+            SessionScope::Promised { .. } => None,
+        }
+    }
+
+    /// Resolve a promised scope to the materialized work-unit and bind it.
+    ///
+    /// No-op when already bound. Errors when acquisition produced no matching
+    /// work-unit ([`EntryError::Unresolved`]) or the recorded work-unit fails
+    /// scoped-identity validation.
+    fn bind_promise(&mut self) -> Result<(), SessionError> {
+        let identity = crate::resolve_forge_identity(&self.loaded.config.forge);
+        let ticket = match &self.scope {
+            SessionScope::Promised { ticket, .. } => ticket.clone(),
+            SessionScope::Bound(_) => return Ok(()),
+        };
+        match crate::resolve_promise(&self.loaded.store, &identity, &ticket)? {
+            Some(work_unit) => {
+                crate::validate_scoped_work_unit_with_identity(
+                    &self.loaded.store,
+                    &work_unit,
+                    &identity,
+                )?;
+                self.scope = SessionScope::Bound(work_unit);
+                Ok(())
+            }
+            None => Err(SessionError::Entry(crate::EntryError::Unresolved {
+                reference: ticket.display,
+            })),
+        }
     }
 
     fn select_next(
@@ -546,12 +771,19 @@ impl SessionState {
             return Ok(());
         };
         let protocol = self.protocol(&current.protocol)?;
-        let provenance_snapshot = crate::protocol_execution_record(
-            protocol,
-            &self.loaded.store,
-            current.work_unit.as_deref(),
-            &scan_findings.affected_types,
-        );
+        // A promised acquisition's trigger is substituted by the ticket, so it
+        // records the full trigger freshness baseline rather than the
+        // satisfied-only set, keeping later normal activations honest.
+        let provenance_snapshot = if matches!(self.scope, SessionScope::Promised { .. }) {
+            crate::protocol_entry_execution_record(protocol, &self.loaded.store, None)
+        } else {
+            crate::protocol_execution_record(
+                protocol,
+                &self.loaded.store,
+                current.work_unit.as_deref(),
+                &scan_findings.affected_types,
+            )
+        };
         if let Some(current_step) = &mut self.current_step {
             current_step.provenance_snapshot = Some(provenance_snapshot);
         }
@@ -652,6 +884,314 @@ trigger = { type = "on_artifact", name = "work-unit" }
 
     fn write_session_project(dir: &Path) -> PathBuf {
         write_session_project_with_work_unit(dir, true)
+    }
+
+    /// A methodology with an unscoped acquisition surface (`decompose` produces
+    /// `work-unit`) and a scoped `take`, plus a GitHub forge deployment. When
+    /// `materialize` is set, a matching `work-unit` for ticket 14 is present.
+    fn write_entry_project(dir: &Path, materialize: bool) -> PathBuf {
+        write_entry_project_with_acquisition_requires(dir, materialize, false)
+    }
+
+    /// `acquisition_requires_request` declares an unmet `requires` on the
+    /// acquisition surface so its preconditions block at cold-start entry.
+    fn write_entry_project_with_acquisition_requires(
+        dir: &Path,
+        materialize: bool,
+        acquisition_requires_request: bool,
+    ) -> PathBuf {
+        let decompose_requires = if acquisition_requires_request {
+            "requires = [\"request\"]\n"
+        } else {
+            ""
+        };
+        let manifest = format!(
+            r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "request"
+
+[[artifact_types]]
+name = "claim"
+
+[[protocols]]
+name = "decompose"
+{decompose_requires}produces = ["work-unit"]
+scoped = false
+trigger = {{ type = "on_artifact", name = "request" }}
+
+[[protocols]]
+name = "take"
+requires = ["work-unit"]
+produces = ["claim"]
+scoped = true
+trigger = {{ type = "on_artifact", name = "work-unit" }}
+"#
+        );
+        let manifest_path = crate::test_helpers::write_methodology(
+            dir,
+            &manifest,
+            &[
+                (
+                    "work-unit",
+                    r#"{"type":"object","required":["title","handle"],"properties":{"title":{"type":"string"},"handle":{"type":"object"}}}"#,
+                ),
+                (
+                    "request",
+                    r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+                ),
+                (
+                    "claim",
+                    r#"{"type":"object","required":["work_unit","scope"],"properties":{"work_unit":{"type":"string"},"scope":{"type":"string"}}}"#,
+                ),
+            ],
+            &["decompose", "take"],
+        );
+        scaffold_entry_project(dir, &manifest_path, materialize)
+    }
+
+    /// A methodology whose only protocol is the scoped `take` — there is no
+    /// unscoped `work-unit` producer, so a cold start has no acquisition surface.
+    fn write_take_only_entry_project(dir: &Path, materialize: bool) -> PathBuf {
+        let manifest_path = crate::test_helpers::write_methodology(
+            dir,
+            r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "work-unit"
+
+[[artifact_types]]
+name = "claim"
+
+[[protocols]]
+name = "take"
+requires = ["work-unit"]
+produces = ["claim"]
+scoped = true
+trigger = { type = "on_artifact", name = "work-unit" }
+"#,
+            &[
+                (
+                    "work-unit",
+                    r#"{"type":"object","required":["title","handle"],"properties":{"title":{"type":"string"},"handle":{"type":"object"}}}"#,
+                ),
+                (
+                    "claim",
+                    r#"{"type":"object","required":["work_unit","scope"],"properties":{"work_unit":{"type":"string"},"scope":{"type":"string"}}}"#,
+                ),
+            ],
+            &["take"],
+        );
+        scaffold_entry_project(dir, &manifest_path, materialize)
+    }
+
+    /// Write `.runa/{config,state}.toml` and the workspace for an entry project,
+    /// optionally materializing the work-unit for ticket 14.
+    fn scaffold_entry_project(dir: &Path, manifest_path: &Path, materialize: bool) -> PathBuf {
+        let project_dir = dir.join("project");
+        fs::create_dir(&project_dir).unwrap();
+        let runa_dir = project_dir.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        let manifest_path = fs::canonicalize(manifest_path).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            format!(
+                "methodology_path = {:?}\n\n[forge]\ntype = \"github\"\nowner = \"tesserine\"\nname = \"runa\"\n",
+                manifest_path.display().to_string()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            runa_dir.join("state.toml"),
+            "initialized_at = \"2026-06-11T00:00:00Z\"\nruna_version = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let workspace = project_dir.join(".runa/workspace");
+        fs::create_dir_all(workspace.join("work-unit")).unwrap();
+        if materialize {
+            write_acquired_work_unit(&workspace);
+        }
+        project_dir
+    }
+
+    fn write_acquired_work_unit(workspace: &Path) {
+        fs::create_dir_all(workspace.join("work-unit")).unwrap();
+        fs::write(
+            workspace.join("work-unit/work-unit-14-cold-start.json"),
+            r#"{"title":"Cold start","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/14","number":14}}"#,
+        )
+        .unwrap();
+    }
+
+    fn ticket_14() -> crate::TicketRef {
+        crate::TicketRef {
+            number: 14,
+            tracker_identity: "github:tesserine/runa:14".to_string(),
+            display: "github:tesserine/runa#14".to_string(),
+        }
+    }
+
+    #[test]
+    fn open_entry_cold_pins_acquisition_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = write_entry_project(dir.path(), false);
+
+        let session =
+            SessionState::open_entry(project_dir, None, ticket_14(), |_, _| Ok(())).unwrap();
+
+        let step = session.current_step().expect("acquisition step pinned");
+        assert_eq!(step.protocol, "decompose");
+        assert_eq!(step.work_unit, None);
+        assert!(matches!(session.scope, SessionScope::Promised { .. }));
+    }
+
+    #[test]
+    fn open_entry_re_entry_binds_without_acquisition_surface() {
+        let dir = tempfile::tempdir().unwrap();
+        // No unscoped work-unit producer exists, but the work-unit is already
+        // recorded: re-entry must degrade to a bound session rather than fail on
+        // acquisition-surface discovery.
+        let project_dir = write_take_only_entry_project(dir.path(), true);
+
+        let session =
+            SessionState::open_entry(project_dir, None, ticket_14(), |_, _| Ok(())).unwrap();
+
+        let step = session.current_step().expect("bound session selects take");
+        assert_eq!(step.protocol, "take");
+        assert!(matches!(session.scope, SessionScope::Bound(_)));
+    }
+
+    #[test]
+    fn open_entry_cold_without_acquisition_surface_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // No work-unit recorded and no acquisition surface: a cold start has no
+        // way to acquire, so discovery fails.
+        let project_dir = write_take_only_entry_project(dir.path(), false);
+
+        let result = SessionState::open_entry(project_dir, None, ticket_14(), |_, _| Ok(()));
+
+        assert!(matches!(
+            result,
+            Err(SessionError::Entry(
+                crate::EntryError::NoAcquisitionSurface { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn open_entry_blocks_when_acquisition_preconditions_unmet() {
+        let dir = tempfile::tempdir().unwrap();
+        // decompose requires an absent `request`; entry substitutes only the
+        // trigger, so the unmet precondition must still block.
+        let project_dir = write_entry_project_with_acquisition_requires(dir.path(), false, true);
+
+        let result = SessionState::open_entry(project_dir, None, ticket_14(), |_, _| Ok(()));
+
+        assert!(matches!(result, Err(SessionError::Precondition(_))));
+    }
+
+    #[test]
+    fn open_entry_binds_immediately_when_work_unit_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = write_entry_project(dir.path(), true);
+
+        let session =
+            SessionState::open_entry(project_dir, None, ticket_14(), |_, _| Ok(())).unwrap();
+
+        let step = session.current_step().expect("bound session selects take");
+        assert_eq!(step.protocol, "take");
+        assert_eq!(step.work_unit.as_deref(), Some("work-unit-14-cold-start"));
+        assert!(matches!(session.scope, SessionScope::Bound(_)));
+    }
+
+    #[test]
+    fn advance_from_acquisition_binds_and_selects_take() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = write_entry_project(dir.path(), false);
+        let mut session =
+            SessionState::open_entry(project_dir.clone(), None, ticket_14(), |_, _| Ok(()))
+                .unwrap();
+
+        // The acquisition agent materializes the work-unit.
+        write_acquired_work_unit(&project_dir.join(".runa/workspace"));
+
+        let advance = session
+            .advance_with_validator(|_, _| Ok(()))
+            .expect("advance binds the promised scope");
+
+        assert_eq!(advance.payload.completed_step.protocol, "decompose");
+        assert_eq!(
+            advance
+                .payload
+                .next_step
+                .as_ref()
+                .map(|s| s.protocol.as_str()),
+            Some("take")
+        );
+        assert!(matches!(session.scope, SessionScope::Bound(_)));
+    }
+
+    #[test]
+    fn advance_restores_promised_scope_when_post_bind_commit_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = write_entry_project(dir.path(), false);
+        let mut session =
+            SessionState::open_entry(project_dir.clone(), None, ticket_14(), |_, _| Ok(()))
+                .unwrap();
+
+        // Acquisition materializes the work-unit, so bind_promise succeeds; the
+        // selector then fails, exercising a post-bind rollback path.
+        write_acquired_work_unit(&project_dir.join(".runa/workspace"));
+
+        let advance = session.advance_with_selector_and_validator(
+            |_session, _evaluated, _scan_findings, _exhausted| {
+                Err(SessionError::CurrentStepMissing("synthetic".to_string()))
+            },
+            |_next_protocol, _store| Ok(()),
+        );
+
+        assert!(advance.is_err(), "advance unexpectedly succeeded");
+        // The promised scope must be restored, not left bound, so a retried tick
+        // still represents the entry.
+        assert!(
+            matches!(session.scope, SessionScope::Promised { .. }),
+            "scope was not restored to Promised after a failed commit"
+        );
+        assert_eq!(
+            session.current_step().map(|step| step.protocol.as_str()),
+            Some("decompose")
+        );
+        assert!(
+            session
+                .store()
+                .execution_record("decompose", None)
+                .is_none()
+        );
+        assert_no_execution_record(&project_dir, "decompose");
+    }
+
+    #[test]
+    fn advance_without_materialized_work_unit_is_unresolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = write_entry_project(dir.path(), false);
+        let mut session =
+            SessionState::open_entry(project_dir.clone(), None, ticket_14(), |_, _| Ok(()))
+                .unwrap();
+
+        let advance = session.advance_with_validator(|_, _| Ok(()));
+
+        assert!(matches!(
+            advance,
+            Err(SessionError::Postcondition(_))
+                | Err(SessionError::Entry(crate::EntryError::Unresolved { .. }))
+        ));
+        assert!(matches!(session.scope, SessionScope::Promised { .. }));
+        assert_no_execution_record(&project_dir, "decompose");
     }
 
     #[test]
