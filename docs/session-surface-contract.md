@@ -7,9 +7,10 @@ governs the runa-to-methodology boundary, while this contract governs the
 runa-to-driver boundary.
 
 The source invariant is commons
-[ADR-0015: Mode Is a Property of the Session](https://github.com/tesserine/commons/blob/main/adr/0015-mode-is-a-property-of-the-session.md)
-and
-[Design Principle 21](https://github.com/tesserine/commons/blob/main/DESIGN-PRINCIPLES.md#21-mode-is-a-property-of-the-session-not-the-operation).
+[ADR-0015: Mode Is a Property of the Session](https://github.com/tesserine/commons/blob/main/adr/0015-mode-is-a-property-of-the-session.md),
+grounded in the
+[Sovereignty](https://github.com/pentaxis93/principles/blob/main/principles/sovereignty.md)
+principle.
 The operation and contract layer is mode-agnostic by construction. Autonomous
 orchestrators and interactive drivers are clients of the same validated runa
 surface.
