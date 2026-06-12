@@ -9,6 +9,11 @@ Semantic Versioning.
 
 ### Added
 
+- `docs/security.md` — consolidated index of runa's security guarantees
+  (previously scattered across four documents), each mapped to its
+  enforcement site and authoritative specification.
+- `CONTRIBUTING.md` test map: where unit, CLI-integration, MCP, and
+  docs-coherence gates live.
 - The quickstart methodology README now walks the full
   scan → READY → produce loop without requiring an agent: entry artifact,
   cascade advance on artifact appearance, quiescence, and freshness-driven

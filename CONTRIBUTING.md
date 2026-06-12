@@ -31,6 +31,23 @@ New domain logic goes in libagent. The CLI and MCP server must not contain
 domain logic — this keeps behavior testable and reasoned about in one place.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for module detail.
 
+## Test map
+
+`cargo test --workspace` runs everything. Where behavior lives:
+
+- **Unit tests** — inline `#[cfg(test)] mod tests` in every libagent module
+  (the project convention; see ARCHITECTURE.md § Key Design Patterns).
+- **CLI integration tests** — `runa-cli/tests/`: end-to-end command behavior
+  (`e2e.rs`, `step.rs`, `run.rs`, `go.rs`, …), release tooling
+  (`release_check.rs`), and the docs/config coherence gates
+  (`workspace_contract.rs` — these fail when documentation drifts from
+  code, e.g. the `step --json` envelope version or the vendored commons
+  exit-code table).
+- **MCP integration tests** — `runa-mcp/tests/`.
+
+A behavior change without a failing-then-passing test is incomplete; the
+workspace-contract gates mean documentation drift is also a test failure.
+
 ## Conventions
 
 - Conventional commits (e.g., `feat(trigger):`, `fix(store):`, `docs:`)

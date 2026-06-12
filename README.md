@@ -154,6 +154,7 @@ Both projects are in early development.
 - [Methodology Authoring Guide](docs/methodology-authoring-guide.md) — Building a first methodology from scratch
 - [Interface Contract](docs/interface-contract.md) — The three primitives defining the methodology-runtime boundary
 - [Session Surface Contract](docs/session-surface-contract.md) — The mode-agnostic driver/agent boundary for session invocation and lifecycle movement
+- [Security and Safety Surface](docs/security.md) — Index of guarantees: path safety, validate-before-write, ticket-content blindness, redaction, and where each is enforced
 - [Architecture](ARCHITECTURE.md) — Workspace structure, data flow, module descriptions, disk layout
 - [Contributing](CONTRIBUTING.md) — Conventions for landing PRs
 - [Releasing](RELEASING.md) — Repository release operation and verification
