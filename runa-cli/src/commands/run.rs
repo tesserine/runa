@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::path::Path;
 use std::process;
@@ -12,12 +12,12 @@ use serde::{Serialize, Serializer};
 use tracing::info;
 
 use super::CommandError;
-use crate::commands::protocol_eval;
 use crate::commands::step::{
     ExecutionOptions, ExecutionState, McpServerConfig, PlanEntry, PlannedEntry, StepError,
     build_plan_entries, evaluate_execution_state, execute_entry, locate_runa_mcp,
     preview_runa_mcp_command,
 };
+use crate::commands::{entry, protocol_eval};
 use crate::exit_codes::ExitCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +137,25 @@ struct RunJson<'a> {
     scan_warnings: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cycle: Option<Vec<String>>,
+    execution_plan: Vec<RunPlanJson>,
+    protocols: Vec<protocol_eval::ProtocolJson>,
+}
+
+#[derive(Serialize)]
+struct EntryJson {
+    reference: String,
+    ticket_number: u64,
+    acquisition_protocol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolved_work_unit: Option<String>,
+}
+
+#[derive(Serialize)]
+struct RunEntryJson<'a> {
+    version: u32,
+    methodology: &'a str,
+    entry: EntryJson,
+    scan_warnings: Vec<String>,
     execution_plan: Vec<RunPlanJson>,
     protocols: Vec<protocol_eval::ProtocolJson>,
 }
@@ -343,8 +362,8 @@ fn execute_and_reconcile(
     config_path: &Path,
     mcp_command: &str,
     next_entry: PlannedEntry,
+    runtime_env: &BTreeMap<String, String>,
 ) -> Result<ReconcileOutcome, StepError> {
-    let runtime_env = crate::commands::step::resolved_runtime_env(working_dir, &loaded.config);
     let transcript_settings =
         libagent::transcript::resolve_transcript_settings(working_dir, &loaded.config.transcript);
     let execution_entry = build_plan_entries(
@@ -352,7 +371,7 @@ fn execute_and_reconcile(
         mcp_command,
         working_dir,
         config_path,
-        &runtime_env,
+        runtime_env,
     )
     .into_iter()
     .next()
@@ -364,7 +383,7 @@ fn execute_and_reconcile(
         &execution_entry,
         ExecutionOptions {
             isolate_process_group: true,
-            extra_env: runtime_env,
+            extra_env: runtime_env.clone(),
             transcript_settings: Some(transcript_settings),
         },
     )?;
@@ -429,12 +448,14 @@ fn refresh_state_after_scan(
     evaluate_execution_state(loaded, working_dir, scan_result, scope)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     working_dir: &Path,
     config_override: Option<&Path>,
     dry_run: bool,
     json_output: bool,
     work_unit: Option<&str>,
+    ticket: Option<&str>,
     cli_agent_command_present: bool,
     cli_agent_command_argv: &[String],
 ) -> Result<RunOutcome, RunError> {
@@ -445,10 +466,105 @@ pub fn run(
     let (mut loaded, scan_result) = super::load_and_scan(working_dir, config_override)
         .map_err(StepError::from)
         .map_err(RunError::from)?;
-    super::validate_scoped_work_unit(&loaded, work_unit)
+
+    if let Some(raw) = ticket {
+        let (ticket_ref, identity) =
+            entry::resolve_reference(&loaded, raw).map_err(RunError::from)?;
+
+        // Re-entry: the work-unit already exists — behave as `--work-unit <id>`.
+        if let Some(work_unit) =
+            entry::resolve_existing(&loaded, &identity, &ticket_ref).map_err(RunError::from)?
+        {
+            return run_with_scope(
+                working_dir,
+                config_override,
+                dry_run,
+                json_output,
+                loaded,
+                scan_result,
+                Some(work_unit),
+                cli_agent_command_present,
+                cli_agent_command_argv,
+            );
+        }
+
+        // Cold: project the entry cascade, or execute acquisition then cascade.
+        if dry_run {
+            return run_ticket_dry_run(
+                &loaded,
+                working_dir,
+                config_override,
+                &scan_result,
+                &ticket_ref,
+                json_output,
+            );
+        }
+        // Entry substitutes only the trigger; the acquisition's preconditions
+        // still gate. Block before launching the agent when they are unmet.
+        let acquisition = entry::acquisition_surface(&loaded).map_err(RunError::from)?;
+        if let Err(blocked) = libagent::enforce_preconditions(&acquisition, &loaded.store, None) {
+            println!("Run outcome: {}", RunOutcome::QuiescentBlocked.label());
+            println!("{blocked}");
+            return Ok(RunOutcome::QuiescentBlocked);
+        }
+        let agent_command = resolve_agent_command(
+            working_dir,
+            config_override,
+            cli_agent_command_present,
+            cli_agent_command_argv,
+        )?;
+        let (work_unit, scan_result) = acquire_ticket(
+            working_dir,
+            config_override,
+            &mut loaded,
+            &scan_result,
+            &ticket_ref,
+            &identity,
+            &agent_command,
+        )?;
+        return run_with_scope(
+            working_dir,
+            config_override,
+            dry_run,
+            json_output,
+            loaded,
+            scan_result,
+            Some(work_unit),
+            cli_agent_command_present,
+            cli_agent_command_argv,
+        );
+    }
+
+    run_with_scope(
+        working_dir,
+        config_override,
+        dry_run,
+        json_output,
+        loaded,
+        scan_result,
+        work_unit.map(str::to_owned),
+        cli_agent_command_present,
+        cli_agent_command_argv,
+    )
+}
+
+/// Execute the cascade for a fixed scope (a delegated work-unit or unscoped).
+#[allow(clippy::too_many_arguments)]
+fn run_with_scope(
+    working_dir: &Path,
+    config_override: Option<&Path>,
+    dry_run: bool,
+    json_output: bool,
+    mut loaded: crate::project::LoadedProject,
+    scan_result: libagent::ScanResult,
+    work_unit: Option<String>,
+    cli_agent_command_present: bool,
+    cli_agent_command_argv: &[String],
+) -> Result<RunOutcome, RunError> {
+    super::validate_scoped_work_unit(&loaded, work_unit.as_deref())
         .map_err(StepError::from)
         .map_err(RunError::from)?;
-    let scope = match work_unit {
+    let scope = match work_unit.as_deref() {
         Some(work_unit) => libagent::EvaluationScope::Scoped(work_unit),
         None => libagent::EvaluationScope::Unscoped,
     };
@@ -538,6 +654,7 @@ pub fn run(
         .to_string_lossy()
         .into_owned();
     let interrupts = InterruptState::install()?;
+    let runtime_env = crate::commands::step::resolved_runtime_env(working_dir, &loaded.config);
     let mut exhausted = HashSet::new();
     let mut failed = HashSet::new();
     let mut executed_any = false;
@@ -570,6 +687,7 @@ pub fn run(
             &config_path,
             &mcp_command,
             next_entry,
+            &runtime_env,
         ) {
             Ok(ReconcileOutcome::Succeeded {
                 scan_result,
@@ -628,6 +746,227 @@ pub fn run(
             Err(err) => return Err(RunError::from(err)),
         }
     }
+}
+
+/// Project the cold-start ticket entry cascade without executing any agent.
+///
+/// The acquisition step is `current`; the work-unit it would produce seeds the
+/// projection so `take` appears next on the acquired work-unit.
+fn run_ticket_dry_run(
+    loaded: &crate::project::LoadedProject,
+    working_dir: &Path,
+    config_override: Option<&Path>,
+    scan_result: &libagent::ScanResult,
+    ticket_ref: &libagent::TicketRef,
+    json_output: bool,
+) -> Result<RunOutcome, RunError> {
+    let acquisition = entry::acquisition_surface(loaded).map_err(RunError::from)?;
+    // Entry substitutes only the trigger; the acquisition's preconditions still
+    // gate. When they are unmet the cascade projects nothing and the outcome is
+    // blocked.
+    let precondition_failure = libagent::enforce_preconditions(&acquisition, &loaded.store, None)
+        .err()
+        .map(|error| error.to_string());
+    let scan_findings = libagent::collect_scan_findings(scan_result, &loaded.workspace_dir);
+    let config_path = crate::project::resolve_config(working_dir, config_override)
+        .map_err(CommandError::from)
+        .map_err(StepError::from)
+        .map_err(RunError::from)?;
+    let runtime_env = entry::entry_runtime_env(working_dir, &loaded.config, ticket_ref);
+    let preview_command = preview_runa_mcp_command();
+
+    let entry_planned =
+        entry::acquisition_planned_entry(loaded, &acquisition, ticket_ref, &scan_findings);
+    let concrete = build_plan_entries(
+        vec![entry_planned],
+        &preview_command,
+        working_dir,
+        &config_path,
+        &runtime_env,
+    )
+    .into_iter()
+    .next()
+    .expect("single planned entry must produce one execution entry");
+
+    let graph = libagent::DependencyGraph::build(&loaded.manifest.protocols).ok();
+    let fallback: Vec<&str> = loaded
+        .manifest
+        .protocols
+        .iter()
+        .map(|protocol| protocol.name.as_str())
+        .collect();
+    let topological_order: Vec<&str> = match &graph {
+        Some(graph) => graph.topological_order_excluding(&HashSet::new()),
+        None => fallback,
+    };
+    let promised_scope = entry::promised_scope_token(ticket_ref);
+    let projected = libagent::project_entry_cascade(
+        &loaded.manifest.protocols,
+        &loaded.store,
+        &topological_order,
+        &libagent::Candidate {
+            protocol_name: acquisition.name.clone(),
+            work_unit: None,
+        },
+        &promised_scope,
+        &scan_findings.affected_types,
+    );
+
+    let protocol_map: std::collections::HashMap<&str, &libagent::ProtocolDeclaration> = loaded
+        .manifest
+        .protocols
+        .iter()
+        .map(|protocol| (protocol.name.as_str(), protocol))
+        .collect();
+    let execution_plan: Vec<RunPlanJson> = projected
+        .into_iter()
+        .map(|candidate| match candidate.projection {
+            libagent::ProjectionClass::Current => RunPlanJson {
+                protocol: concrete.protocol.clone(),
+                work_unit: concrete.work_unit.clone(),
+                trigger: concrete.trigger.clone(),
+                projection: ProjectionKind::Current,
+                mcp_config: Some(concrete.mcp_config.clone()),
+                context: Some(concrete.context.clone()),
+            },
+            libagent::ProjectionClass::Projected => {
+                let trigger = protocol_map
+                    .get(candidate.protocol_name.as_str())
+                    .expect("projected protocol must exist in manifest")
+                    .trigger
+                    .to_string();
+                RunPlanJson {
+                    protocol: candidate.protocol_name,
+                    work_unit: candidate.work_unit,
+                    trigger,
+                    projection: ProjectionKind::Projected,
+                    mcp_config: None,
+                    context: None,
+                }
+            }
+        })
+        .collect();
+
+    let unscoped_state = evaluate_execution_state(
+        loaded,
+        working_dir,
+        scan_result,
+        libagent::EvaluationScope::Unscoped,
+    );
+
+    if json_output {
+        let payload = RunEntryJson {
+            version: 3,
+            methodology: &loaded.manifest.name,
+            entry: EntryJson {
+                reference: ticket_ref.display.clone(),
+                ticket_number: ticket_ref.number,
+                acquisition_protocol: acquisition.name.clone(),
+                resolved_work_unit: None,
+            },
+            scan_warnings: scan_findings.warnings.clone(),
+            execution_plan,
+            protocols: unscoped_state.evaluated.json_protocols(),
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).map_err(RunError::Json)?
+        );
+    } else {
+        println!("Methodology: {}", loaded.manifest.name);
+        println!(
+            "Entry: ticket {} (acquisition: {})",
+            ticket_ref.display, acquisition.name
+        );
+        println!();
+        if let Some(reason) = &precondition_failure {
+            println!("Execution plan: none (acquisition blocked)");
+            println!();
+            println!("{reason}");
+        } else {
+            println!("Execution plan:");
+            for (index, plan_entry) in execution_plan.iter().enumerate() {
+                let projection = match plan_entry.projection {
+                    ProjectionKind::Current => "current, entry",
+                    ProjectionKind::Projected => "projected",
+                };
+                match &plan_entry.work_unit {
+                    Some(work_unit) => println!(
+                        "  {}. {} (work_unit={work_unit}) [{projection}]",
+                        index + 1,
+                        plan_entry.protocol
+                    ),
+                    None => println!("  {}. {} [{projection}]", index + 1, plan_entry.protocol),
+                }
+            }
+        }
+    }
+
+    if precondition_failure.is_some() {
+        Ok(RunOutcome::QuiescentBlocked)
+    } else {
+        Ok(RunOutcome::AllComplete)
+    }
+}
+
+/// Execute the cold-start acquisition step and resolve the materialized
+/// work-unit. Returns the bound work-unit id and the post-acquisition scan.
+fn acquire_ticket(
+    working_dir: &Path,
+    config_override: Option<&Path>,
+    loaded: &mut crate::project::LoadedProject,
+    scan_result: &libagent::ScanResult,
+    ticket_ref: &libagent::TicketRef,
+    identity: &libagent::ResolvedForgeIdentity,
+    agent_command: &[String],
+) -> Result<(String, libagent::ScanResult), RunError> {
+    let acquisition = entry::acquisition_surface(loaded).map_err(RunError::from)?;
+    let scan_findings = libagent::collect_scan_findings(scan_result, &loaded.workspace_dir);
+    let entry_planned =
+        entry::acquisition_planned_entry(loaded, &acquisition, ticket_ref, &scan_findings);
+    let config_path = crate::project::resolve_config(working_dir, config_override)
+        .map_err(CommandError::from)
+        .map_err(StepError::from)
+        .map_err(RunError::from)?;
+    let mcp_command = locate_runa_mcp()
+        .map_err(RunError::from)?
+        .to_string_lossy()
+        .into_owned();
+    let runtime_env = entry::entry_runtime_env(working_dir, &loaded.config, ticket_ref);
+
+    let post_scan = match execute_and_reconcile(
+        working_dir,
+        loaded,
+        agent_command,
+        &config_path,
+        &mcp_command,
+        entry_planned,
+        &runtime_env,
+    )? {
+        ReconcileOutcome::Succeeded { scan_result, .. } => scan_result,
+        ReconcileOutcome::PostconditionFailure { .. } => {
+            return Err(RunError::from(StepError::TicketReference(
+                libagent::EntryError::Unresolved {
+                    reference: ticket_ref.display.clone(),
+                },
+            )));
+        }
+    };
+
+    println!(
+        "Executed: {} (entry from ticket {})",
+        acquisition.name, ticket_ref.display
+    );
+    let work_unit = entry::resolve_existing(loaded, identity, ticket_ref)
+        .map_err(RunError::from)?
+        .ok_or_else(|| {
+            RunError::from(StepError::TicketReference(
+                libagent::EntryError::Unresolved {
+                    reference: ticket_ref.display.clone(),
+                },
+            ))
+        })?;
+    Ok((work_unit, post_scan))
 }
 
 #[cfg(test)]

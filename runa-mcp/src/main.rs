@@ -26,6 +26,10 @@ struct Cli {
     /// Optional work unit scope for tool serving
     #[arg(long)]
     work_unit: Option<String>,
+
+    /// Open a session from a forge ticket reference (cold-start entry)
+    #[arg(long, requires = "session", conflicts_with_all = ["work_unit", "protocol"])]
+    ticket: Option<String>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -68,7 +72,14 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         libagent::validate_scoped_work_unit_with_identity(&loaded.store, work_unit, &identity)?;
     }
     if cli.session {
-        let handler = RunaHandler::new_session(working_dir.clone(), config_ref, cli.work_unit)?;
+        let handler = match cli.ticket.as_deref() {
+            Some(ticket) => {
+                let identity = libagent::resolve_forge_identity(&loaded.config.forge);
+                let ticket_ref = libagent::resolve_ticket_reference(ticket, &identity)?;
+                RunaHandler::new_session_entry(working_dir.clone(), config_ref, ticket_ref)?
+            }
+            None => RunaHandler::new_session(working_dir.clone(), config_ref, cli.work_unit)?,
+        };
         let (stdin, stdout) = io::stdio();
         let service = handler.serve((stdin, stdout)).await.inspect_err(|e| {
             error!(

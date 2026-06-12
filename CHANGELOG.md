@@ -7,6 +7,22 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Cold-start ticket entry: `runa run --ticket <REF>` and `runa go --ticket <REF>`
+  open a scoped session from a forge ticket reference (a bare number, `#<N>`,
+  `owner/repo#<N>`, a GitHub issue URL, or `sourcehut:<tracker_id>#<N>`) when no
+  `work-unit` artifact exists yet. The runtime resolves the reference to a tracker
+  identity — never reading ticket content — and serves the methodology's
+  acquisition surface (the sole unscoped producer of the `work-unit` artifact),
+  delivering the reference and `RUNA_ENTRY_TICKET` into the session. Once the
+  methodology materializes the `work-unit`, the session binds and the cascade
+  computes `take` next on it. A reference whose work-unit already exists degrades
+  to a normal scoped session; downstream of acquisition the two are
+  indistinguishable. `runa run --ticket --dry-run` projects the entry cascade and
+  emits a version `3` JSON envelope with a top-level `entry` object.
+  `runa-mcp --session --ticket <ref>` serves the same entry session surface.
+
 ### Changed
 
 - Durable transcript capture settings and scoped forge identity can now live in

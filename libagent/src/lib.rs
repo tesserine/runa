@@ -20,6 +20,7 @@
 pub(crate) mod completion;
 pub mod context;
 pub mod enforcement;
+pub mod entry;
 pub mod graph;
 pub mod logging;
 pub mod manifest;
@@ -42,6 +43,10 @@ pub use enforcement::{
     ArtifactFailure, EnforcementError, Phase, Relationship, enforce_postconditions,
     enforce_preconditions,
 };
+pub use entry::{
+    EntryError, RUNA_ENTRY_TICKET, TicketRef, discover_acquisition_surface, resolve_promise,
+    resolve_ticket_reference,
+};
 pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use logging::{LoggingError, ResolvedLoggingConfig, configure_tracing, resolve_logging_config};
 pub use manifest::ManifestError;
@@ -53,14 +58,17 @@ pub use project::{
     Config, ForgeConfig, LoadedProject, LogFormat, LoggingConfig, ProjectError, State,
     TranscriptConfig,
 };
-pub use projection::{ProjectionCandidate, ProjectionClass, project_cascade};
+pub use projection::{
+    ProjectionCandidate, ProjectionClass, project_cascade, project_entry_cascade,
+};
 pub use scan::{
     ArtifactRef, InvalidArtifact, MalformedArtifact, PartiallyScannedType, ScanError, ScanResult,
     UnreadableArtifact, scan,
 };
 pub use scoped_identity::{
-    ResolvedForgeIdentity, ScopedWorkUnitError, resolve_forge_environment, resolve_forge_identity,
-    validate_scoped_work_unit, validate_scoped_work_unit_with_identity,
+    ResolvedForgeIdentity, ScopedWorkUnitError, find_work_unit_by_tracker_identity,
+    resolve_forge_environment, resolve_forge_identity, validate_scoped_work_unit,
+    validate_scoped_work_unit_with_identity, validate_tracker_consistency,
 };
 pub use selection::{
     Candidate, CandidateKey, CandidateStatus, ClassifiedCandidate, EvaluationScope,

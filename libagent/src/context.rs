@@ -47,6 +47,21 @@ pub struct ArtifactRefView {
     pub relationship: ArtifactRelationship,
 }
 
+/// The forge ticket reference an entry session was opened from.
+///
+/// Present only on the acquisition step of a session opened from a ticket
+/// reference. Carries the reference's identity, never the ticket's content —
+/// the runtime delivers the reference, the methodology performs the forge read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EntryDelivery {
+    /// Canonical operator-facing reference, e.g. `github:tesserine/runa#188`.
+    pub reference: String,
+    /// The ticket number.
+    pub ticket_number: u64,
+    /// Canonical tracker identity, e.g. `github:tesserine/runa:188`.
+    pub tracker_identity: String,
+}
+
 /// Artifact type names the agent is expected to produce for this protocol invocation.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExpectedOutputs {
@@ -71,6 +86,8 @@ pub struct ContextInjection {
     pub instructions: String,
     pub inputs: Vec<ArtifactRef>,
     pub expected_outputs: ExpectedOutputs,
+    /// Present only on a ticket-entry acquisition step.
+    pub entry: Option<EntryDelivery>,
 }
 
 /// Serialization-safe view of [`ContextInjection`] that uses
@@ -82,6 +99,8 @@ pub struct ContextInjectionView {
     pub instructions: String,
     pub inputs: Vec<ArtifactRefView>,
     pub expected_outputs: ExpectedOutputs,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry: Option<EntryDelivery>,
 }
 
 /// Build the agent-facing context for a single protocol invocation.
@@ -121,6 +140,7 @@ pub fn build_context(
             may_produce: protocol.may_produce.clone(),
             required_output_choices: protocol.required_output_choices.clone(),
         },
+        entry: None,
     }
 }
 
@@ -135,6 +155,18 @@ pub fn render_context_prompt(context: &ContextInjection) -> String {
         Some(work_unit) => format!("# Protocol: {} (work_unit={work_unit})", context.protocol),
         None => format!("# Protocol: {}", context.protocol),
     });
+
+    if let Some(entry) = &context.entry {
+        sections.push("\n## Session entry".to_string());
+        sections.push(format!(
+            "This session was opened from forge ticket {} (ticket_number={}). \
+             No work-unit artifact exists yet for this ticket. The runtime has \
+             delivered only this reference; acquire the ticket according to the \
+             protocol instructions below and deliver your outputs through the \
+             listed output tools.",
+            entry.reference, entry.ticket_number
+        ));
+    }
 
     if !context.instructions.is_empty() {
         sections.push("\n## Protocol instructions".to_string());
@@ -312,6 +344,7 @@ impl From<&ContextInjection> for ContextInjectionView {
             instructions: context.instructions.clone(),
             inputs: context.inputs.iter().map(ArtifactRefView::from).collect(),
             expected_outputs: context.expected_outputs.clone(),
+            entry: context.entry.clone(),
         }
     }
 }
@@ -477,6 +510,7 @@ mod tests {
                 content_hash: "sha256:test".into(),
                 relationship: ArtifactRelationship::Requires,
             }],
+            entry: None,
             expected_outputs: ExpectedOutputs {
                 produces: vec!["implementation".into()],
                 may_produce: Vec::new(),
@@ -583,6 +617,7 @@ mod tests {
             work_unit: None,
             instructions: "# Follow the protocol\n".into(),
             inputs: Vec::new(),
+            entry: None,
             expected_outputs: ExpectedOutputs {
                 produces: vec!["implementation".into()],
                 may_produce: vec!["notes".into()],
@@ -601,12 +636,43 @@ mod tests {
     }
 
     #[test]
+    fn render_context_prompt_includes_entry_reference_before_instructions() {
+        let prompt = render_context_prompt(&ContextInjection {
+            protocol: "decompose".into(),
+            work_unit: None,
+            instructions: "# decompose\n".into(),
+            inputs: Vec::new(),
+            entry: Some(EntryDelivery {
+                reference: "github:tesserine/runa#188".into(),
+                ticket_number: 188,
+                tracker_identity: "github:tesserine/runa:188".into(),
+            }),
+            expected_outputs: ExpectedOutputs {
+                produces: vec!["work-unit".into()],
+                may_produce: Vec::new(),
+                required_output_choices: Vec::new(),
+            },
+        });
+
+        let entry_index = prompt
+            .find("## Session entry")
+            .expect("entry section present");
+        let instructions_index = prompt
+            .find("## Protocol instructions")
+            .expect("instructions section present");
+        assert!(entry_index < instructions_index);
+        assert!(prompt.contains("github:tesserine/runa#188"));
+        assert!(prompt.contains("ticket_number=188"));
+    }
+
+    #[test]
     fn render_context_prompt_includes_work_unit_in_heading() {
         let prompt = render_context_prompt(&ContextInjection {
             protocol: "implement".into(),
             work_unit: Some("wu-a".into()),
             instructions: String::new(),
             inputs: Vec::new(),
+            entry: None,
             expected_outputs: ExpectedOutputs {
                 produces: vec!["implementation".into()],
                 may_produce: Vec::new(),
@@ -631,6 +697,7 @@ mod tests {
                 content_hash: "sha256:test".into(),
                 relationship: ArtifactRelationship::Requires,
             }],
+            entry: None,
             expected_outputs: ExpectedOutputs {
                 produces: vec!["implementation".into()],
                 may_produce: Vec::new(),

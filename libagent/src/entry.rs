@@ -1,0 +1,533 @@
+//! Cold-start entry from a forge ticket reference.
+//!
+//! The scoped pipeline activates on a `work-unit` artifact, but the natural
+//! developer entry is a ticket reference — "start on runa#14". This module
+//! supplies the runtime half: parsing a forge ticket reference into a tracker
+//! identity, discovering the methodology's acquisition surface, and resolving
+//! the reference to the materialized `work-unit` instance once acquisition has
+//! produced it.
+//!
+//! The runtime never reads ticket content. A reference carries identity only;
+//! the methodology performs all forge reads through its own mechanics.
+
+use std::fmt;
+
+use crate::model::ProtocolDeclaration;
+use crate::scoped_identity::{
+    ResolvedForgeIdentity, ScopedWorkUnitError, find_work_unit_by_tracker_identity,
+    validate_tracker_consistency,
+};
+use crate::store::ArtifactStore;
+
+/// Artifact type the runtime treats as the scope-identity seed. The acquisition
+/// surface is the sole unscoped protocol that produces this type.
+pub const WORK_UNIT_ARTIFACT_TYPE: &str = "work-unit";
+
+/// Environment atom carrying the entry ticket number to acquisition mechanics.
+pub const RUNA_ENTRY_TICKET: &str = "RUNA_ENTRY_TICKET";
+
+/// A forge ticket reference resolved against the active deployment identity.
+///
+/// `tracker_identity` is the canonical match key (`github:<owner>/<name>:<n>`
+/// or `sourcehut:<tracker_id>:<n>`), identical to what a recorded work-unit
+/// handle yields. `display` is the operator-facing rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TicketRef {
+    pub number: u64,
+    pub tracker_identity: String,
+    pub display: String,
+}
+
+/// What the operator asserted in the reference, before deployment resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AssertedForge {
+    /// Bare number or `#N`: forge identity comes wholly from the deployment.
+    None,
+    /// `owner/repo#N` or a GitHub issue URL.
+    Github { owner: String, name: String },
+    /// `sourcehut:<tracker_id>#N`.
+    Sourcehut { tracker_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedReference {
+    number: u64,
+    asserted: AssertedForge,
+}
+
+/// Errors raised while opening a session from a forge ticket reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryError {
+    /// The reference string does not parse as a supported ticket form.
+    InvalidReference { supplied: String },
+    /// A required deployment-identity atom is absent for this reference form.
+    MissingDeploymentIdentity { variable: &'static str },
+    /// The reference asserts a forge deployment other than the active one.
+    DeploymentDisagreement {
+        reference_identity: String,
+        active_identity: String,
+    },
+    /// No unscoped protocol declares the `work-unit` artifact as an output.
+    NoAcquisitionSurface { scoped_producers: Vec<String> },
+    /// More than one unscoped protocol declares the `work-unit` artifact.
+    AmbiguousAcquisitionSurface { candidates: Vec<String> },
+    /// Acquisition completed its contract but materialized no matching work-unit.
+    Unresolved { reference: String },
+}
+
+impl fmt::Display for EntryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EntryError::InvalidReference { supplied } => write!(
+                f,
+                "'{supplied}' is not a recognized forge ticket reference; expected a ticket number, 'owner/repo#N', a forge issue URL, or 'sourcehut:<tracker_id>#N'"
+            ),
+            EntryError::MissingDeploymentIdentity { variable } => write!(
+                f,
+                "ticket reference omits forge identity and required deployment atom '{variable}' is unset"
+            ),
+            EntryError::DeploymentDisagreement {
+                reference_identity,
+                active_identity,
+            } => write!(
+                f,
+                "ticket reference names {reference_identity}, which disagrees with active deployment {active_identity}"
+            ),
+            EntryError::NoAcquisitionSurface { scoped_producers } => {
+                if scoped_producers.is_empty() {
+                    write!(
+                        f,
+                        "methodology declares no unscoped producer of '{WORK_UNIT_ARTIFACT_TYPE}'; cold-start ticket entry is unavailable"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "methodology declares no unscoped producer of '{WORK_UNIT_ARTIFACT_TYPE}'; cold-start ticket entry is unavailable (scoped producers: {})",
+                        scoped_producers.join(", ")
+                    )
+                }
+            }
+            EntryError::AmbiguousAcquisitionSurface { candidates } => write!(
+                f,
+                "more than one unscoped protocol produces '{WORK_UNIT_ARTIFACT_TYPE}' ({}); cold-start ticket entry requires a single acquisition surface",
+                candidates.join(", ")
+            ),
+            EntryError::Unresolved { reference } => write!(
+                f,
+                "acquisition from ticket {reference} completed but produced no '{WORK_UNIT_ARTIFACT_TYPE}' matching the reference"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EntryError {}
+
+/// Parse and resolve a forge ticket reference against the active deployment.
+///
+/// The grammar accepts a bare number, `#N`, `owner/repo#N`, a GitHub issue URL,
+/// or `sourcehut:<tracker_id>#N`. An asserted forge identity must agree with the
+/// active deployment; a bare reference inherits the deployment identity. No
+/// forge access occurs — only the reference string and the resolved identity.
+pub fn resolve_ticket_reference(
+    raw: &str,
+    identity: &ResolvedForgeIdentity,
+) -> Result<TicketRef, EntryError> {
+    let parsed = parse_ticket_reference(raw)?;
+    bind_reference_identity(&parsed, identity)
+}
+
+fn parse_ticket_reference(raw: &str) -> Result<ParsedReference, EntryError> {
+    let trimmed = raw.trim();
+    let invalid = || EntryError::InvalidReference {
+        supplied: raw.to_string(),
+    };
+
+    if let Some(rest) = trimmed.strip_prefix("https://github.com/") {
+        let (repository, tail) = rest.split_once("/issues/").ok_or_else(invalid)?;
+        let (owner, name) = repository.split_once('/').ok_or_else(invalid)?;
+        let number = parse_number(tail).ok_or_else(invalid)?;
+        if owner.is_empty() || name.is_empty() {
+            return Err(invalid());
+        }
+        return Ok(ParsedReference {
+            number,
+            asserted: AssertedForge::Github {
+                owner: owner.to_string(),
+                name: name.to_string(),
+            },
+        });
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("sourcehut:") {
+        let (tracker_id, tail) = rest.split_once('#').ok_or_else(invalid)?;
+        let number = parse_number(tail).ok_or_else(invalid)?;
+        if tracker_id.is_empty() {
+            return Err(invalid());
+        }
+        return Ok(ParsedReference {
+            number,
+            asserted: AssertedForge::Sourcehut {
+                tracker_id: tracker_id.to_string(),
+            },
+        });
+    }
+
+    if let Some((repository, tail)) = trimmed.split_once('#')
+        && !repository.is_empty()
+    {
+        let (owner, name) = repository.split_once('/').ok_or_else(invalid)?;
+        let number = parse_number(tail).ok_or_else(invalid)?;
+        if owner.is_empty() || name.is_empty() {
+            return Err(invalid());
+        }
+        return Ok(ParsedReference {
+            number,
+            asserted: AssertedForge::Github {
+                owner: owner.to_string(),
+                name: name.to_string(),
+            },
+        });
+    }
+
+    let number = parse_number(trimmed.strip_prefix('#').unwrap_or(trimmed)).ok_or_else(invalid)?;
+    Ok(ParsedReference {
+        number,
+        asserted: AssertedForge::None,
+    })
+}
+
+fn parse_number(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    value.parse().ok().filter(|number| *number > 0)
+}
+
+fn bind_reference_identity(
+    parsed: &ParsedReference,
+    identity: &ResolvedForgeIdentity,
+) -> Result<TicketRef, EntryError> {
+    let number = parsed.number;
+    match &parsed.asserted {
+        AssertedForge::Github { owner, name } => {
+            require_forge(identity, "github")?;
+            let active = require_atom(identity.owner.as_deref(), "RUNA_FORGE_OWNER")?;
+            let active_name = require_atom(identity.name.as_deref(), "RUNA_FORGE_NAME")?;
+            if owner != active || name != active_name {
+                return Err(EntryError::DeploymentDisagreement {
+                    reference_identity: format!("github:{owner}/{name}"),
+                    active_identity: format!("github:{active}/{active_name}"),
+                });
+            }
+            Ok(github_ticket(owner, name, number))
+        }
+        AssertedForge::Sourcehut { tracker_id } => {
+            require_forge(identity, "sourcehut")?;
+            let active = require_atom(identity.tracker_id.as_deref(), "RUNA_FORGE_TRACKER_ID")?;
+            if tracker_id != active {
+                return Err(EntryError::DeploymentDisagreement {
+                    reference_identity: format!("sourcehut:{tracker_id}"),
+                    active_identity: format!("sourcehut:{active}"),
+                });
+            }
+            Ok(sourcehut_ticket(tracker_id, number))
+        }
+        AssertedForge::None => match identity.forge_type.as_str() {
+            "sourcehut" => {
+                let tracker_id =
+                    require_atom(identity.tracker_id.as_deref(), "RUNA_FORGE_TRACKER_ID")?;
+                Ok(sourcehut_ticket(tracker_id, number))
+            }
+            _ => {
+                let owner = require_atom(identity.owner.as_deref(), "RUNA_FORGE_OWNER")?;
+                let name = require_atom(identity.name.as_deref(), "RUNA_FORGE_NAME")?;
+                Ok(github_ticket(owner, name, number))
+            }
+        },
+    }
+}
+
+fn require_forge(identity: &ResolvedForgeIdentity, expected: &str) -> Result<(), EntryError> {
+    if identity.forge_type == expected {
+        return Ok(());
+    }
+    Err(EntryError::DeploymentDisagreement {
+        reference_identity: expected.to_string(),
+        active_identity: identity.forge_type.clone(),
+    })
+}
+
+fn require_atom<'a>(value: Option<&'a str>, variable: &'static str) -> Result<&'a str, EntryError> {
+    value
+        .filter(|value| !value.is_empty())
+        .ok_or(EntryError::MissingDeploymentIdentity { variable })
+}
+
+fn github_ticket(owner: &str, name: &str, number: u64) -> TicketRef {
+    TicketRef {
+        number,
+        tracker_identity: format!("github:{owner}/{name}:{number}"),
+        display: format!("github:{owner}/{name}#{number}"),
+    }
+}
+
+fn sourcehut_ticket(tracker_id: &str, number: u64) -> TicketRef {
+    TicketRef {
+        number,
+        tracker_identity: format!("sourcehut:{tracker_id}:{number}"),
+        display: format!("sourcehut:{tracker_id}#{number}"),
+    }
+}
+
+/// Discover the single unscoped protocol that produces the `work-unit` artifact.
+///
+/// This is the surface the runtime serves so acquisition can deliver its
+/// materialized work-unit. The derivation is methodology-neutral: it names no
+/// protocol, only the runtime-owned scope-identity artifact type.
+pub fn discover_acquisition_surface(
+    protocols: &[ProtocolDeclaration],
+) -> Result<&ProtocolDeclaration, EntryError> {
+    let producers: Vec<&ProtocolDeclaration> = protocols
+        .iter()
+        .filter(|protocol| {
+            protocol
+                .output_artifact_types()
+                .any(|artifact_type| artifact_type == WORK_UNIT_ARTIFACT_TYPE)
+        })
+        .collect();
+    let unscoped: Vec<&ProtocolDeclaration> = producers
+        .iter()
+        .copied()
+        .filter(|protocol| !protocol.scoped)
+        .collect();
+
+    match unscoped.as_slice() {
+        [surface] => Ok(surface),
+        [] => Err(EntryError::NoAcquisitionSurface {
+            scoped_producers: producers
+                .iter()
+                .filter(|protocol| protocol.scoped)
+                .map(|protocol| protocol.name.clone())
+                .collect(),
+        }),
+        many => Err(EntryError::AmbiguousAcquisitionSurface {
+            candidates: many.iter().map(|protocol| protocol.name.clone()).collect(),
+        }),
+    }
+}
+
+/// Resolve a ticket reference to the materialized `work-unit` instance.
+///
+/// Returns the instance id whose tracker handle identity equals the reference,
+/// or `None` when no such instance exists yet (cold store). Tracker-handle
+/// consistency is enforced first, so a `ScopedWorkUnitError` here signals a
+/// malformed or conflicting recorded work-unit rather than a missing one.
+pub fn resolve_promise(
+    store: &ArtifactStore,
+    identity: &ResolvedForgeIdentity,
+    ticket: &TicketRef,
+) -> Result<Option<String>, ScopedWorkUnitError> {
+    validate_tracker_consistency(store, identity)?;
+    Ok(find_work_unit_by_tracker_identity(
+        store,
+        &ticket.tracker_identity,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::TriggerCondition;
+
+    fn github_identity(owner: &str, name: &str) -> ResolvedForgeIdentity {
+        ResolvedForgeIdentity {
+            forge_type: "github".to_string(),
+            owner: Some(owner.to_string()),
+            name: Some(name.to_string()),
+            tracker_id: None,
+        }
+    }
+
+    fn sourcehut_identity(tracker_id: &str) -> ResolvedForgeIdentity {
+        ResolvedForgeIdentity {
+            forge_type: "sourcehut".to_string(),
+            owner: None,
+            name: None,
+            tracker_id: Some(tracker_id.to_string()),
+        }
+    }
+
+    fn protocol(name: &str, produces: &[&str], scoped: bool) -> ProtocolDeclaration {
+        ProtocolDeclaration {
+            name: name.into(),
+            requires: Vec::new(),
+            accepts: Vec::new(),
+            produces: produces.iter().map(|value| value.to_string()).collect(),
+            may_produce: Vec::new(),
+            required_output_choices: Vec::new(),
+            scoped,
+            trigger: TriggerCondition::OnArtifact {
+                name: "seed".into(),
+            },
+            instructions: None,
+        }
+    }
+
+    #[test]
+    fn bare_number_inherits_github_deployment() {
+        let ticket =
+            resolve_ticket_reference("188", &github_identity("tesserine", "runa")).unwrap();
+        assert_eq!(ticket.number, 188);
+        assert_eq!(ticket.tracker_identity, "github:tesserine/runa:188");
+        assert_eq!(ticket.display, "github:tesserine/runa#188");
+    }
+
+    #[test]
+    fn hash_number_inherits_deployment() {
+        let ticket =
+            resolve_ticket_reference("#14", &github_identity("tesserine", "runa")).unwrap();
+        assert_eq!(ticket.tracker_identity, "github:tesserine/runa:14");
+    }
+
+    #[test]
+    fn owner_repo_form_matches_active_deployment() {
+        let ticket =
+            resolve_ticket_reference("tesserine/runa#14", &github_identity("tesserine", "runa"))
+                .unwrap();
+        assert_eq!(ticket.tracker_identity, "github:tesserine/runa:14");
+    }
+
+    #[test]
+    fn github_url_form_parses() {
+        let ticket = resolve_ticket_reference(
+            "https://github.com/tesserine/runa/issues/188",
+            &github_identity("tesserine", "runa"),
+        )
+        .unwrap();
+        assert_eq!(ticket.number, 188);
+        assert_eq!(ticket.tracker_identity, "github:tesserine/runa:188");
+    }
+
+    #[test]
+    fn owner_repo_form_rejects_foreign_deployment() {
+        let error = resolve_ticket_reference(
+            "tesserine/groundwork#14",
+            &github_identity("tesserine", "runa"),
+        )
+        .unwrap_err();
+        assert!(matches!(error, EntryError::DeploymentDisagreement { .. }));
+    }
+
+    #[test]
+    fn sourcehut_form_matches_active_tracker() {
+        let ticket = resolve_ticket_reference("sourcehut:4#9", &sourcehut_identity("4")).unwrap();
+        assert_eq!(ticket.tracker_identity, "sourcehut:4:9");
+        assert_eq!(ticket.display, "sourcehut:4#9");
+    }
+
+    #[test]
+    fn sourcehut_form_rejects_github_deployment() {
+        let error =
+            resolve_ticket_reference("sourcehut:4#9", &github_identity("tesserine", "runa"))
+                .unwrap_err();
+        assert!(matches!(error, EntryError::DeploymentDisagreement { .. }));
+    }
+
+    #[test]
+    fn bare_number_under_sourcehut_inherits_tracker() {
+        let ticket = resolve_ticket_reference("9", &sourcehut_identity("4")).unwrap();
+        assert_eq!(ticket.tracker_identity, "sourcehut:4:9");
+    }
+
+    #[test]
+    fn missing_owner_atom_is_rejected() {
+        let identity = ResolvedForgeIdentity {
+            forge_type: "github".to_string(),
+            owner: None,
+            name: Some("runa".to_string()),
+            tracker_id: None,
+        };
+        let error = resolve_ticket_reference("14", &identity).unwrap_err();
+        assert!(matches!(
+            error,
+            EntryError::MissingDeploymentIdentity {
+                variable: "RUNA_FORGE_OWNER"
+            }
+        ));
+    }
+
+    #[test]
+    fn garbage_reference_is_rejected() {
+        for raw in [
+            "",
+            "not-a-ticket",
+            "#",
+            "0",
+            "owner/repo#",
+            "owner#3",
+            "#abc",
+        ] {
+            assert!(
+                resolve_ticket_reference(raw, &github_identity("tesserine", "runa")).is_err(),
+                "expected '{raw}' to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn discovers_sole_unscoped_producer() {
+        let protocols = vec![
+            protocol("decompose", &["work-unit"], false),
+            protocol("take", &["claim"], true),
+        ];
+        let surface = discover_acquisition_surface(&protocols).unwrap();
+        assert_eq!(surface.name, "decompose");
+    }
+
+    #[test]
+    fn rejects_when_only_scoped_producer_exists() {
+        let protocols = vec![protocol("take", &["work-unit"], true)];
+        let error = discover_acquisition_surface(&protocols).unwrap_err();
+        assert!(matches!(
+            error,
+            EntryError::NoAcquisitionSurface { scoped_producers } if scoped_producers == vec!["take".to_string()]
+        ));
+    }
+
+    #[test]
+    fn rejects_when_no_producer_exists() {
+        let protocols = vec![protocol("plan", &["plan-doc"], false)];
+        assert!(matches!(
+            discover_acquisition_surface(&protocols),
+            Err(EntryError::NoAcquisitionSurface { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_ambiguous_unscoped_producers() {
+        let protocols = vec![
+            protocol("decompose", &["work-unit"], false),
+            protocol("intake", &["work-unit"], false),
+        ];
+        let error = discover_acquisition_surface(&protocols).unwrap_err();
+        assert!(matches!(
+            error,
+            EntryError::AmbiguousAcquisitionSurface { candidates } if candidates.len() == 2
+        ));
+    }
+
+    #[test]
+    fn discovers_producer_via_required_output_choice() {
+        let mut protocol = protocol("decompose", &[], false);
+        protocol.required_output_choices = vec![crate::model::RequiredOutputChoice {
+            name: "delivery".into(),
+            members: vec!["work-unit".into(), "deferral".into()],
+        }];
+        let protocols = vec![protocol];
+        assert_eq!(
+            discover_acquisition_surface(&protocols).unwrap().name,
+            "decompose"
+        );
+    }
+}

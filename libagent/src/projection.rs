@@ -132,6 +132,104 @@ pub fn project_cascade(
     plan
 }
 
+/// Project the cascade for a cold-start ticket entry.
+///
+/// The `acquisition` candidate is the operator-activated entry step: its
+/// trigger is the ticket reference, so it is emitted [`ProjectionClass::Current`]
+/// and its assumed `work-unit` output seeds the projection. Everything reachable
+/// from there under the promised scope is [`ProjectionClass::Projected`] — this
+/// makes `take` observably next on the acquired work-unit without running any
+/// agent. `promised_scope` is the provisional scope id (e.g. `work-unit-<N>`);
+/// the projected `work-unit` is unpartitioned, so a scoped `take` sees it.
+pub fn project_entry_cascade(
+    protocols: &[ProtocolDeclaration],
+    store: &ArtifactStore,
+    topological_order: &[&str],
+    acquisition: &Candidate,
+    promised_scope: &str,
+    partially_scanned_types: &HashSet<String>,
+) -> Vec<ProjectionCandidate> {
+    let protocol_map: HashMap<&str, &ProtocolDeclaration> = protocols
+        .iter()
+        .map(|protocol| (protocol.name.as_str(), protocol))
+        .collect();
+    let mut projection = ProjectionState::new(store, partially_scanned_types);
+    let mut plan = Vec::new();
+
+    let Some(acquisition_protocol) = protocol_map.get(acquisition.protocol_name.as_str()) else {
+        return plan;
+    };
+    // Entry substitutes only the trigger; preconditions still gate. When the
+    // acquisition's requires are unmet, nothing projects from it.
+    if !preconditions_satisfied(
+        acquisition_protocol,
+        &projection,
+        acquisition.work_unit.as_deref(),
+    ) {
+        return plan;
+    }
+    let acquisition_key =
+        candidate_key(&acquisition.protocol_name, acquisition.work_unit.as_deref());
+    plan.push(ProjectionCandidate {
+        protocol_name: acquisition.protocol_name.clone(),
+        work_unit: acquisition.work_unit.clone(),
+        projection: ProjectionClass::Current,
+    });
+    let execution_record = projection
+        .protocol_execution_record(acquisition_protocol, acquisition.work_unit.as_deref());
+    projection.record_protocol_outputs(
+        acquisition_protocol,
+        acquisition.work_unit.as_deref(),
+        execution_record,
+    );
+
+    let scope = EvaluationScope::Scoped(promised_scope);
+    let mut exhausted = HashSet::from([acquisition_key]);
+
+    while let Some(next) =
+        discover_ready_candidates_projection(protocols, &projection, topological_order, scope)
+            .into_iter()
+            .find(|candidate| {
+                !exhausted.contains(&candidate_key(
+                    &candidate.protocol_name,
+                    candidate.work_unit.as_deref(),
+                ))
+            })
+    {
+        let key = candidate_key(&next.protocol_name, next.work_unit.as_deref());
+        plan.push(ProjectionCandidate {
+            protocol_name: next.protocol_name.clone(),
+            work_unit: next.work_unit.clone(),
+            projection: ProjectionClass::Projected,
+        });
+        exhausted.insert(key);
+
+        let protocol = protocol_map
+            .get(next.protocol_name.as_str())
+            .expect("projected protocol must exist");
+        let execution_record =
+            projection.protocol_execution_record(protocol, next.work_unit.as_deref());
+        let changes = projection.record_protocol_outputs(
+            protocol,
+            next.work_unit.as_deref(),
+            execution_record,
+        );
+        exhausted.retain(|candidate| {
+            if candidate
+                == &candidate_key(&acquisition.protocol_name, acquisition.work_unit.as_deref())
+            {
+                return true;
+            }
+            let protocol = protocol_map
+                .get(candidate.protocol_name.as_str())
+                .expect("projected protocol must exist");
+            !changes_affect_candidate(protocol, candidate.work_unit.as_deref(), &changes)
+        });
+    }
+
+    plan
+}
+
 fn discover_ready_candidates_projection(
     protocols: &[ProtocolDeclaration],
     projection: &ProjectionState<'_>,
@@ -660,6 +758,106 @@ mod tests {
             trigger,
             instructions: None,
         }
+    }
+
+    #[test]
+    fn entry_cascade_projects_take_after_acquisition() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(
+            &tmp.path().join("store"),
+            vec!["request", "work-unit", "claim"],
+        );
+
+        let decompose = protocol(
+            "decompose",
+            &[],
+            &["work-unit"],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+        let mut take = protocol(
+            "take",
+            &["work-unit"],
+            &["claim"],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        take.scoped = true;
+        let protocols = vec![decompose, take];
+
+        let plan = project_entry_cascade(
+            &protocols,
+            &store,
+            &["decompose", "take"],
+            &Candidate {
+                protocol_name: "decompose".into(),
+                work_unit: None,
+            },
+            "work-unit-14",
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            plan,
+            vec![
+                ProjectionCandidate {
+                    protocol_name: "decompose".into(),
+                    work_unit: None,
+                    projection: ProjectionClass::Current,
+                },
+                ProjectionCandidate {
+                    protocol_name: "take".into(),
+                    work_unit: Some("work-unit-14".into()),
+                    projection: ProjectionClass::Projected,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn entry_cascade_projects_nothing_when_acquisition_preconditions_unmet() {
+        let tmp = TempDir::new().unwrap();
+        let store = make_store(
+            &tmp.path().join("store"),
+            vec!["request", "work-unit", "claim"],
+        );
+
+        // decompose requires `request`, which is absent: entry substitutes the
+        // trigger only, so the unmet precondition blocks the whole projection.
+        let decompose = protocol(
+            "decompose",
+            &["request"],
+            &["work-unit"],
+            TriggerCondition::OnArtifact {
+                name: "request".into(),
+            },
+        );
+        let mut take = protocol(
+            "take",
+            &["work-unit"],
+            &["claim"],
+            TriggerCondition::OnArtifact {
+                name: "work-unit".into(),
+            },
+        );
+        take.scoped = true;
+        let protocols = vec![decompose, take];
+
+        let plan = project_entry_cascade(
+            &protocols,
+            &store,
+            &["decompose", "take"],
+            &Candidate {
+                protocol_name: "decompose".into(),
+                work_unit: None,
+            },
+            "work-unit-14",
+            &HashSet::new(),
+        );
+
+        assert!(plan.is_empty());
     }
 
     #[test]
