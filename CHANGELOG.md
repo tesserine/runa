@@ -7,6 +7,12 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- `RELEASING.md` Tooling Provenance section and a `scripts/release-check`
+  provenance header: the script is runa-owned, the ceremony convention is
+  canonical in commons, and no repo is the tooling upstream.
+
 ### Fixed
 
 - Invariant-bearing modules now document their invariants at the code:
