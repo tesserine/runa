@@ -9,6 +9,10 @@ Semantic Versioning.
 
 ### Added
 
+- The quickstart methodology README now walks the full
+  scan → READY → produce loop without requiring an agent: entry artifact,
+  cascade advance on artifact appearance, quiescence, and freshness-driven
+  reopening — verified against the built binary.
 - The `commons_exit_codes_match_specification` test now verifies the
   `ExitCode` enum against a vendored copy of the commons exit-code table
   (`runa-cli/tests/fixtures/commons-exit-codes.json`, provenance-pinned to
