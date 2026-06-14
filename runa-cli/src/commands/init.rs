@@ -127,12 +127,15 @@ pub fn run(
     }
     fs::write(&config_dest, config_toml).map_err(InitError::Io)?;
 
-    let project_config = ProjectConfig::default();
-    fs::write(
-        runa_dir.join(PROJECT_FILENAME),
-        toml::to_string(&project_config).expect("Project config serialization should not fail"),
-    )
-    .map_err(InitError::Io)?;
+    let project_path = runa_dir.join(PROJECT_FILENAME);
+    if !project_path.exists() {
+        let project_config = ProjectConfig::default();
+        fs::write(
+            project_path,
+            toml::to_string(&project_config).expect("Project config serialization should not fail"),
+        )
+        .map_err(InitError::Io)?;
+    }
     fs::write(
         runa_dir.join(".gitignore"),
         "config.toml\nstate.toml\nstore/\nworkspace/\n",
@@ -645,5 +648,34 @@ trigger = { type = "on_artifact", name = "design-doc" }
         assert_eq!(summary1.methodology_name, summary2.methodology_name);
         assert_eq!(summary1.artifact_type_count, summary2.artifact_type_count);
         assert_eq!(summary1.protocol_count, summary2.protocol_count);
+    }
+
+    #[test]
+    fn run_preserves_existing_project_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = write_methodology_layout(dir.path());
+
+        let working = dir.path().join("project");
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        let project_path = runa_dir.join("project.toml");
+        let existing = r#"
+[launch]
+command = ["agent-runtime", "exec"]
+
+[target_project]
+forge_type = "sourcehut"
+
+[[target_project.repositories]]
+selector = "groundwork"
+host = "git.sr.ht"
+owner = "tesserine"
+name = "groundwork"
+"#;
+        fs::write(&project_path, existing).unwrap();
+
+        run(&working, &manifest_path, None).unwrap();
+
+        assert_eq!(fs::read_to_string(project_path).unwrap(), existing);
     }
 }

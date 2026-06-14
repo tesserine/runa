@@ -7,7 +7,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{ArtifactStore, DependencyGraph, GraphError, Manifest, ManifestError, StoreError};
 
@@ -140,19 +140,52 @@ pub struct TrackerConfig {
     pub tracker_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct TargetProjectConfig {
-    #[serde(default)]
     pub forge_type: ForgeType,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub repositories: Vec<RepositoryConfig>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trackers: Vec<TrackerConfig>,
 }
 
 impl TargetProjectConfig {
     fn is_default(&self) -> bool {
         self == &Self::default()
+    }
+}
+
+impl<'de> Deserialize<'de> for TargetProjectConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawTargetProjectConfig {
+            forge_type: Option<ForgeType>,
+            #[serde(default)]
+            repositories: Vec<RepositoryConfig>,
+            #[serde(default)]
+            trackers: Vec<TrackerConfig>,
+        }
+
+        let raw = RawTargetProjectConfig::deserialize(deserializer)?;
+        let populated = !raw.repositories.is_empty() || !raw.trackers.is_empty();
+        let forge_type = match raw.forge_type {
+            Some(forge_type) => forge_type,
+            None if populated => {
+                return Err(serde::de::Error::custom(
+                    "target_project.forge_type is required when target_project declares repositories or trackers",
+                ));
+            }
+            None => ForgeType::default(),
+        };
+
+        Ok(Self {
+            forge_type,
+            repositories: raw.repositories,
+            trackers: raw.trackers,
+        })
     }
 }
 
@@ -819,6 +852,28 @@ command = ["agent-runtime", "exec"]
         assert_eq!(
             config.launch.command,
             Some(vec!["agent-runtime".to_string(), "exec".to_string()])
+        );
+    }
+
+    #[test]
+    fn project_config_rejects_populated_target_project_without_forge_type() {
+        let err = toml::from_str::<ProjectConfig>(
+            r#"
+[target_project]
+
+[[target_project.repositories]]
+selector = "groundwork"
+host = "git.sr.ht"
+owner = "tesserine"
+name = "groundwork"
+"#,
+        )
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(
+            message.contains("target_project.forge_type"),
+            "error should name required forge_type: {message}"
         );
     }
 
