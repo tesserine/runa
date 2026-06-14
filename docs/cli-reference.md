@@ -15,19 +15,30 @@ For `runa init`, `--config` controls where the config file is written. For all o
 
 ### Durable Project Settings
 
-Durable project settings live in `.runa/config.toml`. Environment variables
-with matching runtime meaning remain per-invocation overrides.
+Machine-local settings live in `.runa/config.toml`; portable project settings
+live in `.runa/project.toml`. `runa init` writes both files and a
+`.runa/.gitignore` that keeps `config.toml`, `state.toml`, `store/`, and
+`workspace/` local while leaving `project.toml` commit-ready.
 
 ```toml
+# .runa/config.toml
 [transcript]
 dir = "transcripts"
+
+# .runa/project.toml
+[launch]
+command = ["./adapters/agent-codex.sh", "--model", "gpt-5-codex"]
+
+[transcript]
 redact_env = ["SECRET_TOKEN", "API_KEY"]
 
-[forge]
-type = "github"
+[target_project]
+forge_type = "github"
+
+[[target_project.repositories]]
+selector = "runa"
 owner = "tesserine"
 name = "runa"
-tracker_id = "4"
 ```
 
 `[transcript].dir` enables transcript capture and is resolved relative to the
@@ -37,13 +48,12 @@ current values should be redacted from transcript events.
 `RUNA_TRANSCRIPT_REDACT_ENV`, when set to a comma-separated list, overrides the
 configured list.
 
-`[forge]` supplies the active scoped work-unit deployment identity. Runa uses
-it when validating tracker-backed `work-unit` roots and injects the resolved
-`RUNA_FORGE_TYPE`, `RUNA_FORGE_OWNER`, `RUNA_FORGE_NAME`, and
-`RUNA_FORGE_TRACKER_ID` values into launched agent and MCP environments.
-Any non-empty matching `RUNA_FORGE_*` environment variable overrides the
-configured field for that invocation. The forge type still defaults to `github`
-when neither config nor env specifies one.
+`[target_project]` supplies the typed project forge identity. Runa uses it when
+validating tracker-backed `work-unit` roots and injects the structured
+`RUNA_TARGET_PROJECT` JSON payload into launched agent and MCP environments.
+Mechanics select configured repositories or trackers by selector; they must not
+accept repository coordinates from the agent. A one-repository project works as
+the one-element case without an explicit selector.
 
 ### Logging
 
@@ -61,22 +71,22 @@ filter = "info"   # any tracing env-filter directive
 
 ### Agent Execution
 
-Live `runa step` and `runa go` require an `[agent].command` entry in the
-config. Live `runa run` uses the same config entry by default, but a single
-invocation may override it with `--agent-command -- <argv tokens>`:
+Live `runa step` and `runa go` require a `[launch].command` entry in
+`.runa/project.toml`. Live `runa run` uses the same config entry by default,
+but a single invocation may override it with `--launch-command -- <argv tokens>`:
 
 ```toml
-[agent]
+[launch]
 command = ["./adapters/agent-codex.sh", "--model", "gpt-5-codex"]
 ```
 
 ```toml
-[agent]
+[launch]
 command = ["./adapters/agent-claude-code.sh", "-p", "--dangerously-skip-permissions"]
 ```
 
 ```bash
-runa run --agent-command -- ./adapters/agent-codex.sh --model gpt-5-codex
+runa run --launch-command -- ./adapters/agent-codex.sh --model gpt-5-codex
 ```
 
 Runa executes the configured argv unmodified in the project root with stdout
@@ -89,7 +99,7 @@ child process. Runtime-specific translation, such as wrapping that payload in a
 client-specific config file, belongs to the runtime or adapter, not to runa.
 
 The supported runtime adapters live in `adapters/`: `agent-codex.sh` for Codex
-and `agent-claude-code.sh` for Claude Code. Point `[agent].command` at one of
+and `agent-claude-code.sh` for Claude Code. Point `[launch].command` at one of
 those scripts and pass runtime-specific options after the script path. The
 Codex adapter requires `jq` because Codex accepts external MCP servers through
 `-c mcp_servers.<name>.*` TOML overrides rather than a JSON config file. It
@@ -97,7 +107,7 @@ registers each invocation under a process-scoped server name so an existing
 operator-defined `mcp_servers.runa` entry is left untouched.
 Migration note: older documentation used
 `./examples/agent-claude-code.sh` for Claude Code. That path no longer exists;
-repoint existing `[agent].command` values to
+repoint existing `[launch].command` values to
 `./adapters/agent-claude-code.sh`.
 
 When transcript capture is enabled through `[transcript].dir` or
@@ -232,7 +242,7 @@ When recorded `work-unit` artifacts exist, `<ID>` must be the exact canonical
 
 With `--dry-run`, text output prints the next execution plus the grouped READY/BLOCKED/WAITING status view. The execution entry includes the protocol name, optional work unit, the trigger that activated it, an MCP server config, and the serialized agent-facing context payload (protocol name, optional work unit, instruction content, valid required and available accepted inputs with display paths and content hashes, and expected outputs split into `produces`, `may_produce`, and `required_output_choices`). Dry-run does not require a discoverable `runa-mcp` binary. If the in-scope graph contains a hard dependency cycle, `step` reports it as a warning, exposes the scope-filtered cycle in JSON, and keeps those participants out of `READY`.
 
-Without `--dry-run`, `step` requires `[agent].command` in the config and a Linux host. If the initial scan finds no READY work, `step` performs one final re-scan and re-evaluates readiness before returning a no-work outcome. If that refreshed state exposes a READY candidate, the same invocation executes that one protocol. Only when the refreshed state still has no actionable work does it print `No READY protocols.` and exit without requiring `runa-mcp`: exit `3` when work remains blocked, waiting, or trapped in a cycle, and exit `4` when no actionable work remains because outputs are already current. Otherwise, it resolves `runa-mcp` (preferring a sibling binary next to the running `runa` executable, falling back to `PATH`), exports the candidate MCP launch config through `RUNA_MCP_CONFIG`, launches the configured agent argv unmodified, re-scans the workspace, enforces postconditions, and prints the refreshed status view.
+Without `--dry-run`, `step` requires `[launch].command` in `.runa/project.toml` and a Linux host. If the initial scan finds no READY work, `step` performs one final re-scan and re-evaluates readiness before returning a no-work outcome. If that refreshed state exposes a READY candidate, the same invocation executes that one protocol. Only when the refreshed state still has no actionable work does it print `No READY protocols.` and exit without requiring `runa-mcp`: exit `3` when work remains blocked, waiting, or trapped in a cycle, and exit `4` when no actionable work remains because outputs are already current. Otherwise, it resolves `runa-mcp` (preferring a sibling binary next to the running `runa` executable, falling back to `PATH`), exports the candidate MCP launch config through `RUNA_MCP_CONFIG`, launches the configured argv unmodified, re-scans the workspace, enforces postconditions, and prints the refreshed status view.
 
 **Flags:**
 
@@ -254,7 +264,7 @@ Without `--dry-run`, `step` requires `[agent].command` in the config and a Linux
 ### `runa run`
 
 ```bash
-runa run [--dry-run] [--json] [--work-unit <ID> | --ticket <REF>] [--agent-command -- <argv tokens>] [--config <PATH>]
+runa run [--dry-run] [--json] [--work-unit <ID> | --ticket <REF>] [--launch-command -- <argv tokens>] [--config <PATH>]
 ```
 
 The cascade command. Walks the READY frontier repeatedly until quiescence instead of stopping after one execution.
@@ -263,10 +273,12 @@ Without `--work-unit`, `run` considers only unscoped protocols. With `--work-uni
 
 With `--ticket <REF>` (mutually exclusive with `--work-unit`), `run` opens a
 cold-start session from a forge ticket reference. Accepted forms are a bare
-number, `#<N>`, `owner/repo#<N>`, a GitHub issue URL, or
-`sourcehut:<tracker_id>#<N>`; the asserted deployment must match the active
-`[forge]` deployment, and a bare reference inherits it. When the referenced
-work-unit already exists, `run` behaves as `--work-unit <id>` on it. Otherwise
+number, `#<N>`, `owner/repo#<N>`, a GitHub issue URL,
+`github:<tracker-selector>#<N>`, or `sourcehut:<tracker-selector-or-id>#<N>`;
+the asserted deployment must resolve in the configured target project, and a
+bare reference inherits the sole configured tracker identity when exactly one
+exists. When the referenced work-unit already exists, `run` behaves as
+`--work-unit <id>` on it. Otherwise
 the methodology's acquisition surface (the sole unscoped producer of the
 `work-unit` artifact) runs first — under `--dry-run` it is projected as the
 `current, entry` step with the acquired work-unit's `take` projected after it;
@@ -282,7 +294,7 @@ When recorded `work-unit` artifacts exist, `<ID>` must be the exact canonical
 
 With `--dry-run`, projects the full optimistic cascade from the same scope-filtered execution order used by evaluation and planning, plus declared `produces` outputs, dependency edges, and the caller-supplied evaluation scope. `may_produce` outputs do not advance the projection unless they already exist on disk. Required output choice members are branch-dependent, so projection uses an already-present single member when one exists and otherwise does not synthesize a choice branch. Initially ready entries include MCP config and full context on first emission; downstream projected entries carry only protocol name, optional work unit, trigger, and projection kind. The projection never synthesizes artifact values, forks the store, bypasses schema validation, or discovers sibling work units from artifact state.
 
-Without `--dry-run`, requires a Linux host plus an effective agent command. `run` resolves that command in this order: `--agent-command -- <argv tokens>` when supplied, otherwise `[agent].command` from config, otherwise the existing `AgentCommandNotConfigured` error. If `--agent-command` is present but no usable argv tokens follow the `--`, `run` fails with `AgentCommandNotConfigured` and does not fall back to config. If no READY protocol is ever dispatched, `run` exits `4` (`nothing_ready`) instead of treating that invocation as `success`. Failed candidates are skipped for the rest of the invocation; any artifacts emitted before failure are still reconciled into workspace state for downstream readiness. Previously exhausted work reopens when a later reconciliation changes relevant inputs.
+Without `--dry-run`, requires a Linux host plus an effective launch command. `run` resolves that command in this order: `--launch-command -- <argv tokens>` when supplied, otherwise `[launch].command` from `.runa/project.toml`, otherwise an infrastructure error naming the missing launch command. If `--launch-command` is present but no usable argv tokens follow the `--`, `run` fails and does not fall back to config. If no READY protocol is ever dispatched, `run` exits `4` (`nothing_ready`) instead of treating that invocation as `success`. Failed candidates are skipped for the rest of the invocation; any artifacts emitted before failure are still reconciled into workspace state for downstream readiness. Previously exhausted work reopens when a later reconciliation changes relevant inputs.
 
 **Interrupt behavior.** The first `Ctrl-C` is boundary-scoped: the current protocol run completes its scan and postcondition reconciliation. After that reconciliation, `run` exits `130` only if the interrupt prevented the next READY candidate from starting. If no further READY work remains, the quiescent topology outcome takes precedence. A second `Ctrl-C` forces immediate exit with status `130`; the isolated child process may continue running after `runa` terminates.
 
@@ -292,7 +304,7 @@ Without `--dry-run`, requires a Linux host plus an effective agent command. `run
 - `--json` — Dry-run only. Emits version `2` and otherwise uses the same envelope structure as `runa step --json`, but `execution_plan` may contain multiple entries including projected downstream work.
 - `--work-unit <ID>` — Plan or execute only scoped protocols for the delegated work unit `<ID>`.
 - `--ticket <REF>` — Open a cold-start session from a forge ticket reference. Mutually exclusive with `--work-unit`. An unparseable reference or one that disagrees with the active deployment exits `2`; a manifest with no single unscoped `work-unit` producer exits `6`; acquisition that produces no matching work-unit exits `5`.
-- `--agent-command -- <argv tokens>` — Override `[agent].command` for this live `run` invocation. Pass the agent argv after `--` so hyphen-prefixed tokens are forwarded unchanged.
+- `--launch-command -- <argv tokens>` — Override `[launch].command` for this live `run` invocation. Pass the launch argv after `--` so hyphen-prefixed tokens are forwarded unchanged.
 
 **Exit codes** (`4` is live-only; dry-run still reflects current topology state, not the projection):
 
@@ -378,9 +390,10 @@ resolves them from the local filesystem, so adapters do not depend on child
 process cwd to launch `runa-mcp`. Transcript environment variables are forwarded
 into the MCP config when transcript capture is enabled, which lets the MCP
 server append tool events under the same deployment/work-unit/run transcript
-path as the CLI execution events. Configured forge identity is forwarded the same way through
-`RUNA_FORGE_*` entries so tooling inside the agent session can
-use the project-local identity without user-global shell state.
+path as the CLI execution events. The configured target project is forwarded as
+`RUNA_TARGET_PROJECT`, so tooling inside the agent session can select
+configured repositories or trackers by selector without user-global shell
+state.
 
 **Environment variables:**
 
@@ -391,7 +404,7 @@ use the project-local identity without user-global shell state.
   override for one invocation.
 - `RUNA_TRANSCRIPT_DEPLOYMENT`, `RUNA_TRANSCRIPT_RUN_ID` — Internal transcript
   attribution values propagated by runa into child MCP servers.
-- `RUNA_FORGE_TYPE`, `RUNA_FORGE_OWNER`, `RUNA_FORGE_NAME`,
-  `RUNA_FORGE_TRACKER_ID` — Forge identity field overrides for one
-  invocation.
+- `RUNA_TARGET_PROJECT` — Structured project payload propagated into launched
+  environments. It contains typed forge identity, configured repositories, and
+  configured trackers.
 - `RUST_LOG` — Tracing filter override for stderr diagnostics.

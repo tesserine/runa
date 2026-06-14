@@ -68,13 +68,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     apply_transcript_settings(&working_dir, &loaded.config);
     libagent::scan(&loaded.workspace_dir, &mut loaded.store)?;
     if let Some(work_unit) = cli.work_unit.as_deref() {
-        let identity = libagent::resolve_forge_identity(&loaded.config.forge);
+        let identity = libagent::resolve_forge_identity(&loaded.config.target_project);
         libagent::validate_scoped_work_unit_with_identity(&loaded.store, work_unit, &identity)?;
     }
     if cli.session {
         let handler = match cli.ticket.as_deref() {
             Some(ticket) => {
-                let identity = libagent::resolve_forge_identity(&loaded.config.forge);
+                let identity = libagent::resolve_forge_identity(&loaded.config.target_project);
                 let ticket_ref = libagent::resolve_ticket_reference(ticket, &identity)?;
                 RunaHandler::new_session_entry(working_dir.clone(), config_ref, ticket_ref)?
             }
@@ -156,7 +156,7 @@ fn apply_transcript_settings(working_dir: &std::path::Path, config: &project::Co
     let settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &config.transcript,
-        &config.forge,
+        &config.target_project,
     );
     for (name, value) in libagent::transcript::transcript_env_from_settings(&settings) {
         unsafe { std::env::set_var(name, value) };

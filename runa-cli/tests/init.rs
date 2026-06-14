@@ -70,7 +70,13 @@ fn init_creates_runa_directory() {
     assert!(stdout.contains("3 protocols"), "stdout: {stdout}");
 
     assert!(project_dir.join(".runa").is_dir());
+    assert!(project_dir.join(".runa/project.toml").is_file());
+    assert!(project_dir.join(".runa/config.toml").is_file());
     assert!(project_dir.join(".runa/state.toml").is_file());
+    assert_eq!(
+        std::fs::read_to_string(project_dir.join(".runa/.gitignore")).unwrap(),
+        "config.toml\nstate.toml\nstore/\nworkspace/\n"
+    );
 
     assert!(project_dir.join(".runa/store").is_dir());
     assert!(project_dir.join(".runa/workspace").is_dir());

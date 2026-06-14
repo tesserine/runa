@@ -274,7 +274,7 @@ esac
 }
 
 fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
-    let config_path = project_dir.join(".runa/config.toml");
+    let config_path = project_dir.join(".runa/project.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
     let command_entries = command
         .iter()
@@ -283,7 +283,7 @@ fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
         .join("\n");
     fs::write(
         config_path,
-        format!("{existing}\n[agent]\ncommand = [\n{command_entries}\n]\n"),
+        format!("{existing}\n[launch]\ncommand = [\n{command_entries}\n]\n"),
     )
     .unwrap();
 }

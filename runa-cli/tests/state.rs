@@ -168,6 +168,7 @@ fn state_accepts_exact_tracker_backed_work_unit_without_slug() {
         common::github_work_unit_json(163),
     )
     .unwrap();
+    common::append_github_forge_config(&project_dir, "tesserine", "runa");
 
     let output = runa_bin()
         .arg("state")
@@ -175,8 +176,8 @@ fn state_accepts_exact_tracker_backed_work_unit_without_slug() {
         .arg("work-unit-163")
         .env_remove("RUNA_FORGE_TYPE")
         .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
+        .env_remove("RUNA_FORGE_OWNER")
+        .env_remove("RUNA_FORGE_NAME")
         .current_dir(&project_dir)
         .output()
         .unwrap();

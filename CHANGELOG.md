@@ -9,6 +9,13 @@ Semantic Versioning.
 
 ### Changed
 
+- Project identity and launch configuration moved to the portable
+  `.runa/project.toml` surface: `[target_project]` now emits
+  `RUNA_TARGET_PROJECT` for launched agents/MCP servers, `[launch].command`
+  replaces `[agent].command` and `--launch-command` replaces
+  `--agent-command`, retired `RUNA_FORGE_*` atoms are rejected, and `runa init`
+  writes `.runa/.gitignore` so local config, state, store, and workspace files
+  stay out of version control.
 - Transcript capture now treats `[transcript].dir` and `RUNA_TRANSCRIPT_DIR`
   as roots and writes events beneath deployment/work-unit/run paths. Events
   carry `deployment` and `run_id` fields, while existing redaction behavior is

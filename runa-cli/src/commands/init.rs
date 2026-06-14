@@ -4,7 +4,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::project::{
-    CONFIG_FILENAME, Config, DEFAULT_WORKSPACE_DIR, RUNA_DIR, STATE_FILENAME, STORE_DIRNAME, State,
+    CONFIG_FILENAME, DEFAULT_WORKSPACE_DIR, MachineConfig, PROJECT_FILENAME, ProjectConfig,
+    RUNA_DIR, STATE_FILENAME, STORE_DIRNAME, State,
 };
 
 #[derive(Debug)]
@@ -113,20 +114,30 @@ pub fn run(
     let workspace_dir = runa_dir.join(DEFAULT_WORKSPACE_DIR);
     fs::create_dir_all(&workspace_dir).map_err(InitError::Io)?;
 
-    // Write config.
-    let config = Config {
+    let machine_config = MachineConfig {
         methodology_path: canonical_path.display().to_string(),
         logging: crate::project::LoggingConfig::default(),
-        agent: crate::project::AgentConfig::default(),
         transcript: crate::project::TranscriptConfig::default(),
-        forge: crate::project::ForgeConfig::default(),
     };
-    let config_toml = toml::to_string(&config).expect("Config serialization should not fail");
+    let config_toml =
+        toml::to_string(&machine_config).expect("Config serialization should not fail");
 
     if let Some(parent) = config_dest.parent() {
         fs::create_dir_all(parent).map_err(InitError::Io)?;
     }
     fs::write(&config_dest, config_toml).map_err(InitError::Io)?;
+
+    let project_config = ProjectConfig::default();
+    fs::write(
+        runa_dir.join(PROJECT_FILENAME),
+        toml::to_string(&project_config).expect("Project config serialization should not fail"),
+    )
+    .map_err(InitError::Io)?;
+    fs::write(
+        runa_dir.join(".gitignore"),
+        "config.toml\nstate.toml\nstore/\nworkspace/\n",
+    )
+    .map_err(InitError::Io)?;
 
     // Write state.
     let state = State {

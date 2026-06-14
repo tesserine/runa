@@ -41,7 +41,7 @@ pub(crate) fn resolve_reference(
     loaded: &LoadedProject,
     raw: &str,
 ) -> Result<(TicketRef, ResolvedForgeIdentity), StepError> {
-    let identity = libagent::resolve_forge_identity(&loaded.config.forge);
+    let identity = libagent::resolve_forge_identity(&loaded.config.target_project);
     let ticket =
         libagent::resolve_ticket_reference(raw, &identity).map_err(StepError::TicketReference)?;
     Ok((ticket, identity))
@@ -92,6 +92,7 @@ pub(crate) fn acquisition_planned_entry(
         None,
         &scan_findings.affected_types,
     );
+    context.target_project = Some((&loaded.config.target_project).into());
     context.entry = Some(libagent::context::EntryDelivery {
         reference: ticket.display.clone(),
         ticket_number: ticket.number,

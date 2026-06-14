@@ -89,27 +89,47 @@ Scoped evaluation is a runtime capability. When the caller supplies
 `work-unit` artifact instance when any such instances exist. Tracker-looking
 aliases such as bare issue numbers are not accepted as scope identifiers.
 
-For tracker-backed delegated work, runa also owns the active deployment
-identity used by scoped work-unit validation. The durable operator surface is
-the project-local `[forge]` config section:
+For tracker-backed delegated work, runa also owns the configured target
+project used by scoped work-unit validation and launched forge mechanics. The
+portable operator surface is `.runa/project.toml`:
 
 ```toml
-[forge]
-type = "github"
+[target_project]
+forge_type = "github"
+
+[[target_project.repositories]]
+selector = "runa"
 owner = "tesserine"
 name = "runa"
+
+[[target_project.repositories]]
+selector = "groundwork"
+owner = "tesserine"
+name = "groundwork"
+
+[[target_project.trackers]]
+selector = "groundwork"
+repository = "groundwork"
 tracker_id = "4"
 ```
 
-The matching per-invocation override and launched-runtime environment surface
-is runa-owned: `RUNA_FORGE_TYPE`, `RUNA_FORGE_OWNER`, `RUNA_FORGE_NAME`, and
-`RUNA_FORGE_TRACKER_ID`. Non-empty environment values override matching config
-fields, and `RUNA_FORGE_TYPE` defaults to `github` when omitted.
+The single-repository project is the one-element case: if exactly one
+repository or tracker is configured, consumers may resolve that one without a
+selector. Multi-repository projects require the agent or methodology mechanic
+to provide a configured selector such as `repository_selector = "groundwork"`;
+the agent never supplies repository coordinates.
 
-Runa computes the active deployment identity from those atoms. For GitHub, the
-identity is `github:<owner>/<name>`. For SourceHut, the identity is
-`sourcehut:<tracker_id>`. Endpoint or host resolution is not part of scoped
-identity validation.
+The launched-runtime environment surface is the runa-owned
+`RUNA_TARGET_PROJECT` variable. Its value is a JSON payload containing
+`version`, typed `forge_type`, `repositories`, and `trackers` arrays. The
+payload is the same project identity surface rendered for children; the retired
+single-repository `RUNA_FORGE_TYPE`, `RUNA_FORGE_OWNER`, `RUNA_FORGE_NAME`, and
+`RUNA_FORGE_TRACKER_ID` atoms are rejected when non-empty.
+
+Runa computes configured deployment identities from the typed project payload.
+For GitHub repositories, the identity is `github:<owner>/<name>`. For SourceHut
+trackers, the identity is `sourcehut:<tracker_id>`. Endpoint or host resolution
+is not part of scoped identity validation.
 
 When a valid recorded `work-unit` root contains a forge-tagged tracker handle,
 runa enforces the runtime checks that JSON Schema cannot express: the canonical
@@ -124,15 +144,17 @@ checks described here.
 A session may be opened from a forge ticket reference instead of a recorded
 `work-unit` instance id, via `runa run --ticket <REF>` or
 `runa go --ticket <REF>`. The accepted reference forms are a bare ticket number,
-`#<N>`, `owner/repo#<N>`, a GitHub issue URL, or `sourcehut:<tracker_id>#<N>`.
+`#<N>`, `owner/repo#<N>`, a GitHub issue URL, `github:<tracker-selector>#<N>`,
+or `sourcehut:<tracker-selector-or-id>#<N>`.
 runa parses the reference and normalizes it to a tracker identity
 (`github:<owner>/<name>:<N>` or `sourcehut:<tracker_id>:<N>`); a reference that
-asserts a deployment other than the active one is rejected, and a bare reference
-inherits the active deployment identity. **runa never reads ticket content** —
+asserts a deployment not present in the configured target project is rejected,
+and a bare reference inherits the sole configured tracker identity when exactly
+one exists. **runa never reads ticket content** —
 the reference carries identity only, and the methodology performs all forge
 reads through its own mechanics. During entry, runa exports `RUNA_ENTRY_TICKET`
-(the ticket number) alongside the `RUNA_FORGE_*` atoms so those mechanics can
-resolve the ticket.
+(the ticket number) alongside `RUNA_TARGET_PROJECT` so those mechanics can
+resolve the ticket by selector.
 
 The acquisition surface runa serves is the single unscoped protocol whose
 declared outputs (`produces`, `may_produce`, or required output choice members)

@@ -272,6 +272,7 @@ fn step_dry_run_accepts_exact_tracker_backed_work_unit_without_slug() {
         common::github_work_unit_json(163),
     )
     .unwrap();
+    append_github_forge_config(&project_dir, "tesserine", "runa");
 
     let output = runa_bin()
         .arg("step")
@@ -280,8 +281,8 @@ fn step_dry_run_accepts_exact_tracker_backed_work_unit_without_slug() {
         .arg("work-unit-163")
         .env_remove("RUNA_FORGE_TYPE")
         .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
+        .env_remove("RUNA_FORGE_OWNER")
+        .env_remove("RUNA_FORGE_NAME")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -428,7 +429,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 }
 
 fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
-    let config_path = project_dir.join(".runa/config.toml");
+    let config_path = project_dir.join(".runa/project.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
     let command_entries = command
         .iter()
@@ -437,36 +438,56 @@ fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
         .join("\n");
     fs::write(
         config_path,
-        format!("{existing}\n[agent]\ncommand = [\n{command_entries}\n]\n"),
+        format!("{existing}\n[launch]\ncommand = [\n{command_entries}\n]\n"),
     )
     .unwrap();
 }
 fn append_transcript_config(project_dir: &Path, transcript_dir: &Path, redact_env: &[&str]) {
     let config_path = project_dir.join(".runa/config.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        &config_path,
+        format!(
+            "{existing}\n[transcript]\ndir = {:?}\n",
+            transcript_dir.display().to_string()
+        ),
+    )
+    .unwrap();
+
+    let project_config_path = project_dir.join(".runa/project.toml");
+    let existing_project = fs::read_to_string(&project_config_path).unwrap();
     let redact_entries = redact_env
         .iter()
         .map(|name| format!("{name:?}"))
         .collect::<Vec<_>>()
         .join(", ");
     fs::write(
-        config_path,
-        format!(
-            "{existing}\n[transcript]\ndir = {:?}\nredact_env = [{redact_entries}]\n",
-            transcript_dir.display().to_string()
-        ),
+        project_config_path,
+        format!("{existing_project}\n[transcript]\nredact_env = [{redact_entries}]\n"),
     )
     .unwrap();
 }
 
 fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
-    let config_path = project_dir.join(".runa/config.toml");
+    let config_path = project_dir.join(".runa/project.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
     fs::write(
         config_path,
-        format!("{existing}\n[forge]\ntype = \"github\"\nowner = \"{owner}\"\nname = \"{name}\"\n"),
+        format!("{existing}\n[target_project]\nforge_type = \"github\"\n\n[[target_project.repositories]]\nselector = \"{name}\"\nowner = \"{owner}\"\nname = \"{name}\"\nhost = \"github.com\"\n"),
     )
     .unwrap();
+}
+
+fn default_project_target_payload() -> String {
+    r#"{"version":1,"forge_type":"github","repositories":[],"trackers":[]}"#.to_string()
+}
+
+fn default_mcp_env(project_dir: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "RUNA_TARGET_PROJECT": default_project_target_payload(),
+        "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
+        "RUNA_WORKING_DIR": project_dir
+    })
 }
 
 fn transcript_event_files(root: &Path) -> Vec<std::path::PathBuf> {
@@ -708,11 +729,7 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
     );
     assert_eq!(
         execution_plan[0]["mcp_config"]["env"],
-        serde_json::json!({
-            "RUNA_FORGE_TYPE": "github",
-            "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
-            "RUNA_WORKING_DIR": project_dir
-        })
+        default_mcp_env(&project_dir)
     );
     let mcp_command = execution_plan[0]["mcp_config"]["command"]
         .as_str()
@@ -1081,11 +1098,11 @@ fn step_without_dry_run_fails_when_agent_command_is_not_configured() {
     assert!(stderr.contains("command"), "stderr: {stderr}");
     assert!(stderr.contains("step"), "stderr: {stderr}");
     assert!(
-        stderr.contains("no agent command configured"),
+        stderr.contains("no launch command configured"),
         "stderr: {stderr}"
     );
-    assert!(stderr.contains("[agent]"), "stderr: {stderr}");
-    assert!(stderr.contains("config.toml"), "stderr: {stderr}");
+    assert!(stderr.contains("[launch]"), "stderr: {stderr}");
+    assert!(stderr.contains("project.toml"), "stderr: {stderr}");
 }
 #[test]
 fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
@@ -1180,14 +1197,7 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
         mcp_config["args"],
         serde_json::json!(["--protocol", "implement"])
     );
-    assert_eq!(
-        mcp_config["env"],
-        serde_json::json!({
-            "RUNA_FORGE_TYPE": "github",
-            "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
-            "RUNA_WORKING_DIR": project_dir
-        })
-    );
+    assert_eq!(mcp_config["env"], default_mcp_env(&project_dir));
 }
 #[test]
 fn step_without_dry_run_launches_claude_named_agent_agnostically() {
@@ -1243,14 +1253,7 @@ fn step_without_dry_run_launches_claude_named_agent_agnostically() {
         mcp_config["args"],
         serde_json::json!(["--protocol", "implement"])
     );
-    assert_eq!(
-        mcp_config["env"],
-        serde_json::json!({
-            "RUNA_FORGE_TYPE": "github",
-            "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
-            "RUNA_WORKING_DIR": project_dir
-        })
-    );
+    assert_eq!(mcp_config["env"], default_mcp_env(&project_dir));
     let mcp_command = mcp_config["command"]
         .as_str()
         .expect("mcp command should be a string");

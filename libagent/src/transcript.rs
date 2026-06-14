@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
-use crate::project::{ForgeConfig, TranscriptConfig};
+use crate::project::{TargetProjectConfig, TranscriptConfig};
 
 pub const TRANSCRIPT_DIR_ENV: &str = "RUNA_TRANSCRIPT_DIR";
 pub const REDACT_ENV_ENV: &str = "RUNA_TRANSCRIPT_REDACT_ENV";
@@ -200,13 +200,13 @@ pub fn resolve_transcript_settings(
     working_dir: &Path,
     config: &TranscriptConfig,
 ) -> TranscriptSettings {
-    resolve_transcript_settings_with_forge(working_dir, config, &ForgeConfig::default())
+    resolve_transcript_settings_with_forge(working_dir, config, &TargetProjectConfig::default())
 }
 
 pub fn resolve_transcript_settings_with_forge(
     working_dir: &Path,
     config: &TranscriptConfig,
-    forge: &ForgeConfig,
+    forge: &TargetProjectConfig,
 ) -> TranscriptSettings {
     let dir = std::env::var_os(TRANSCRIPT_DIR_ENV)
         .filter(|value| !value.is_empty())
@@ -329,18 +329,10 @@ fn redact_text(text: &str, redactions: &[(String, String)]) -> String {
     redacted
 }
 
-fn deployment_identity(working_dir: &Path, forge: &ForgeConfig) -> Option<String> {
+fn deployment_identity(working_dir: &Path, forge: &TargetProjectConfig) -> Option<String> {
     let identity = crate::resolve_forge_identity(forge);
-    match identity.forge_type.as_str() {
-        "github" => match (identity.owner.as_deref(), identity.name.as_deref()) {
-            (Some(owner), Some(name)) => Some(format!("github:{owner}/{name}")),
-            _ => Some(project_deployment_identity(working_dir)),
-        },
-        "sourcehut" => match identity.tracker_id.as_deref() {
-            Some(tracker_id) => Some(format!("sourcehut:{tracker_id}")),
-            None => Some(project_deployment_identity(working_dir)),
-        },
-        other if !other.is_empty() && other != "github" => Some(other.to_string()),
+    match identity.configured_tracker_identities().as_slice() {
+        [only] => Some(only.clone()),
         _ => Some(project_deployment_identity(working_dir)),
     }
 }
@@ -411,7 +403,9 @@ mod tests {
         redact_value, resolve_transcript_settings, resolve_transcript_settings_with_forge,
         transcript_env_from_settings,
     };
-    use crate::project::{ForgeConfig, TranscriptConfig};
+    use crate::project::{
+        ForgeType, RepositoryConfig, TargetProjectConfig, TrackerConfig, TranscriptConfig,
+    };
     use crate::test_helpers::EnvGuard;
     use serde_json::json;
     use std::path::PathBuf;
@@ -681,11 +675,22 @@ mod tests {
         let settings = resolve_transcript_settings_with_forge(
             temp.path(),
             &TranscriptConfig::default(),
-            &ForgeConfig {
-                forge_type: Some("github".to_string()),
-                owner: Some("tesserine".to_string()),
-                name: Some("runa".to_string()),
-                tracker_id: None,
+            &TargetProjectConfig {
+                forge_type: ForgeType::Github,
+                repositories: vec![RepositoryConfig {
+                    selector: "runa".to_string(),
+                    host: "github.com".to_string(),
+                    owner: "tesserine".to_string(),
+                    name: "runa".to_string(),
+                }],
+                trackers: vec![TrackerConfig {
+                    selector: "issues".to_string(),
+                    repository: Some("runa".to_string()),
+                    host: None,
+                    owner: None,
+                    name: None,
+                    tracker_id: None,
+                }],
             },
         );
 

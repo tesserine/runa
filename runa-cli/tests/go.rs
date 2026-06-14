@@ -31,9 +31,9 @@ fn init_project(project_dir: &Path, manifest_path: &Path) {
 }
 
 fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
-    let config_path = project_dir.join(".runa/config.toml");
+    let config_path = project_dir.join(".runa/project.toml");
     let mut config = fs::read_to_string(&config_path).unwrap();
-    config.push_str("\n[agent]\ncommand = [");
+    config.push_str("\n[launch]\ncommand = [");
     for (index, part) in command.iter().enumerate() {
         if index > 0 {
             config.push_str(", ");
@@ -78,8 +78,8 @@ fi
         .arg(log_path)
         .env_remove("RUNA_FORGE_TYPE")
         .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
+        .env_remove("RUNA_FORGE_OWNER")
+        .env_remove("RUNA_FORGE_NAME")
         .current_dir(project_dir)
         .output()
         .unwrap();
@@ -124,6 +124,7 @@ fn setup_ready_scoped_project(dir: &Path) -> PathBuf {
     let project_dir = dir.join("project");
     fs::create_dir(&project_dir).unwrap();
     init_project(&project_dir, &manifest_path);
+    common::append_github_forge_config(&project_dir, "tesserine", "runa");
 
     let workspace = project_dir.join(".runa/workspace");
     fs::create_dir_all(workspace.join("work-unit")).unwrap();
@@ -144,8 +145,8 @@ fn scoped_state_json(project_dir: &Path) -> serde_json::Value {
         .arg("work-unit-168")
         .env_remove("RUNA_FORGE_TYPE")
         .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
+        .env_remove("RUNA_FORGE_OWNER")
+        .env_remove("RUNA_FORGE_NAME")
         .current_dir(project_dir)
         .output()
         .unwrap();
@@ -218,8 +219,8 @@ fi
         .arg("work-unit-168")
         .env_remove("RUNA_FORGE_TYPE")
         .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
+        .env_remove("RUNA_FORGE_OWNER")
+        .env_remove("RUNA_FORGE_NAME")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -287,8 +288,8 @@ fn go_fails_when_agent_exits_without_advancing_the_session_step() {
         .arg("work-unit-168")
         .env_remove("RUNA_FORGE_TYPE")
         .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
+        .env_remove("RUNA_FORGE_OWNER")
+        .env_remove("RUNA_FORGE_NAME")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -344,8 +345,8 @@ fn go_matches_direct_session_surface_when_regenerating_deleted_output_with_uncha
         .arg("work-unit-168")
         .env_remove("RUNA_FORGE_TYPE")
         .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
+        .env_remove("RUNA_FORGE_OWNER")
+        .env_remove("RUNA_FORGE_NAME")
         .current_dir(&go_project_dir)
         .output()
         .unwrap();

@@ -73,7 +73,7 @@ impl fmt::Display for StepError {
             StepError::Json(err) => write!(f, "{err}"),
             StepError::AgentCommandNotConfigured => write!(
                 f,
-                "no agent command configured in config.toml; add [agent] command = [\"binary\", ...]"
+                "no launch command configured in project.toml; add [launch] command = [\"binary\", ...]"
             ),
             StepError::JsonRequiresDryRun => {
                 write!(f, "--json is only supported with --dry-run")
@@ -212,7 +212,7 @@ impl StepError {
                 libagent::EntryError::InvalidReference { .. }
                 | libagent::EntryError::MissingDeploymentIdentity { .. }
                 | libagent::EntryError::DeploymentDisagreement { .. }
-                | libagent::EntryError::UnsupportedForge { .. } => ExitCode::UsageError,
+                | libagent::EntryError::UnknownTracker { .. } => ExitCode::UsageError,
                 libagent::EntryError::Unresolved { .. } => ExitCode::WorkFailed,
                 libagent::EntryError::NoAcquisitionSurface { .. }
                 | libagent::EntryError::AmbiguousAcquisitionSurface { .. } => {
@@ -378,12 +378,13 @@ pub(crate) fn build_execution_plan(
             let protocol = protocol_map
                 .get(entry.name.as_str())
                 .expect("planned protocol must exist in manifest");
-            let context = libagent::context::build_execution_context(
+            let mut context = libagent::context::build_execution_context(
                 protocol,
                 &loaded.store,
                 entry.work_unit.as_deref(),
                 &scan_findings.affected_types,
             );
+            context.target_project = Some((&loaded.config.target_project).into());
             PlannedEntry {
                 protocol: entry.name.clone(),
                 work_unit: entry.work_unit.clone(),
@@ -418,26 +419,15 @@ pub(crate) fn resolved_runtime_env(
     let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &config.transcript,
-        &config.forge,
+        &config.target_project,
     );
     let mut env: BTreeMap<String, String> =
         libagent::transcript::transcript_env_from_settings(&transcript_settings)
             .into_iter()
             .collect();
 
-    let forge_environment = libagent::resolve_forge_environment(&config.forge);
-    for name in [
-        "RUNA_FORGE_TYPE",
-        "RUNA_FORGE_OWNER",
-        "RUNA_FORGE_NAME",
-        "RUNA_FORGE_TRACKER_ID",
-    ] {
-        if let Some(value) = forge_environment
-            .get(name)
-            .filter(|value| !value.is_empty())
-        {
-            env.insert(name.to_string(), value.clone());
-        }
+    if let Ok(project_env) = libagent::target_project_env(&config.target_project) {
+        env.extend(project_env);
     }
 
     env
@@ -885,7 +875,7 @@ fn run_internal(
     let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &loaded.config.transcript,
-        &loaded.config.forge,
+        &loaded.config.target_project,
     );
 
     let agent_command = if dry_run {
@@ -894,7 +884,7 @@ fn run_internal(
         let config = crate::project::read_config(working_dir, config_override)
             .map_err(CommandError::from)
             .map_err(StepError::from)?;
-        let command = config.agent.command.filter(|command| {
+        let command = config.launch.command.filter(|command| {
             !command.is_empty() && !command.first().is_some_and(|part| part.is_empty())
         });
         if command.is_none() {
@@ -1382,6 +1372,7 @@ mod tests {
             context: libagent::context::ContextInjection {
                 protocol: protocol.to_string(),
                 work_unit: work_unit.map(str::to_string),
+                target_project: None,
                 instructions: "Tell the operator about SECRET_VALUE.".to_string(),
                 inputs: Vec::new(),
                 entry: None,
@@ -1720,45 +1711,44 @@ cat >/dev/null
     }
 
     #[test]
-    fn resolved_runtime_env_materializes_default_github_forge_type_from_config_identity() {
+    fn resolved_runtime_env_exports_target_project_payload_from_config_identity() {
         let _lock = transcript_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _env = EnvGuard::unset(&[
-            "RUNA_FORGE_TYPE",
-            "RUNA_FORGE_OWNER",
-            "RUNA_FORGE_NAME",
-            "RUNA_FORGE_TRACKER_ID",
-            "RUNA_TRANSCRIPT_DIR",
-            "RUNA_TRANSCRIPT_REDACT_ENV",
-        ]);
+        let _env = EnvGuard::unset(&["RUNA_TRANSCRIPT_DIR", "RUNA_TRANSCRIPT_REDACT_ENV"]);
         let temp = tempfile::tempdir().unwrap();
         let config = libagent::Config {
             methodology_path: "methodology.toml".to_string(),
             logging: libagent::LoggingConfig::default(),
-            agent: libagent::project::AgentConfig::default(),
+            launch: libagent::project::LaunchConfig::default(),
             transcript: libagent::TranscriptConfig::default(),
-            forge: libagent::ForgeConfig {
-                forge_type: None,
-                owner: Some("tesserine".to_string()),
-                name: Some("runa".to_string()),
-                tracker_id: None,
+            target_project: libagent::TargetProjectConfig {
+                forge_type: libagent::ForgeType::Github,
+                repositories: vec![libagent::RepositoryConfig {
+                    selector: "runa".to_string(),
+                    host: "github.com".to_string(),
+                    owner: "tesserine".to_string(),
+                    name: "runa".to_string(),
+                }],
+                trackers: Vec::new(),
             },
         };
 
         let env = resolved_runtime_env(temp.path(), &config);
+        let payload: serde_json::Value =
+            serde_json::from_str(env.get("RUNA_TARGET_PROJECT").unwrap()).unwrap();
 
-        assert_eq!(env.get("RUNA_FORGE_TYPE"), Some(&"github".to_string()));
-        assert_eq!(env.get("RUNA_FORGE_OWNER"), Some(&"tesserine".to_string()));
-        assert_eq!(env.get("RUNA_FORGE_NAME"), Some(&"runa".to_string()));
+        assert_eq!(payload["forge_type"], "github");
+        assert_eq!(payload["repositories"][0]["owner"], "tesserine");
+        assert_eq!(payload["repositories"][0]["name"], "runa");
     }
 
     #[test]
     fn build_mcp_config_includes_supplied_runtime_environment() {
-        let runtime_env = BTreeMap::from([
-            ("RUNA_FORGE_OWNER".to_string(), "tesserine".to_string()),
-            ("RUNA_FORGE_NAME".to_string(), "runa".to_string()),
-        ]);
+        let runtime_env = BTreeMap::from([(
+            "RUNA_TARGET_PROJECT".to_string(),
+            r#"{"version":1,"forge_type":"github","repositories":[],"trackers":[]}"#.to_string(),
+        )]);
 
         let config = build_mcp_config(
             "/tmp/bin/runa-mcp",
@@ -1770,10 +1760,12 @@ cat >/dev/null
         );
 
         assert_eq!(
-            config.env.get("RUNA_FORGE_OWNER"),
-            Some(&"tesserine".to_string())
+            config.env.get("RUNA_TARGET_PROJECT"),
+            Some(
+                &r#"{"version":1,"forge_type":"github","repositories":[],"trackers":[]}"#
+                    .to_string()
+            )
         );
-        assert_eq!(config.env.get("RUNA_FORGE_NAME"), Some(&"runa".to_string()));
     }
 
     #[test]
@@ -1949,6 +1941,7 @@ cat >/dev/null
             context: libagent::context::ContextInjection {
                 protocol: "implement".to_string(),
                 work_unit: None,
+                target_project: None,
                 instructions: String::new(),
                 inputs: Vec::new(),
                 entry: None,

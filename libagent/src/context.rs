@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::project::TargetProjectPayload;
 use crate::{ArtifactStore, ProtocolDeclaration, ValidationStatus};
 
 /// Whether an artifact is a hard dependency (`Requires`) or optional input (`Accepts`)
@@ -84,6 +85,7 @@ pub struct ExpectedOutputs {
 pub struct ContextInjection {
     pub protocol: String,
     pub work_unit: Option<String>,
+    pub target_project: Option<TargetProjectPayload>,
     pub instructions: String,
     pub inputs: Vec<ArtifactRef>,
     pub expected_outputs: ExpectedOutputs,
@@ -97,6 +99,8 @@ pub struct ContextInjection {
 pub struct ContextInjectionView {
     pub protocol: String,
     pub work_unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_project: Option<TargetProjectPayload>,
     pub instructions: String,
     pub inputs: Vec<ArtifactRefView>,
     pub expected_outputs: ExpectedOutputs,
@@ -134,6 +138,7 @@ pub fn build_context(
     ContextInjection {
         protocol: protocol.name.clone(),
         work_unit: work_unit.map(str::to_owned),
+        target_project: None,
         instructions: protocol.instructions.clone().unwrap_or_default(),
         inputs,
         expected_outputs: ExpectedOutputs {
@@ -190,6 +195,22 @@ pub fn render_context_prompt(context: &ContextInjection) -> String {
              listed output tools.",
             entry.reference, entry.ticket_number
         ));
+    }
+
+    if let Some(target_project) = &context.target_project {
+        sections.push("\n## Target project".to_string());
+        match serde_json::to_string_pretty(target_project) {
+            Ok(payload) => {
+                sections.push(
+                    "The configured target project is delivered as structured JSON. \
+                     Select repositories or trackers by their configured selector; \
+                     do not supply repository coordinates to forge mechanics."
+                        .to_string(),
+                );
+                sections.push(format!("```json\n{payload}\n```"));
+            }
+            Err(error) => sections.push(format!("(Could not render target project: {error})")),
+        }
     }
 
     if !context.instructions.is_empty() {
@@ -365,6 +386,7 @@ impl From<&ContextInjection> for ContextInjectionView {
         Self {
             protocol: context.protocol.clone(),
             work_unit: context.work_unit.clone(),
+            target_project: context.target_project.clone(),
             instructions: context.instructions.clone(),
             inputs: context.inputs.iter().map(ArtifactRefView::from).collect(),
             expected_outputs: context.expected_outputs.clone(),
@@ -595,6 +617,7 @@ mod tests {
         let context = ContextInjection {
             protocol: "implement".into(),
             work_unit: None,
+            target_project: None,
             instructions: String::new(),
             inputs: vec![ArtifactRef {
                 artifact_type: "constraints".into(),
@@ -709,6 +732,7 @@ mod tests {
         let prompt = render_context_prompt(&ContextInjection {
             protocol: "implement".into(),
             work_unit: None,
+            target_project: None,
             instructions: "# Follow the protocol\n".into(),
             inputs: Vec::new(),
             entry: None,
@@ -734,6 +758,7 @@ mod tests {
         let prompt = render_context_prompt(&ContextInjection {
             protocol: "decompose".into(),
             work_unit: None,
+            target_project: None,
             instructions: "# decompose\n".into(),
             inputs: Vec::new(),
             entry: Some(EntryDelivery {
@@ -764,6 +789,7 @@ mod tests {
         let prompt = render_context_prompt(&ContextInjection {
             protocol: "implement".into(),
             work_unit: Some("wu-a".into()),
+            target_project: None,
             instructions: String::new(),
             inputs: Vec::new(),
             entry: None,
@@ -782,6 +808,7 @@ mod tests {
         let prompt = render_context_prompt(&ContextInjection {
             protocol: "implement".into(),
             work_unit: None,
+            target_project: None,
             instructions: String::new(),
             inputs: vec![ArtifactRef {
                 artifact_type: "constraints".into(),

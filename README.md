@@ -198,7 +198,7 @@ Both projects are in early development.
 | `runa state` | Evaluate and classify protocol readiness |
 | `runa doctor` | Check project health |
 | `runa step` | Execute the next ready protocol |
-| `runa run` | Walk the ready frontier to quiescence; live runs may override the agent command with `--agent-command -- <argv...>` |
+| `runa run` | Walk the ready frontier to quiescence; live runs may override the launch command with `--launch-command -- <argv...>` |
 | `runa go` | Advance one scoped interactive session tick through the session MCP surface |
 | `runa-mcp` | MCP server for artifact production and session driver verbs |
 
@@ -206,14 +206,15 @@ See [CLI Reference](docs/cli-reference.md) for flags, exit codes, configuration,
 
 ## Configuration
 
-`runa init` creates `.runa/config.toml` with the methodology path. Operators
-may also set durable project defaults there for live agent command,
-transcript capture, and scoped forge identity. Environment variables such as
-`RUNA_TRANSCRIPT_DIR` and `RUNA_FORGE_*` remain per-invocation overrides;
-config is the project-local default.
+`runa init` creates machine-local `.runa/config.toml`, portable
+`.runa/project.toml`, and `.runa/.gitignore`. Commit `project.toml`; keep
+`config.toml`, `state.toml`, `store/`, and `workspace/` local. Operators set
+portable launch command, transcript redaction, and typed target-project
+identity in `project.toml`; `RUNA_TRANSCRIPT_DIR` remains a per-invocation
+machine-local override.
 
 Runa ships supported agent adapters for Codex and Claude Code in `adapters/`.
-Set `[agent].command` to `./adapters/agent-codex.sh` or
+Set `[launch].command` to `./adapters/agent-codex.sh` or
 `./adapters/agent-claude-code.sh`; the adapter translates `RUNA_MCP_CONFIG` for
 the selected runtime.
 

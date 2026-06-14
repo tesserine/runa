@@ -17,7 +17,7 @@ fn configured_agent_command(
         .map_err(CommandError::from)
         .map_err(StepError::from)?;
     config
-        .agent
+        .launch
         .command
         .filter(|command| {
             !command.is_empty() && !command.first().is_some_and(|part| part.is_empty())
@@ -113,7 +113,7 @@ fn run_ticket(
     let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &loaded.config.transcript,
-        &loaded.config.forge,
+        &loaded.config.target_project,
     );
     let mcp_binary = locate_runa_mcp()?;
     let receipt_dir = tempfile::Builder::new()
@@ -141,6 +141,7 @@ fn run_ticket(
         context: libagent::context::ContextInjection {
             protocol: "go".to_string(),
             work_unit: None,
+            target_project: Some((&loaded.config.target_project).into()),
             instructions: tick_prompt().to_string(),
             inputs: Vec::new(),
             entry: None,
@@ -253,7 +254,7 @@ fn run_bound(
     let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &loaded.config.transcript,
-        &loaded.config.forge,
+        &loaded.config.target_project,
     );
     let mcp_binary = locate_runa_mcp()?;
     let receipt_dir = tempfile::Builder::new()
@@ -281,6 +282,7 @@ fn run_bound(
         context: libagent::context::ContextInjection {
             protocol: "go".to_string(),
             work_unit: Some(work_unit.to_string()),
+            target_project: Some((&loaded.config.target_project).into()),
             instructions: tick_prompt().to_string(),
             inputs: Vec::new(),
             entry: None,

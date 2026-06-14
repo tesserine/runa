@@ -204,6 +204,7 @@ fn run_dry_run_accepts_exact_tracker_backed_work_unit_without_slug() {
         common::github_work_unit_json(163),
     )
     .unwrap();
+    common::append_github_forge_config(&project_dir, "tesserine", "runa");
 
     let output = runa_bin()
         .arg("run")
@@ -212,8 +213,8 @@ fn run_dry_run_accepts_exact_tracker_backed_work_unit_without_slug() {
         .arg("work-unit-163")
         .env_remove("RUNA_FORGE_TYPE")
         .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
+        .env_remove("RUNA_FORGE_OWNER")
+        .env_remove("RUNA_FORGE_NAME")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -451,7 +452,7 @@ trigger = { type = "on_artifact", name = "implementation" }
 }
 
 fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
-    let config_path = project_dir.join(".runa/config.toml");
+    let config_path = project_dir.join(".runa/project.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
     let command_entries = command
         .iter()
@@ -460,7 +461,7 @@ fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
         .join("\n");
     fs::write(
         config_path,
-        format!("{existing}\n[agent]\ncommand = [\n{command_entries}\n]\n"),
+        format!("{existing}\n[launch]\ncommand = [\n{command_entries}\n]\n"),
     )
     .unwrap();
 }
@@ -717,7 +718,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 
     let output = runa_bin()
         .arg("run")
-        .arg("--agent-command")
+        .arg("--launch-command")
         .arg("--")
         .arg(&cli_agent)
         .arg(&cli_log_path)
@@ -786,7 +787,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 
     let output = runa_bin()
         .arg("run")
-        .arg("--agent-command")
+        .arg("--launch-command")
         .arg("--")
         .arg(&agent_path)
         .arg(&log_path)
@@ -862,7 +863,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 
     let output = runa_bin()
         .arg("run")
-        .arg("--agent-command")
+        .arg("--launch-command")
         .arg("--")
         .current_dir(&project_dir)
         .output()
@@ -871,7 +872,7 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert_eq!(output.status.code(), Some(6), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no agent command configured"),
+        stderr.contains("no launch command configured"),
         "stderr: {stderr}"
     );
     assert!(!config_log_path.exists(), "configured agent should not run");
@@ -931,7 +932,7 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert_eq!(output.status.code(), Some(6), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no agent command configured"),
+        stderr.contains("no launch command configured"),
         "stderr: {stderr}"
     );
     assert!(!workspace.join("implementation/impl-1.json").exists());
@@ -947,7 +948,7 @@ fn run_help_describes_agent_command_passthrough() {
         stdout.contains("Usage: runa run [OPTIONS] [-- [ARGV]...]"),
         "stdout: {stdout}"
     );
-    assert!(stdout.contains("--agent-command"), "stdout: {stdout}");
+    assert!(stdout.contains("--launch-command"), "stdout: {stdout}");
     assert!(stdout.contains("-- <argv"), "stdout: {stdout}");
     assert!(
         !stdout.contains("Usage: runa run [OPTIONS] [ARGV]..."),
@@ -1004,7 +1005,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 
     let output = runa_bin()
         .arg("run")
-        .arg("--agent-command")
+        .arg("--launch-command")
         .arg(&agent_path)
         .arg("--dry-run")
         .current_dir(&project_dir)
@@ -1071,7 +1072,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 
     let output = runa_bin()
         .arg("run")
-        .arg("--agent-command")
+        .arg("--launch-command")
         .arg(&agent_path)
         .arg("--work-unit")
         .arg("wu-xyz")
@@ -1605,7 +1606,7 @@ fn run_without_dry_run_with_no_ready_protocols_still_requires_agent_command() {
     assert_eq!(output.status.code(), Some(6), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no agent command configured"),
+        stderr.contains("no launch command configured"),
         "stderr: {stderr}"
     );
 }
@@ -1621,7 +1622,7 @@ fn run_without_dry_run_rejects_empty_cli_agent_command_when_no_protocols_are_rea
 
     let output = runa_bin()
         .arg("run")
-        .arg("--agent-command")
+        .arg("--launch-command")
         .arg("--")
         .current_dir(&project_dir)
         .output()
@@ -1630,7 +1631,7 @@ fn run_without_dry_run_rejects_empty_cli_agent_command_when_no_protocols_are_rea
     assert_eq!(output.status.code(), Some(6), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no agent command configured"),
+        stderr.contains("no launch command configured"),
         "stderr: {stderr}"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);

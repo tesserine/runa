@@ -212,7 +212,7 @@ fn resolve_agent_command(
         .map_err(StepError::from)
         .map_err(RunError::from)?;
     config
-        .agent
+        .launch
         .command
         .filter(|command| is_usable_agent_command(command))
         .ok_or(RunError::from(StepError::AgentCommandNotConfigured))
@@ -367,7 +367,7 @@ fn execute_and_reconcile(
     let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &loaded.config.transcript,
-        &loaded.config.forge,
+        &loaded.config.target_project,
     );
     let execution_entry = build_plan_entries(
         vec![next_entry],

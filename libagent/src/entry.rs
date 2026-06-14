@@ -48,8 +48,10 @@ enum AssertedForge {
     None,
     /// `owner/repo#N` or a GitHub issue URL.
     Github { owner: String, name: String },
-    /// `sourcehut:<tracker_id>#N`.
-    Sourcehut { tracker_id: String },
+    /// `github:<tracker_selector>#N`.
+    GithubTracker { selector: String },
+    /// `sourcehut:<tracker_selector>#N` or legacy `sourcehut:<tracker_id>#N`.
+    Sourcehut { tracker: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,9 +76,8 @@ pub enum EntryError {
     NoAcquisitionSurface { scoped_producers: Vec<String> },
     /// More than one unscoped protocol declares the `work-unit` artifact.
     AmbiguousAcquisitionSurface { candidates: Vec<String> },
-    /// A bare reference cannot inherit an active forge type that is neither
-    /// `github` nor `sourcehut`.
-    UnsupportedForge { forge_type: String },
+    /// A qualified reference names a tracker that is not configured.
+    UnknownTracker { selector: String },
     /// Acquisition completed its contract but materialized no matching work-unit.
     Unresolved { reference: String },
 }
@@ -118,9 +119,9 @@ impl fmt::Display for EntryError {
                 "more than one unscoped protocol produces '{WORK_UNIT_ARTIFACT_TYPE}' ({}); cold-start ticket entry requires a single acquisition surface",
                 candidates.join(", ")
             ),
-            EntryError::UnsupportedForge { forge_type } => write!(
+            EntryError::UnknownTracker { selector } => write!(
                 f,
-                "active forge type '{forge_type}' is not supported for a bare ticket reference; use an explicit 'owner/repo#N' (github) or 'sourcehut:<tracker_id>#N' form, or set a supported RUNA_FORGE_TYPE"
+                "ticket reference names tracker '{selector}', which is not declared by the configured target project"
             ),
             EntryError::Unresolved { reference } => write!(
                 f,
@@ -168,16 +169,30 @@ fn parse_ticket_reference(raw: &str) -> Result<ParsedReference, EntryError> {
         });
     }
 
-    if let Some(rest) = trimmed.strip_prefix("sourcehut:") {
-        let (tracker_id, tail) = rest.split_once('#').ok_or_else(invalid)?;
+    if let Some(rest) = trimmed.strip_prefix("github:") {
+        let (selector, tail) = rest.split_once('#').ok_or_else(invalid)?;
         let number = parse_number(tail).ok_or_else(invalid)?;
-        if tracker_id.is_empty() {
+        if selector.is_empty() {
+            return Err(invalid());
+        }
+        return Ok(ParsedReference {
+            number,
+            asserted: AssertedForge::GithubTracker {
+                selector: selector.to_string(),
+            },
+        });
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("sourcehut:") {
+        let (tracker, tail) = rest.split_once('#').ok_or_else(invalid)?;
+        let number = parse_number(tail).ok_or_else(invalid)?;
+        if tracker.is_empty() {
             return Err(invalid());
         }
         return Ok(ParsedReference {
             number,
             asserted: AssertedForge::Sourcehut {
-                tracker_id: tracker_id.to_string(),
+                tracker: tracker.to_string(),
             },
         });
     }
@@ -221,60 +236,111 @@ fn bind_reference_identity(
     let number = parsed.number;
     match &parsed.asserted {
         AssertedForge::Github { owner, name } => {
-            require_forge(identity, "github")?;
-            let active = require_atom(identity.owner.as_deref(), "RUNA_FORGE_OWNER")?;
-            let active_name = require_atom(identity.name.as_deref(), "RUNA_FORGE_NAME")?;
-            if owner != active || name != active_name {
+            require_forge(identity, crate::project::ForgeType::Github)?;
+            let reference_identity = format!("github:{owner}/{name}");
+            if !identity
+                .configured_tracker_identities()
+                .iter()
+                .any(|configured| configured == &reference_identity)
+            {
                 return Err(EntryError::DeploymentDisagreement {
-                    reference_identity: format!("github:{owner}/{name}"),
-                    active_identity: format!("github:{active}/{active_name}"),
+                    reference_identity,
+                    active_identity: display_configured_identity(identity),
                 });
             }
             Ok(github_ticket(owner, name, number))
         }
-        AssertedForge::Sourcehut { tracker_id } => {
-            require_forge(identity, "sourcehut")?;
-            let active = require_atom(identity.tracker_id.as_deref(), "RUNA_FORGE_TRACKER_ID")?;
-            if tracker_id != active {
-                return Err(EntryError::DeploymentDisagreement {
-                    reference_identity: format!("sourcehut:{tracker_id}"),
-                    active_identity: format!("sourcehut:{active}"),
-                });
-            }
+        AssertedForge::GithubTracker { selector } => {
+            require_forge(identity, crate::project::ForgeType::Github)?;
+            let tracker = identity.tracker_by_selector(selector).ok_or_else(|| {
+                EntryError::UnknownTracker {
+                    selector: selector.clone(),
+                }
+            })?;
+            let repository = tracker
+                .repository
+                .as_deref()
+                .and_then(|selector| identity.repository_by_selector(selector))
+                .ok_or_else(|| EntryError::UnknownTracker {
+                    selector: selector.clone(),
+                })?;
+            Ok(github_ticket(&repository.owner, &repository.name, number))
+        }
+        AssertedForge::Sourcehut { tracker } => {
+            require_forge(identity, crate::project::ForgeType::Sourcehut)?;
+            let configured = identity
+                .tracker_by_selector(tracker)
+                .or_else(|| {
+                    identity
+                        .trackers
+                        .iter()
+                        .find(|candidate| candidate.tracker_id.as_deref() == Some(tracker.as_str()))
+                })
+                .ok_or_else(|| EntryError::UnknownTracker {
+                    selector: tracker.clone(),
+                })?;
+            let tracker_id =
+                configured
+                    .tracker_id
+                    .as_deref()
+                    .ok_or_else(|| EntryError::UnknownTracker {
+                        selector: tracker.clone(),
+                    })?;
             Ok(sourcehut_ticket(tracker_id, number))
         }
-        AssertedForge::None => match identity.forge_type.as_str() {
-            "github" => {
-                let owner = require_atom(identity.owner.as_deref(), "RUNA_FORGE_OWNER")?;
-                let name = require_atom(identity.name.as_deref(), "RUNA_FORGE_NAME")?;
-                Ok(github_ticket(owner, name, number))
-            }
-            "sourcehut" => {
-                let tracker_id =
-                    require_atom(identity.tracker_id.as_deref(), "RUNA_FORGE_TRACKER_ID")?;
-                Ok(sourcehut_ticket(tracker_id, number))
-            }
-            other => Err(EntryError::UnsupportedForge {
-                forge_type: other.to_string(),
-            }),
-        },
+        AssertedForge::None => bind_bare_reference(identity, number),
     }
 }
 
-fn require_forge(identity: &ResolvedForgeIdentity, expected: &str) -> Result<(), EntryError> {
+fn bind_bare_reference(
+    identity: &ResolvedForgeIdentity,
+    number: u64,
+) -> Result<TicketRef, EntryError> {
+    match identity.configured_tracker_identities().as_slice() {
+        [only] if only.starts_with("github:") => {
+            let repository = only.trim_start_matches("github:");
+            let (owner, name) =
+                repository
+                    .split_once('/')
+                    .ok_or_else(|| EntryError::InvalidReference {
+                        supplied: only.clone(),
+                    })?;
+            Ok(github_ticket(owner, name, number))
+        }
+        [only] if only.starts_with("sourcehut:") => Ok(sourcehut_ticket(
+            only.trim_start_matches("sourcehut:"),
+            number,
+        )),
+        [] => Err(EntryError::MissingDeploymentIdentity {
+            variable: "RUNA_TARGET_PROJECT",
+        }),
+        _ => Err(EntryError::DeploymentDisagreement {
+            reference_identity: format!("#{number}"),
+            active_identity: display_configured_identity(identity),
+        }),
+    }
+}
+
+fn display_configured_identity(identity: &ResolvedForgeIdentity) -> String {
+    let identities = identity.configured_tracker_identities();
+    if identities.is_empty() {
+        identity.forge_type.to_string()
+    } else {
+        identities.join(", ")
+    }
+}
+
+fn require_forge(
+    identity: &ResolvedForgeIdentity,
+    expected: crate::project::ForgeType,
+) -> Result<(), EntryError> {
     if identity.forge_type == expected {
         return Ok(());
     }
     Err(EntryError::DeploymentDisagreement {
         reference_identity: expected.to_string(),
-        active_identity: identity.forge_type.clone(),
+        active_identity: identity.forge_type.to_string(),
     })
-}
-
-fn require_atom<'a>(value: Option<&'a str>, variable: &'static str) -> Result<&'a str, EntryError> {
-    value
-        .filter(|value| !value.is_empty())
-        .ok_or(EntryError::MissingDeploymentIdentity { variable })
 }
 
 fn github_ticket(owner: &str, name: &str, number: u64) -> TicketRef {
@@ -413,19 +479,36 @@ mod tests {
 
     fn github_identity(owner: &str, name: &str) -> ResolvedForgeIdentity {
         ResolvedForgeIdentity {
-            forge_type: "github".to_string(),
-            owner: Some(owner.to_string()),
-            name: Some(name.to_string()),
-            tracker_id: None,
+            forge_type: crate::project::ForgeType::Github,
+            repositories: vec![crate::project::RepositoryConfig {
+                selector: "default".to_string(),
+                host: "github.com".to_string(),
+                owner: owner.to_string(),
+                name: name.to_string(),
+            }],
+            trackers: vec![crate::project::TrackerConfig {
+                selector: "default".to_string(),
+                repository: Some("default".to_string()),
+                host: None,
+                owner: None,
+                name: None,
+                tracker_id: None,
+            }],
         }
     }
 
     fn sourcehut_identity(tracker_id: &str) -> ResolvedForgeIdentity {
         ResolvedForgeIdentity {
-            forge_type: "sourcehut".to_string(),
-            owner: None,
-            name: None,
-            tracker_id: Some(tracker_id.to_string()),
+            forge_type: crate::project::ForgeType::Sourcehut,
+            repositories: Vec::new(),
+            trackers: vec![crate::project::TrackerConfig {
+                selector: "default".to_string(),
+                repository: None,
+                host: Some("weforge.build".to_string()),
+                owner: Some("operator".to_string()),
+                name: Some("weforge".to_string()),
+                tracker_id: Some(tracker_id.to_string()),
+            }],
         }
     }
 
@@ -512,35 +595,49 @@ mod tests {
     }
 
     #[test]
-    fn missing_owner_atom_is_rejected() {
+    fn bare_reference_without_configured_tracker_is_rejected() {
         let identity = ResolvedForgeIdentity {
-            forge_type: "github".to_string(),
-            owner: None,
-            name: Some("runa".to_string()),
-            tracker_id: None,
+            forge_type: crate::project::ForgeType::Github,
+            repositories: Vec::new(),
+            trackers: Vec::new(),
         };
         let error = resolve_ticket_reference("14", &identity).unwrap_err();
         assert!(matches!(
             error,
             EntryError::MissingDeploymentIdentity {
-                variable: "RUNA_FORGE_OWNER"
+                variable: "RUNA_TARGET_PROJECT"
             }
         ));
     }
 
     #[test]
-    fn bare_reference_on_unsupported_forge_is_rejected() {
-        // A typo or future custom forge type must not silently bind as GitHub.
+    fn bare_reference_with_multiple_trackers_is_rejected_as_ambiguous() {
         let identity = ResolvedForgeIdentity {
-            forge_type: "gitlab".to_string(),
-            owner: Some("tesserine".to_string()),
-            name: Some("runa".to_string()),
-            tracker_id: None,
+            forge_type: crate::project::ForgeType::Sourcehut,
+            repositories: Vec::new(),
+            trackers: vec![
+                crate::project::TrackerConfig {
+                    selector: "one".to_string(),
+                    repository: None,
+                    host: Some("weforge.build".to_string()),
+                    owner: Some("operator".to_string()),
+                    name: Some("one".to_string()),
+                    tracker_id: Some("1".to_string()),
+                },
+                crate::project::TrackerConfig {
+                    selector: "two".to_string(),
+                    repository: None,
+                    host: Some("weforge.build".to_string()),
+                    owner: Some("operator".to_string()),
+                    name: Some("two".to_string()),
+                    tracker_id: Some("2".to_string()),
+                },
+            ],
         };
 
         assert!(matches!(
             resolve_ticket_reference("14", &identity),
-            Err(EntryError::UnsupportedForge { forge_type }) if forge_type == "gitlab"
+            Err(EntryError::DeploymentDisagreement { .. })
         ));
     }
 

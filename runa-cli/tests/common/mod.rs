@@ -78,10 +78,10 @@ pub fn github_work_unit_json(number: u64) -> String {
 #[allow(dead_code)]
 pub fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
     fs::write(
-        project_dir.join(".runa/config.toml"),
+        project_dir.join(".runa/project.toml"),
         format!(
-            "{}\n[forge]\ntype = \"github\"\nowner = \"{owner}\"\nname = \"{name}\"\n",
-            fs::read_to_string(project_dir.join(".runa/config.toml")).unwrap()
+            "{}\n[target_project]\nforge_type = \"github\"\n\n[[target_project.repositories]]\nselector = \"{name}\"\nowner = \"{owner}\"\nname = \"{name}\"\nhost = \"github.com\"\n",
+            fs::read_to_string(project_dir.join(".runa/project.toml")).unwrap()
         ),
     )
     .unwrap();
