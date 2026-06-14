@@ -9,6 +9,10 @@ Semantic Versioning.
 
 ### Changed
 
+- Transcript capture now treats `[transcript].dir` and `RUNA_TRANSCRIPT_DIR`
+  as roots and writes events beneath deployment/work-unit/run paths. Events
+  carry `deployment` and `run_id` fields, while existing redaction behavior is
+  preserved for CLI and MCP-produced events.
 - README hero rewritten for the ecosystem README pass: runa positioned as
   the runtime that makes agent work verifiable — emergent execution order,
   validate-before-write with scan-detected invalid work never flowing, the

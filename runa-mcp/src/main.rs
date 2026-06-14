@@ -153,8 +153,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn apply_transcript_settings(working_dir: &std::path::Path, config: &project::Config) {
-    let settings =
-        libagent::transcript::resolve_transcript_settings(working_dir, &config.transcript);
+    let settings = libagent::transcript::resolve_transcript_settings_with_forge(
+        working_dir,
+        &config.transcript,
+        &config.forge,
+    );
     for (name, value) in libagent::transcript::transcript_env_from_settings(&settings) {
         unsafe { std::env::set_var(name, value) };
     }

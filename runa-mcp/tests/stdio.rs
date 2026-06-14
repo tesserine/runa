@@ -288,6 +288,23 @@ fn append_transcript_config(project_dir: &Path, transcript_dir: &Path) {
     .unwrap();
 }
 
+fn read_transcript_events(root: &Path) -> String {
+    let mut events = String::new();
+    collect_transcript_events(root, &mut events);
+    events
+}
+
+fn collect_transcript_events(path: &Path, events: &mut String) {
+    for entry in fs::read_dir(path).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_transcript_events(&path, events);
+        } else if path.file_name().and_then(|name| name.to_str()) == Some("events.jsonl") {
+            events.push_str(&fs::read_to_string(path).unwrap());
+        }
+    }
+}
+
 fn setup_project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = write_methodology(
@@ -1889,12 +1906,14 @@ async fn tool_calls_append_transcript_events_when_enabled() {
         .await
         .unwrap();
 
-    let events = fs::read_to_string(transcript_dir.join("events.jsonl"))
-        .expect("tool transcript events should be written");
+    let events = read_transcript_events(&transcript_dir);
     assert!(events.contains("\"source\":\"runa-mcp\""));
     assert!(events.contains("\"kind\":\"tool_call\""));
     assert!(events.contains("\"kind\":\"tool_result\""));
     assert!(events.contains("\"tool_name\":\"implementation\""));
+    assert!(events.contains("\"schema_version\":2"));
+    assert!(events.contains("\"work_unit\":\"wu-1\""));
+    assert!(events.contains("\"run_id\":\"run-"));
 
     service.cancel().await.unwrap();
 }
@@ -1937,12 +1956,14 @@ async fn tool_calls_append_transcript_events_from_config_when_environment_is_uns
         .await
         .unwrap();
 
-    let events = fs::read_to_string(transcript_dir.join("events.jsonl"))
-        .expect("tool transcript events should be written");
+    let events = read_transcript_events(&transcript_dir);
     assert!(events.contains("\"source\":\"runa-mcp\""));
     assert!(events.contains("\"kind\":\"tool_call\""));
     assert!(events.contains("\"kind\":\"tool_result\""));
     assert!(events.contains("\"tool_name\":\"implementation\""));
+    assert!(events.contains("\"schema_version\":2"));
+    assert!(events.contains("\"deployment\":\"project:sha256:"));
+    assert!(events.contains("\"run_id\":\"run-"));
 
     service.cancel().await.unwrap();
 }
@@ -2008,8 +2029,9 @@ async fn session_driver_calls_append_transcript_events_when_enabled() {
         .unwrap();
     service.call_tool(session_call("advance")).await.unwrap();
 
-    let events = fs::read_to_string(transcript_dir.join("events.jsonl"))
-        .expect("session driver transcript events should be written");
+    let events = read_transcript_events(&transcript_dir);
+    assert!(events.contains("\"deployment\":\"github:tesserine/runa\""));
+    assert!(events.contains("\"run_id\":\"run-"));
     for tool_name in ["readiness", "next-protocol-context", "advance"] {
         assert!(
             events.contains(&format!(r#""kind":"tool_call","protocol":"take","work_unit":"work-unit-166","tool_name":"{tool_name}""#)),
@@ -2072,8 +2094,7 @@ async fn failed_session_driver_calls_append_transcript_result_when_enabled() {
         "advance unexpectedly succeeded: {advance:?}"
     );
 
-    let events = fs::read_to_string(transcript_dir.join("events.jsonl"))
-        .expect("failed driver transcript event should be written");
+    let events = read_transcript_events(&transcript_dir);
     assert!(
         events.contains(r#""kind":"tool_call","protocol":"take","work_unit":"work-unit-166","tool_name":"advance""#),
         "missing failed advance tool_call: {events}"

@@ -110,8 +110,11 @@ fn run_ticket(
         .map_err(CommandError::from)
         .map_err(StepError::from)?;
     let runtime_env = entry::entry_runtime_env(working_dir, &loaded.config, &ticket_ref);
-    let transcript_settings =
-        libagent::transcript::resolve_transcript_settings(working_dir, &loaded.config.transcript);
+    let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
+        working_dir,
+        &loaded.config.transcript,
+        &loaded.config.forge,
+    );
     let mcp_binary = locate_runa_mcp()?;
     let receipt_dir = tempfile::Builder::new()
         .prefix("runa-go-advance-")
@@ -247,8 +250,11 @@ fn run_bound(
         .map_err(CommandError::from)
         .map_err(StepError::from)?;
     let runtime_env = crate::commands::step::resolved_runtime_env(working_dir, &loaded.config);
-    let transcript_settings =
-        libagent::transcript::resolve_transcript_settings(working_dir, &loaded.config.transcript);
+    let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
+        working_dir,
+        &loaded.config.transcript,
+        &loaded.config.forge,
+    );
     let mcp_binary = locate_runa_mcp()?;
     let receipt_dir = tempfile::Builder::new()
         .prefix("runa-go-advance-")

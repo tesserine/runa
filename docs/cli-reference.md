@@ -101,8 +101,18 @@ repoint existing `[agent].command` values to
 `./adapters/agent-claude-code.sh`.
 
 When transcript capture is enabled through `[transcript].dir` or
-`RUNA_TRANSCRIPT_DIR`, live execution appends JSON Lines transcript events to
-`events.jsonl` in the resolved directory. Events include protocol prompts,
+`RUNA_TRANSCRIPT_DIR`, the configured path is the transcript root. Live
+execution appends JSON Lines transcript events beneath that root, separated by
+deployment, work unit, and run:
+
+```text
+<root>/deployments/<deployment>/work-units/<work-unit-or-_unscoped>/runs/<run-id>/events.jsonl
+```
+
+The deployment is derived from runa's resolved forge identity when configured
+and otherwise from the project path. Events also carry `deployment`, `run_id`,
+and, when scoped, `work_unit` fields so a copied event file remains
+attributable without its parent directories. Events include protocol prompts,
 agent stdout/stderr chunks, agent exit status, and `runa-mcp` tool call/result
 events when the agent runtime launches the configured MCP server. Configured or
 environment-supplied redaction names cause their current non-empty values to be
@@ -367,8 +377,8 @@ files. The exported command and environment paths are absolute whenever runa
 resolves them from the local filesystem, so adapters do not depend on child
 process cwd to launch `runa-mcp`. Transcript environment variables are forwarded
 into the MCP config when transcript capture is enabled, which lets the MCP
-server append tool events to the same transcript stream as the CLI execution
-events. Configured forge identity is forwarded the same way through
+server append tool events under the same deployment/work-unit/run transcript
+path as the CLI execution events. Configured forge identity is forwarded the same way through
 `RUNA_FORGE_*` entries so tooling inside the agent session can
 use the project-local identity without user-global shell state.
 
@@ -379,6 +389,8 @@ use the project-local identity without user-global shell state.
 - `RUNA_TRANSCRIPT_DIR` — Transcript directory override for one invocation.
 - `RUNA_TRANSCRIPT_REDACT_ENV` — Comma-separated transcript redaction-name
   override for one invocation.
+- `RUNA_TRANSCRIPT_DEPLOYMENT`, `RUNA_TRANSCRIPT_RUN_ID` — Internal transcript
+  attribution values propagated by runa into child MCP servers.
 - `RUNA_FORGE_TYPE`, `RUNA_FORGE_OWNER`, `RUNA_FORGE_NAME`,
   `RUNA_FORGE_TRACKER_ID` — Forge identity field overrides for one
   invocation.
