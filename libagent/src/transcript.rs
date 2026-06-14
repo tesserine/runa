@@ -372,20 +372,22 @@ fn event_file_path_for(
 }
 
 fn encode_path_component(value: &str) -> String {
+    if value.is_empty() {
+        return "_empty".to_string();
+    }
+
     let mut encoded = String::new();
+    let only_dots = value.as_bytes().iter().all(|byte| *byte == b'.');
     for byte in value.as_bytes() {
         match byte {
+            b'.' if only_dots => encoded.push_str("%2E"),
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
                 encoded.push(char::from(*byte));
             }
             _ => encoded.push_str(&format!("%{byte:02X}")),
         }
     }
-    if encoded.is_empty() {
-        "_empty".to_string()
-    } else {
-        encoded
-    }
+    encoded
 }
 
 fn process_run_id() -> &'static str {
@@ -404,9 +406,10 @@ fn timestamp_ms() -> u64 {
 mod tests {
     use super::{
         DEPLOYMENT_ENV, EVENTS_FILE_NAME, REDACT_ENV_ENV, RUN_ID_ENV, TRANSCRIPT_DIR_ENV,
-        TranscriptEvent, TranscriptSettings, append_event_with_settings, event_file_path,
-        redact_text, redact_value, resolve_transcript_settings,
-        resolve_transcript_settings_with_forge, transcript_env_from_settings,
+        TranscriptEvent, TranscriptSettings, UNSCOPED_WORK_UNIT_COMPONENT, append_event,
+        append_event_with_settings, encode_path_component, event_file_path, redact_text,
+        redact_value, resolve_transcript_settings, resolve_transcript_settings_with_forge,
+        transcript_env_from_settings,
     };
     use crate::project::{ForgeConfig, TranscriptConfig};
     use crate::test_helpers::EnvGuard;
@@ -556,6 +559,56 @@ mod tests {
     }
 
     #[test]
+    fn append_event_neutralizes_traversal_deployment_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let transcript_dir = temp.path().join("transcript");
+        let transcript_dir_string = transcript_dir.to_string_lossy().into_owned();
+        let _env = EnvGuard::unset_and_set(
+            &[REDACT_ENV_ENV],
+            &[
+                (TRANSCRIPT_DIR_ENV, &transcript_dir_string),
+                (DEPLOYMENT_ENV, ".."),
+                (RUN_ID_ENV, "run-1"),
+            ],
+        );
+
+        append_event(TranscriptEvent {
+            source: "test",
+            kind: "event",
+            content: Some("content"),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let expected_path = transcript_dir
+            .join("deployments")
+            .join("%2E%2E")
+            .join("work-units")
+            .join(UNSCOPED_WORK_UNIT_COMPONENT)
+            .join("runs")
+            .join("run-1")
+            .join(EVENTS_FILE_NAME);
+        assert!(
+            expected_path.exists(),
+            "event should be written under encoded deployment path: {expected_path:?}"
+        );
+        let expected_parent = expected_path.parent().unwrap().canonicalize().unwrap();
+        let canonical_root = transcript_dir.canonicalize().unwrap();
+        assert!(
+            expected_parent.starts_with(&canonical_root),
+            "event path should remain inside transcript root: {expected_parent:?}"
+        );
+        assert!(
+            !transcript_dir.join("work-units").exists(),
+            "deployment traversal must not collapse back to the transcript root"
+        );
+        assert!(
+            !transcript_dir.join(EVENTS_FILE_NAME).exists(),
+            "event should not be written at the transcript root"
+        );
+    }
+
+    #[test]
     fn transcript_path_routes_by_deployment_work_unit_and_run() {
         let settings = TranscriptSettings {
             dir: Some(PathBuf::from("/tmp/runa-transcript")),
@@ -589,6 +642,31 @@ mod tests {
                 Some("work/unit:1")
             )
         );
+    }
+
+    #[test]
+    fn encode_path_component_preserves_existing_encoding_and_neutralizes_traversal() {
+        let cases = [
+            ("", "_empty"),
+            (".", "%2E"),
+            ("..", "%2E%2E"),
+            ("...", "%2E%2E%2E"),
+            ("github:tesserine/alpha", "github%3Atesserine%2Falpha"),
+            ("work.unit", "work.unit"),
+            ("work/unit:1", "work%2Funit%3A1"),
+        ];
+
+        for (input, expected) in cases {
+            let encoded = encode_path_component(input);
+            assert_eq!(encoded, expected);
+            let components = std::path::Path::new(&encoded)
+                .components()
+                .collect::<Vec<_>>();
+            assert!(
+                matches!(components.as_slice(), [std::path::Component::Normal(_)]),
+                "encoded path component should not navigate directories: {input:?} -> {encoded:?}"
+            );
+        }
     }
 
     #[test]
