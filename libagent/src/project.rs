@@ -120,7 +120,8 @@ impl std::error::Error for UnsupportedForgeError {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepositoryConfig {
     pub selector: String,
-    pub host: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     pub owner: String,
     pub name: String,
 }
@@ -394,6 +395,7 @@ pub fn read_config(
                 .to_string(),
         ));
     }
+    reject_machine_config_surface(&config_value).map_err(ProjectError::ConfigParseFailed)?;
     reject_legacy_surface(&config_value).map_err(ProjectError::ConfigParseFailed)?;
     let machine_config: MachineConfig = config_value
         .try_into()
@@ -462,6 +464,19 @@ fn reject_legacy_surface(value: &toml::Value) -> Result<(), String> {
     if table.contains_key("forge") {
         return Err(
             "`[forge]` has been retired; use portable `[target_project]` in `.runa/project.toml`"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn reject_machine_config_surface(value: &toml::Value) -> Result<(), String> {
+    let Some(transcript) = value.get("transcript").and_then(toml::Value::as_table) else {
+        return Ok(());
+    };
+    if transcript.contains_key("redact_env") {
+        return Err(
+            "`[transcript].redact_env` has moved; configure it in portable `.runa/project.toml`"
                 .to_string(),
         );
     }
@@ -808,6 +823,36 @@ artifacts_dir = "custom-artifacts"
     }
 
     #[test]
+    fn read_config_rejects_machine_transcript_redact_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            r#"
+methodology_path = "/tmp/methodology.toml"
+
+[transcript]
+redact_env = ["SECRET_TOKEN"]
+"#,
+        )
+        .unwrap();
+
+        let err = read_config(&working, None).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("redact_env"),
+            "error should name migrated field: {message}"
+        );
+        assert!(
+            message.contains(".runa/project.toml"),
+            "error should name migration target: {message}"
+        );
+    }
+
+    #[test]
     fn config_without_logging_uses_default_logging_settings() {
         let config: Config = toml::from_str(
             r#"
@@ -878,6 +923,26 @@ name = "groundwork"
     }
 
     #[test]
+    fn project_config_accepts_hostless_github_repository() {
+        let config: ProjectConfig = toml::from_str(
+            r#"
+[target_project]
+forge_type = "github"
+
+[[target_project.repositories]]
+selector = "runa"
+owner = "tesserine"
+name = "runa"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.target_project.forge_type, ForgeType::Github);
+        assert_eq!(config.target_project.repositories[0].selector, "runa");
+        assert_eq!(config.target_project.repositories[0].host, None);
+    }
+
+    #[test]
     fn split_config_combines_machine_and_portable_runtime_settings() {
         let dir = tempfile::tempdir().unwrap();
         let working = dir.path().join("project");
@@ -926,6 +991,10 @@ tracker_id = "4"
         assert_eq!(config.target_project.forge_type, ForgeType::Sourcehut);
         assert_eq!(config.target_project.repositories[0].selector, "groundwork");
         assert_eq!(
+            config.target_project.repositories[0].host.as_deref(),
+            Some("weforge.build")
+        );
+        assert_eq!(
             config.target_project.trackers[0].tracker_id.as_deref(),
             Some("4")
         );
@@ -947,7 +1016,7 @@ tracker_id = "4"
                 forge_type: ForgeType::Github,
                 repositories: vec![RepositoryConfig {
                     selector: "runa".to_string(),
-                    host: "github.com".to_string(),
+                    host: None,
                     owner: "tesserine".to_string(),
                     name: "runa".to_string(),
                 }],

@@ -136,11 +136,14 @@ pub fn run(
         )
         .map_err(InitError::Io)?;
     }
-    fs::write(
-        runa_dir.join(".gitignore"),
-        "config.toml\nstate.toml\nstore/\nworkspace/\n",
-    )
-    .map_err(InitError::Io)?;
+    let gitignore_path = runa_dir.join(".gitignore");
+    if !gitignore_path.exists() {
+        fs::write(
+            gitignore_path,
+            "config.toml\nstate.toml\nstore/\nworkspace/\n",
+        )
+        .map_err(InitError::Io)?;
+    }
 
     // Write state.
     let state = State {
@@ -677,5 +680,22 @@ name = "groundwork"
         run(&working, &manifest_path, None).unwrap();
 
         assert_eq!(fs::read_to_string(project_path).unwrap(), existing);
+    }
+
+    #[test]
+    fn run_preserves_existing_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = write_methodology_layout(dir.path());
+
+        let working = dir.path().join("project");
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        let gitignore_path = runa_dir.join(".gitignore");
+        let existing = "custom-cache/\n";
+        fs::write(&gitignore_path, existing).unwrap();
+
+        run(&working, &manifest_path, None).unwrap();
+
+        assert_eq!(fs::read_to_string(gitignore_path).unwrap(), existing);
     }
 }

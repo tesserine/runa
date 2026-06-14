@@ -482,7 +482,7 @@ mod tests {
             forge_type: crate::project::ForgeType::Github,
             repositories: vec![crate::project::RepositoryConfig {
                 selector: "default".to_string(),
-                host: "github.com".to_string(),
+                host: None,
                 owner: owner.to_string(),
                 name: name.to_string(),
             }],

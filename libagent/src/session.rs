@@ -1043,7 +1043,7 @@ trigger = { type = "on_artifact", name = "work-unit" }
         .unwrap();
         fs::write(
             runa_dir.join("project.toml"),
-            "[target_project]\nforge_type = \"github\"\n\n[[target_project.repositories]]\nselector = \"runa\"\nowner = \"tesserine\"\nname = \"runa\"\nhost = \"github.com\"\n",
+            "[target_project]\nforge_type = \"github\"\n\n[[target_project.repositories]]\nselector = \"runa\"\nowner = \"tesserine\"\nname = \"runa\"\n",
         )
         .unwrap();
         fs::write(

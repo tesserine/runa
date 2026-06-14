@@ -679,7 +679,7 @@ mod tests {
                 forge_type: ForgeType::Github,
                 repositories: vec![RepositoryConfig {
                     selector: "runa".to_string(),
-                    host: "github.com".to_string(),
+                    host: None,
                     owner: "tesserine".to_string(),
                     name: "runa".to_string(),
                 }],

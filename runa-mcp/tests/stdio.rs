@@ -265,7 +265,7 @@ fn init_project(project_dir: &Path, manifest_path: &Path) {
     .unwrap();
     fs::write(
         runa_dir.join("project.toml"),
-        "[target_project]\nforge_type = \"github\"\n\n[[target_project.repositories]]\nselector = \"runa\"\nowner = \"tesserine\"\nname = \"runa\"\nhost = \"github.com\"\n",
+        "[target_project]\nforge_type = \"github\"\n\n[[target_project.repositories]]\nselector = \"runa\"\nowner = \"tesserine\"\nname = \"runa\"\n",
     )
     .unwrap();
 }
@@ -274,7 +274,7 @@ fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
     let config_path = project_dir.join(".runa/project.toml");
     fs::write(
         config_path,
-        format!("[target_project]\nforge_type = \"github\"\n\n[[target_project.repositories]]\nselector = \"{name}\"\nowner = \"{owner}\"\nname = \"{name}\"\nhost = \"github.com\"\n"),
+        format!("[target_project]\nforge_type = \"github\"\n\n[[target_project.repositories]]\nselector = \"{name}\"\nowner = \"{owner}\"\nname = \"{name}\"\n"),
     )
     .unwrap();
 }

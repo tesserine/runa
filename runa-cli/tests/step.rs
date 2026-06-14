@@ -473,7 +473,7 @@ fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
     let existing = fs::read_to_string(&config_path).unwrap();
     fs::write(
         config_path,
-        format!("{existing}\n[target_project]\nforge_type = \"github\"\n\n[[target_project.repositories]]\nselector = \"{name}\"\nowner = \"{owner}\"\nname = \"{name}\"\nhost = \"github.com\"\n"),
+        format!("{existing}\n[target_project]\nforge_type = \"github\"\n\n[[target_project.repositories]]\nselector = \"{name}\"\nowner = \"{owner}\"\nname = \"{name}\"\n"),
     )
     .unwrap();
 }

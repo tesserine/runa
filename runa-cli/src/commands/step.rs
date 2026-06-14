@@ -1726,7 +1726,7 @@ cat >/dev/null
                 forge_type: libagent::ForgeType::Github,
                 repositories: vec![libagent::RepositoryConfig {
                     selector: "runa".to_string(),
-                    host: "github.com".to_string(),
+                    host: None,
                     owner: "tesserine".to_string(),
                     name: "runa".to_string(),
                 }],

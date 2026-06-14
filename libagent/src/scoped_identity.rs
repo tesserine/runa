@@ -483,7 +483,7 @@ mod tests {
             forge_type: ForgeType::Github,
             repositories: vec![RepositoryConfig {
                 selector: "default".to_string(),
-                host: "github.com".to_string(),
+                host: None,
                 owner: owner.to_string(),
                 name: name.to_string(),
             }],
@@ -519,7 +519,7 @@ mod tests {
             forge_type: ForgeType::Sourcehut,
             repositories: vec![RepositoryConfig {
                 selector: "groundwork".to_string(),
-                host: "weforge.build".to_string(),
+                host: Some("weforge.build".to_string()),
                 owner: "operator".to_string(),
                 name: "weforge".to_string(),
             }],
@@ -552,7 +552,7 @@ mod tests {
             forge_type: ForgeType::Github,
             repositories: vec![RepositoryConfig {
                 selector: "runa".to_string(),
-                host: "github.com".to_string(),
+                host: None,
                 owner: "tesserine".to_string(),
                 name: "runa".to_string(),
             }],
