@@ -9,6 +9,12 @@ Semantic Versioning.
 
 ### Changed
 
+- Forge addressing now uses the canonical instance/resource contract. The
+  portable surface is `[forge.instances.*]`, `[[forge.repositories]]`, and
+  `[[forge.trackers]]`; launched agents and MCP servers receive the versioned
+  `RUNA_PROJECT_FORGE_ADDRESSES` payload. The retired `[forge]` and `[agent]`
+  config tables, `--agent-command`, and `RUNA_FORGE_*` identity atoms now
+  produce migration diagnostics that point at the new contract surface.
 - Transcript capture now treats `[transcript].dir` and `RUNA_TRANSCRIPT_DIR`
   as roots and writes events beneath deployment/work-unit/run paths. Events
   carry `deployment` and `run_id` fields, while existing redaction behavior is

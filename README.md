@@ -55,12 +55,13 @@ scoped evaluation remains inert and accepts the caller-supplied id as before.
 
 To start scoped work from nothing but a tracker ticket, `runa run --ticket <REF>`
 and `runa go --ticket <REF>` open a cold-start session from a forge ticket
-reference (a bare number, `#<N>`, `owner/repo#<N>`, an issue URL, or
-`sourcehut:<tracker_id>#<N>`). The runtime resolves the reference to an identity
-and serves the methodology's acquisition surface; the methodology reads the
-ticket and materializes the `work-unit`, after which the session is
-indistinguishable from one opened on a recorded work-unit. The runtime performs
-no forge read of its own.
+reference. A bare number or `#<N>` is accepted when the project has exactly one
+configured tracker; multi-tracker projects use `<tracker-selector>#<N>`. The
+runtime resolves the reference through the configured forge-address payload and
+serves the methodology's acquisition surface; the methodology reads the ticket
+and materializes the `work-unit`, after which the session is indistinguishable
+from one opened on a recorded work-unit. The runtime performs no forge read of
+its own.
 
 ## Quick Start
 
@@ -198,7 +199,7 @@ Both projects are in early development.
 | `runa state` | Evaluate and classify protocol readiness |
 | `runa doctor` | Check project health |
 | `runa step` | Execute the next ready protocol |
-| `runa run` | Walk the ready frontier to quiescence; live runs may override the agent command with `--agent-command -- <argv...>` |
+| `runa run` | Walk the ready frontier to quiescence |
 | `runa go` | Advance one scoped interactive session tick through the session MCP surface |
 | `runa-mcp` | MCP server for artifact production and session driver verbs |
 
@@ -206,14 +207,14 @@ See [CLI Reference](docs/cli-reference.md) for flags, exit codes, configuration,
 
 ## Configuration
 
-`runa init` creates `.runa/config.toml` with the methodology path. Operators
-may also set durable project defaults there for live agent command,
-transcript capture, and scoped forge identity. Environment variables such as
-`RUNA_TRANSCRIPT_DIR` and `RUNA_FORGE_*` remain per-invocation overrides;
-config is the project-local default.
+`runa init` creates project configuration under `.runa/`. Portable forge
+addresses live in `.runa/config.toml` as instances, repositories, and trackers;
+machine-local launch and path settings live in `.runa/local.toml`. Runa delivers
+the resolved forge-address set to agents and MCP servers through the
+`RUNA_PROJECT_FORGE_ADDRESSES` payload.
 
 Runa ships supported agent adapters for Codex and Claude Code in `adapters/`.
-Set `[agent].command` to `./adapters/agent-codex.sh` or
+Set `[launch].command` to `./adapters/agent-codex.sh` or
 `./adapters/agent-claude-code.sh`; the adapter translates `RUNA_MCP_CONFIG` for
 the selected runtime.
 

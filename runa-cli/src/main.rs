@@ -92,11 +92,11 @@ struct RunArgs {
     #[arg(long, conflicts_with = "work_unit")]
     ticket: Option<String>,
 
-    /// Override the live agent command; pass argv after `--`, for example `--agent-command -- <argv tokens>`
-    #[arg(long = "agent-command")]
+    /// Deprecated live agent command override.
+    #[arg(long = "agent-command", hide = true)]
     agent_command: bool,
 
-    /// Agent argv passed through after `--` when `--agent-command` is set
+    /// Agent argv passed through after `--` for the deprecated override.
     #[arg(
         num_args = 0..,
         last = true,

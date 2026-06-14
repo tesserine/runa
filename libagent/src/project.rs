@@ -41,7 +41,7 @@ impl LoggingConfig {
     }
 }
 
-/// The `[agent]` section of `.runa/config.toml`.
+/// Runtime launch command settings in `.runa/config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,7 +69,8 @@ impl TranscriptConfig {
     }
 }
 
-/// The `[forge]` section of `.runa/config.toml`.
+/// Legacy forge identity settings retained for compatibility while runtime
+/// surfaces move to the forge-address payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ForgeConfig {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]

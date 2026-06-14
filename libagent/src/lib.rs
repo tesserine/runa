@@ -67,8 +67,9 @@ pub use scan::{
 };
 pub use scoped_identity::{
     ResolvedForgeIdentity, ScopedWorkUnitError, find_work_unit_by_tracker_identity,
-    resolve_forge_environment, resolve_forge_identity, validate_scoped_work_unit,
-    validate_scoped_work_unit_with_identity, validate_tracker_consistency,
+    resolve_forge_address_payload, resolve_forge_environment, resolve_forge_identity,
+    validate_scoped_work_unit, validate_scoped_work_unit_with_identity,
+    validate_tracker_consistency,
 };
 pub use selection::{
     Candidate, CandidateKey, CandidateStatus, ClassifiedCandidate, EvaluationScope,

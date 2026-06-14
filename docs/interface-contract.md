@@ -82,57 +82,83 @@ These compose through two operators:
 
 Nesting is permitted. `all_of(on_artifact("constraints"), any_of(on_change("review"), on_artifact("auto-approve")))` means: constraints must exist, and either a review change or an auto-approve artifact must be present.
 
-## Runtime-Owned Scoped Identity
+## Runtime-Owned Forge Addresses And Scoped Identity
 
 Scoped evaluation is a runtime capability. When the caller supplies
 `--work-unit <ID>`, runa validates that `<ID>` exactly matches a recorded
 `work-unit` artifact instance when any such instances exist. Tracker-looking
-aliases such as bare issue numbers are not accepted as scope identifiers.
+aliases such as ticket numbers or partial ids are not accepted as
+`--work-unit` identifiers.
 
-For tracker-backed delegated work, runa also owns the active deployment
-identity used by scoped work-unit validation. The durable operator surface is
-the project-local `[forge]` config section:
+For tracker-backed delegated work, runa owns the canonical forge-address
+contract. A forge address is a resource on a configured forge instance. The
+portable project config declares instances once, with each instance carrying
+its forge type and every service host that type requires; repositories and
+trackers reference those instances.
 
 ```toml
-[forge]
+[project]
+deployment = "runa"
+
+[forge.instances.github]
 type = "github"
+host = "github.com"
+
+[forge.instances.weforge]
+type = "sourcehut"
+git_host = "git.weforge.build"
+tracker_host = "todo.weforge.build"
+
+[[forge.repositories]]
+id = "runa"
+instance = "github"
 owner = "tesserine"
 name = "runa"
+
+[[forge.trackers]]
+id = "groundwork"
+instance = "weforge"
+owner = "tesserine"
+name = "groundwork"
 tracker_id = "4"
 ```
 
-The matching per-invocation override and launched-runtime environment surface
-is runa-owned: `RUNA_FORGE_TYPE`, `RUNA_FORGE_OWNER`, `RUNA_FORGE_NAME`, and
-`RUNA_FORGE_TRACKER_ID`. Non-empty environment values override matching config
-fields, and `RUNA_FORGE_TYPE` defaults to `github` when omitted.
+The launched-runtime environment carries the resolved address set as the
+versioned `RUNA_PROJECT_FORGE_ADDRESSES` payload. The payload serializes the
+configured instances, repositories, trackers, and selected deployment address;
+consumers select configured resources by non-secret selector and resolve
+coordinates from the payload. The payload is the only forge-addressed runtime
+surface runa exports to agents and MCP children.
 
-Runa computes the active deployment identity from those atoms. For GitHub, the
-identity is `github:<owner>/<name>`. For SourceHut, the identity is
-`sourcehut:<tracker_id>`. Endpoint or host resolution is not part of scoped
-identity validation.
+Work-unit identity is formed over the full tracker address: instance identity,
+instance type, required service hosts, tracker resource, and ticket number.
+Two trackers with the same resource coordinates on different instances are
+therefore distinct. A bare `#N` or `N` ticket reference is accepted only when
+the project has exactly one configured tracker. Projects with multiple
+trackers require a qualified selector such as `<tracker-selector>#N`; a
+selector that does not name a configured tracker is rejected.
 
 When a valid recorded `work-unit` root contains a forge-tagged tracker handle,
 runa enforces the runtime checks that JSON Schema cannot express: the canonical
-instance id's tracker number agrees with the handle number, duplicate tracker
-roots are rejected, and the handle deployment identity agrees with the active
-runtime deployment identity. The methodology still owns the `work-unit` schema
-and the semantics of the artifact content; runa owns only the scope identity
-checks described here.
+instance id's tracker number agrees with the handle number, duplicate full
+tracker identities are rejected, and the handle identity agrees with the
+resolved full tracker address. The methodology still owns the `work-unit`
+schema and the semantics of the artifact content; runa owns only the scope
+identity checks described here.
 
 ### Entry References and the Acquisition Surface
 
 A session may be opened from a forge ticket reference instead of a recorded
 `work-unit` instance id, via `runa run --ticket <REF>` or
-`runa go --ticket <REF>`. The accepted reference forms are a bare ticket number,
-`#<N>`, `owner/repo#<N>`, a GitHub issue URL, or `sourcehut:<tracker_id>#<N>`.
-runa parses the reference and normalizes it to a tracker identity
-(`github:<owner>/<name>:<N>` or `sourcehut:<tracker_id>:<N>`); a reference that
-asserts a deployment other than the active one is rejected, and a bare reference
-inherits the active deployment identity. **runa never reads ticket content** —
-the reference carries identity only, and the methodology performs all forge
-reads through its own mechanics. During entry, runa exports `RUNA_ENTRY_TICKET`
-(the ticket number) alongside the `RUNA_FORGE_*` atoms so those mechanics can
-resolve the ticket.
+`runa go --ticket <REF>`. The accepted reference forms are a bare ticket
+number, `#<N>`, or `<tracker-selector>#<N>`. runa parses the reference and
+normalizes it to the selected configured tracker plus ticket number; a bare
+reference inherits the only configured tracker and is rejected as ambiguous
+when more than one tracker exists. **runa never reads ticket content** — the
+reference carries identity only, and the methodology performs all forge reads
+through its own mechanics. During entry, runa exports `RUNA_ENTRY_TICKET`
+(the ticket number) and the project forge-address payload so those mechanics
+can resolve the ticket from the selected configured tracker.
 
 The acquisition surface runa serves is the single unscoped protocol whose
 declared outputs (`produces`, `may_produce`, or required output choice members)

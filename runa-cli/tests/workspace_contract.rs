@@ -147,6 +147,59 @@ fn workspace_packages_inherit_the_workspace_version() {
 }
 
 #[test]
+fn forge_address_contract_docs_describe_current_surface() {
+    let interface = read_workspace_file("docs/interface-contract.md");
+    for retired in [
+        "[forge]",
+        "RUNA_FORGE_TYPE",
+        "RUNA_FORGE_OWNER",
+        "RUNA_FORGE_NAME",
+        "RUNA_FORGE_TRACKER_ID",
+        "RUNA_FORGE_*",
+    ] {
+        assert!(
+            !interface.contains(retired),
+            "interface contract should not document retired forge surface {retired}"
+        );
+    }
+    for required in [
+        "[forge.instances.",
+        "[[forge.repositories]]",
+        "[[forge.trackers]]",
+        "RUNA_PROJECT_FORGE_ADDRESSES",
+        "bare `#N`",
+        "qualified selector",
+    ] {
+        assert!(
+            interface.contains(required),
+            "interface contract should document current forge surface {required}"
+        );
+    }
+
+    let changelog = read_workspace_file("CHANGELOG.md");
+    let unreleased = changelog
+        .split("## [Unreleased]")
+        .nth(1)
+        .and_then(|tail| tail.split("\n## [").next())
+        .expect("CHANGELOG.md should have an Unreleased section");
+    for required in [
+        "[forge]",
+        "[agent]",
+        "--agent-command",
+        "RUNA_FORGE_*",
+        "[forge.instances.*]",
+        "[[forge.repositories]]",
+        "[[forge.trackers]]",
+        "RUNA_PROJECT_FORGE_ADDRESSES",
+    ] {
+        assert!(
+            unreleased.contains(required),
+            "Unreleased changelog should name forge-address migration surface {required}"
+        );
+    }
+}
+
+#[test]
 fn release_adoption_verification_script_is_repo_tracked_operational_substrate() {
     let script_path = workspace_root().join("scripts/verify-release-adoption.sh");
     let script = std::fs::read_to_string(&script_path)

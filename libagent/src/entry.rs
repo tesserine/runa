@@ -120,7 +120,7 @@ impl fmt::Display for EntryError {
             ),
             EntryError::UnsupportedForge { forge_type } => write!(
                 f,
-                "active forge type '{forge_type}' is not supported for a bare ticket reference; use an explicit 'owner/repo#N' (github) or 'sourcehut:<tracker_id>#N' form, or set a supported RUNA_FORGE_TYPE"
+                "active forge type '{forge_type}' is not supported for a bare ticket reference; use a qualified selector such as 'owner/repo#N' (github) or 'sourcehut:<tracker_id>#N', or configure a supported forge address"
             ),
             EntryError::Unresolved { reference } => write!(
                 f,

@@ -73,7 +73,7 @@ impl fmt::Display for StepError {
             StepError::Json(err) => write!(f, "{err}"),
             StepError::AgentCommandNotConfigured => write!(
                 f,
-                "no agent command configured in config.toml; add [agent] command = [\"binary\", ...]"
+                "no launch command configured in config.toml; add [launch] command = [\"binary\", ...]"
             ),
             StepError::JsonRequiresDryRun => {
                 write!(f, "--json is only supported with --dry-run")
@@ -425,19 +425,8 @@ pub(crate) fn resolved_runtime_env(
             .into_iter()
             .collect();
 
-    let forge_environment = libagent::resolve_forge_environment(&config.forge);
-    for name in [
-        "RUNA_FORGE_TYPE",
-        "RUNA_FORGE_OWNER",
-        "RUNA_FORGE_NAME",
-        "RUNA_FORGE_TRACKER_ID",
-    ] {
-        if let Some(value) = forge_environment
-            .get(name)
-            .filter(|value| !value.is_empty())
-        {
-            env.insert(name.to_string(), value.clone());
-        }
+    if let Some(payload) = libagent::resolve_forge_address_payload(&config.forge) {
+        env.insert("RUNA_PROJECT_FORGE_ADDRESSES".to_string(), payload);
     }
 
     env
@@ -1720,7 +1709,7 @@ cat >/dev/null
     }
 
     #[test]
-    fn resolved_runtime_env_materializes_default_github_forge_type_from_config_identity() {
+    fn resolved_runtime_env_materializes_forge_address_payload_from_config_identity() {
         let _lock = transcript_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1748,17 +1737,24 @@ cat >/dev/null
 
         let env = resolved_runtime_env(temp.path(), &config);
 
-        assert_eq!(env.get("RUNA_FORGE_TYPE"), Some(&"github".to_string()));
-        assert_eq!(env.get("RUNA_FORGE_OWNER"), Some(&"tesserine".to_string()));
-        assert_eq!(env.get("RUNA_FORGE_NAME"), Some(&"runa".to_string()));
+        let payload: serde_json::Value = serde_json::from_str(
+            env.get("RUNA_PROJECT_FORGE_ADDRESSES")
+                .expect("runtime env should include forge address payload"),
+        )
+        .expect("forge address payload should be valid JSON");
+        assert_eq!(payload["version"], 1);
+        assert_eq!(payload["instances"]["default"]["type"], "github");
+        assert_eq!(payload["repositories"][0]["owner"], "tesserine");
+        assert_eq!(payload["repositories"][0]["name"], "runa");
+        assert!(env.get("RUNA_FORGE_OWNER").is_none());
     }
 
     #[test]
     fn build_mcp_config_includes_supplied_runtime_environment() {
-        let runtime_env = BTreeMap::from([
-            ("RUNA_FORGE_OWNER".to_string(), "tesserine".to_string()),
-            ("RUNA_FORGE_NAME".to_string(), "runa".to_string()),
-        ]);
+        let runtime_env = BTreeMap::from([(
+            "RUNA_PROJECT_FORGE_ADDRESSES".to_string(),
+            r#"{"version":1,"instances":{},"repositories":[],"trackers":[]}"#.to_string(),
+        )]);
 
         let config = build_mcp_config(
             "/tmp/bin/runa-mcp",
@@ -1770,10 +1766,9 @@ cat >/dev/null
         );
 
         assert_eq!(
-            config.env.get("RUNA_FORGE_OWNER"),
-            Some(&"tesserine".to_string())
+            config.env.get("RUNA_PROJECT_FORGE_ADDRESSES"),
+            Some(&r#"{"version":1,"instances":{},"repositories":[],"trackers":[]}"#.to_string())
         );
-        assert_eq!(config.env.get("RUNA_FORGE_NAME"), Some(&"runa".to_string()));
     }
 
     #[test]

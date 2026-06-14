@@ -15,9 +15,8 @@
 //! - For valid tracker-backed roots: the canonical instance id's tracker
 //!   number must agree with the handle number; duplicate tracker
 //!   identities across roots are rejected; and the handle's deployment
-//!   identity must agree with the active deployment resolved from the
-//!   config-backed `RUNA_FORGE_*` atoms (`github:<owner>/<name>` or
-//!   `sourcehut:<tracker_id>`).
+//!   identity must agree with the active forge address resolved from the
+//!   project payload (`github:<owner>/<name>` or `sourcehut:<tracker_id>`).
 //! - Endpoint and host resolution are deliberately outside scoped identity
 //!   validation; identity is textual agreement, not network reachability.
 //!
@@ -26,7 +25,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::project::ForgeConfig;
 use crate::store::{ArtifactStore, ValidationStatus};
@@ -35,6 +34,7 @@ pub const RUNA_FORGE_TYPE: &str = "RUNA_FORGE_TYPE";
 pub const RUNA_FORGE_OWNER: &str = "RUNA_FORGE_OWNER";
 pub const RUNA_FORGE_NAME: &str = "RUNA_FORGE_NAME";
 pub const RUNA_FORGE_TRACKER_ID: &str = "RUNA_FORGE_TRACKER_ID";
+pub const RUNA_PROJECT_FORGE_ADDRESSES: &str = "RUNA_PROJECT_FORGE_ADDRESSES";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedForgeIdentity {
@@ -71,6 +71,60 @@ impl ResolvedForgeIdentity {
                 Ok(format!("sourcehut:{tracker_id}"))
             }
             other => Ok(other.to_string()),
+        }
+    }
+
+    fn address_payload(&self) -> Option<String> {
+        let instance = "default";
+        match self.forge_type.as_str() {
+            "github" => {
+                let owner = self.owner.as_deref()?;
+                let name = self.name.as_deref()?;
+                Some(
+                    json!({
+                        "version": 1,
+                        "instances": {
+                            "default": {
+                                "type": "github",
+                                "host": "github.com",
+                            }
+                        },
+                        "repositories": [{
+                            "id": "default",
+                            "instance": instance,
+                            "owner": owner,
+                            "name": name,
+                        }],
+                        "trackers": [],
+                    })
+                    .to_string(),
+                )
+            }
+            "sourcehut" => {
+                let tracker_id = self.tracker_id.as_deref()?;
+                Some(
+                    json!({
+                        "version": 1,
+                        "instances": {
+                            "default": {
+                                "type": "sourcehut",
+                                "git_host": "git.sr.ht",
+                                "tracker_host": "todo.sr.ht",
+                            }
+                        },
+                        "repositories": [],
+                        "trackers": [{
+                            "id": "default",
+                            "instance": instance,
+                            "owner": self.owner.as_deref().unwrap_or(""),
+                            "name": self.name.as_deref().unwrap_or(""),
+                            "tracker_id": tracker_id,
+                        }],
+                    })
+                    .to_string(),
+                )
+            }
+            _ => None,
         }
     }
 
@@ -217,6 +271,12 @@ pub fn find_work_unit_by_tracker_identity(store: &ArtifactStore, target: &str) -
 }
 
 pub fn resolve_forge_identity(config: &ForgeConfig) -> ResolvedForgeIdentity {
+    if let Ok(payload) = std::env::var(RUNA_PROJECT_FORGE_ADDRESSES) {
+        if let Some(identity) = resolve_forge_identity_from_payload(&payload) {
+            return identity;
+        }
+    }
+
     ResolvedForgeIdentity {
         forge_type: resolve_atom(RUNA_FORGE_TYPE, config.forge_type.as_deref())
             .unwrap_or_else(|| "github".to_string()),
@@ -226,8 +286,74 @@ pub fn resolve_forge_identity(config: &ForgeConfig) -> ResolvedForgeIdentity {
     }
 }
 
+pub fn resolve_forge_address_payload(config: &ForgeConfig) -> Option<String> {
+    std::env::var(RUNA_PROJECT_FORGE_ADDRESSES)
+        .ok()
+        .and_then(|value| normalize_atom(Some(value.as_str())))
+        .or_else(|| resolve_forge_identity(config).address_payload())
+}
+
 pub fn resolve_forge_environment(config: &ForgeConfig) -> HashMap<String, String> {
     resolve_forge_identity(config).environment()
+}
+
+fn resolve_forge_identity_from_payload(payload: &str) -> Option<ResolvedForgeIdentity> {
+    let payload = serde_json::from_str::<Value>(payload).ok()?;
+    let instances = payload.get("instances")?.as_object()?;
+    let repositories = payload
+        .get("repositories")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let trackers = payload
+        .get("trackers")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+
+    match (repositories, trackers) {
+        ([repository], []) => identity_from_resource(instances, repository, false),
+        ([], [tracker]) => identity_from_resource(instances, tracker, true),
+        _ => None,
+    }
+}
+
+fn identity_from_resource(
+    instances: &serde_json::Map<String, Value>,
+    resource: &Value,
+    tracker: bool,
+) -> Option<ResolvedForgeIdentity> {
+    let resource = resource.as_object()?;
+    let instance_id = resource.get("instance")?.as_str()?;
+    let instance = instances.get(instance_id)?.as_object()?;
+    let forge_type = instance.get("type")?.as_str()?.to_string();
+    let owner = resource
+        .get("owner")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let name = resource
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let tracker_id = if tracker {
+        resource.get("tracker_id").and_then(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| value.as_u64().map(|number| number.to_string()))
+        })
+    } else {
+        None
+    };
+
+    Some(ResolvedForgeIdentity {
+        forge_type,
+        owner,
+        name,
+        tracker_id,
+    })
 }
 
 fn resolve_atom(variable: &'static str, config_value: Option<&str>) -> Option<String> {
