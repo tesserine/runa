@@ -415,8 +415,11 @@ pub(crate) fn resolved_runtime_env(
     working_dir: &Path,
     config: &libagent::Config,
 ) -> BTreeMap<String, String> {
-    let transcript_settings =
-        libagent::transcript::resolve_transcript_settings(working_dir, &config.transcript);
+    let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
+        working_dir,
+        &config.transcript,
+        &config.forge,
+    );
     let mut env: BTreeMap<String, String> =
         libagent::transcript::transcript_env_from_settings(&transcript_settings)
             .into_iter()
@@ -463,6 +466,11 @@ pub(crate) fn execute_entry(
     });
     let transcript_capture_enabled =
         libagent::transcript::capture_enabled_with_settings(&transcript_settings);
+    let run_id = transcript_capture_enabled.then(libagent::transcript::new_run_id);
+    let transcript_settings = match run_id.as_deref() {
+        Some(run_id) => libagent::transcript::with_run_id(&transcript_settings, run_id),
+        None => transcript_settings,
+    };
     info!(
         operation = "agent_execution",
         outcome = "starting",
@@ -476,13 +484,22 @@ pub(crate) fn execute_entry(
     if options.isolate_process_group {
         child.process_group(0);
     }
+    let mut mcp_config = entry.mcp_config.clone();
+    if let Some(run_id) = &run_id {
+        mcp_config
+            .env
+            .insert(libagent::transcript::RUN_ID_ENV.to_string(), run_id.clone());
+    }
     child
         .args(&agent_command[1..])
         .env(
             "RUNA_MCP_CONFIG",
-            serde_json::to_string(&entry.mcp_config).map_err(StepError::Json)?,
+            serde_json::to_string(&mcp_config).map_err(StepError::Json)?,
         )
         .envs(&options.extra_env);
+    if let Some(run_id) = &run_id {
+        child.env(libagent::transcript::RUN_ID_ENV, run_id);
+    }
     child.current_dir(working_dir).stdin(Stdio::piped());
     if transcript_capture_enabled {
         child.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -865,8 +882,11 @@ fn run_internal(
         .map_err(CommandError::from)
         .map_err(StepError::from)?;
     let runtime_env = resolved_runtime_env(working_dir, &loaded.config);
-    let transcript_settings =
-        libagent::transcript::resolve_transcript_settings(working_dir, &loaded.config.transcript);
+    let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
+        working_dir,
+        &loaded.config.transcript,
+        &loaded.config.forge,
+    );
 
     let agent_command = if dry_run {
         None
@@ -1407,6 +1427,24 @@ cat >/dev/null
         .unwrap();
     }
 
+    fn read_transcript_events(root: &Path) -> String {
+        let mut events = String::new();
+        collect_transcript_events(root, &mut events);
+        events
+    }
+
+    fn collect_transcript_events(path: &Path, events: &mut String) {
+        for entry in fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                collect_transcript_events(&path, events);
+            } else if path.file_name() == Some(OsStr::new("events.jsonl")) {
+                events.push_str(&fs::read_to_string(path).unwrap());
+            }
+        }
+    }
+
     #[test]
     fn execute_entry_launches_agent_commands_agnostically() {
         use std::os::unix::fs::PermissionsExt;
@@ -1517,12 +1555,14 @@ cat >/dev/null
         )
         .expect("agent execution should succeed");
 
-        let events = fs::read_to_string(transcript_dir.join("events.jsonl"))
-            .expect("transcript events should be written");
+        let events = read_transcript_events(&transcript_dir);
         assert!(events.contains("\"kind\":\"agent_input\""));
         assert!(events.contains("\"kind\":\"agent_stdout\""));
         assert!(events.contains("\"kind\":\"agent_stderr\""));
         assert!(events.contains("\"kind\":\"agent_exit\""));
+        assert!(events.contains("\"schema_version\":2"));
+        assert!(events.contains("\"work_unit\":\"issue-116\""));
+        assert!(events.contains("\"run_id\":\"run-"));
         assert!(events.contains("[REDACTED:SECRET_TOKEN]"));
         assert!(
             !events.contains("SECRET_VALUE"),

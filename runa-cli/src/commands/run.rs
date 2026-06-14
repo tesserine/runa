@@ -364,8 +364,11 @@ fn execute_and_reconcile(
     next_entry: PlannedEntry,
     runtime_env: &BTreeMap<String, String>,
 ) -> Result<ReconcileOutcome, StepError> {
-    let transcript_settings =
-        libagent::transcript::resolve_transcript_settings(working_dir, &loaded.config.transcript);
+    let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
+        working_dir,
+        &loaded.config.transcript,
+        &loaded.config.forge,
+    );
     let execution_entry = build_plan_entries(
         vec![next_entry],
         mcp_command,

@@ -458,6 +458,43 @@ fn append_transcript_config(project_dir: &Path, transcript_dir: &Path, redact_en
     )
     .unwrap();
 }
+
+fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
+    let config_path = project_dir.join(".runa/config.toml");
+    let existing = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        config_path,
+        format!("{existing}\n[forge]\ntype = \"github\"\nowner = \"{owner}\"\nname = \"{name}\"\n"),
+    )
+    .unwrap();
+}
+
+fn transcript_event_files(root: &Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    collect_transcript_event_files(root, &mut files);
+    files.sort();
+    files
+}
+
+fn collect_transcript_event_files(path: &Path, files: &mut Vec<std::path::PathBuf>) {
+    for entry in fs::read_dir(path).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_transcript_event_files(&path, files);
+        } else if path.file_name().and_then(|name| name.to_str()) == Some("events.jsonl") {
+            files.push(path);
+        }
+    }
+}
+
+fn read_transcript_events(root: &Path) -> String {
+    transcript_event_files(root)
+        .into_iter()
+        .map(|path| fs::read_to_string(path).unwrap())
+        .collect::<Vec<_>>()
+        .join("")
+}
+
 fn write_capture_agent(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1386,10 +1423,122 @@ trigger = { type = "on_artifact", name = "constraints" }
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let events = fs::read_to_string(transcript_dir.join("events.jsonl")).unwrap();
+    let events = read_transcript_events(&transcript_dir);
     assert!(events.contains("\"kind\":\"agent_stdout\""), "{events}");
+    assert!(events.contains("\"schema_version\":2"), "{events}");
+    assert!(
+        events.contains("\"deployment\":\"project:sha256:"),
+        "{events}"
+    );
+    assert!(events.contains("\"run_id\":\"run-"), "{events}");
     assert!(events.contains("[REDACTED:SECRET_TOKEN]"), "{events}");
     assert!(!events.contains("SECRET_VALUE"), "{events}");
+}
+
+#[test]
+fn step_transcripts_from_two_deployments_share_one_root_without_interleaving() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "constraints"
+
+[[artifact_types]]
+name = "implementation"
+
+[[protocols]]
+name = "implement"
+requires = ["constraints"]
+produces = ["implementation"]
+trigger = { type = "on_artifact", name = "constraints" }
+"#,
+        &[
+            (
+                "constraints",
+                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+            ),
+            (
+                "implementation",
+                r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#,
+            ),
+        ],
+        &["implement"],
+    );
+    let transcript_root = dir.path().join("shared-transcripts");
+    let agent_path = write_transcript_agent(dir.path());
+
+    for (project_name, repo_name) in [("project-a", "alpha"), ("project-b", "beta")] {
+        let project_dir = dir.path().join(project_name);
+        fs::create_dir(&project_dir).unwrap();
+        init_project(&project_dir, &manifest_path);
+        append_github_forge_config(&project_dir, "tesserine", repo_name);
+        append_agent_command_config(&project_dir, &[agent_path.as_path()]);
+        let workspace = project_dir.join(".runa/workspace");
+        fs::create_dir_all(workspace.join("constraints")).unwrap();
+        fs::write(
+            workspace.join("constraints/spec-1.json"),
+            format!(r#"{{"title":"ship {repo_name}"}}"#),
+        )
+        .unwrap();
+
+        let output = runa_bin()
+            .arg("step")
+            .env("RUNA_TRANSCRIPT_DIR", &transcript_root)
+            .env_remove("RUNA_TRANSCRIPT_REDACT_ENV")
+            .current_dir(&project_dir)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{repo_name} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let files = transcript_event_files(&transcript_root);
+    assert_eq!(files.len(), 2, "{files:?}");
+    let rendered_paths = files
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered_paths.contains("github%3Atesserine%2Falpha"),
+        "{rendered_paths}"
+    );
+    assert!(
+        rendered_paths.contains("github%3Atesserine%2Fbeta"),
+        "{rendered_paths}"
+    );
+
+    for path in files {
+        let events = fs::read_to_string(&path).unwrap();
+        if path.to_string_lossy().contains("alpha") {
+            assert!(
+                events.contains(r#""deployment":"github:tesserine/alpha""#),
+                "{events}"
+            );
+            assert!(
+                !events.contains(r#""deployment":"github:tesserine/beta""#),
+                "{events}"
+            );
+        } else {
+            assert!(
+                events.contains(r#""deployment":"github:tesserine/beta""#),
+                "{events}"
+            );
+            assert!(
+                !events.contains(r#""deployment":"github:tesserine/alpha""#),
+                "{events}"
+            );
+        }
+        assert!(!events.contains(r#""work_unit":"#), "{events}");
+        assert!(events.contains(r#""run_id":"run-"#), "{events}");
+    }
 }
 
 #[test]
