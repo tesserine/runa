@@ -1398,13 +1398,12 @@ mod tests {
         fs::write(
             path,
             r#"#!/bin/sh
-set -eu
-cat >/dev/null
-exec 3>"$1"
-readlink "/proc/$$/fd/1" >&3
-readlink "/proc/$$/fd/2" >&3
-exec 3>&-
-"#,
+	set -eu
+	cat >/dev/null
+	stdout_fd=$(readlink "/proc/$$/fd/1")
+	stderr_fd=$(readlink "/proc/$$/fd/2")
+	printf '%s\n%s\n' "$stdout_fd" "$stderr_fd" >"$1"
+	"#,
         )
         .unwrap();
     }
