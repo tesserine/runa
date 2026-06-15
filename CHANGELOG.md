@@ -45,6 +45,10 @@ Semantic Versioning.
 
 ### Fixed
 
+- Ticket-entry context now keeps identity fields aligned with the canonical
+  work-unit handle schema: `tracker_identity` is the unnumbered tracker identity
+  and `work_unit_identity` carries the numbered work-unit identity in both
+  dry-run JSON and `next-protocol-context`.
 - SourceHut tracker ids are now validated as decimal integers while resolving
   forge addresses, so malformed tracker coordinates fail before they are baked
   into `RUNA_FORGE_ADDRESSES`.

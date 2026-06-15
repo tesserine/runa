@@ -88,6 +88,7 @@ pub(crate) fn acquisition_planned_entry(
         reference: ticket.display.clone(),
         ticket_number: ticket.number,
         tracker_identity: ticket.tracker_identity.clone(),
+        work_unit_identity: ticket.work_unit_identity.clone(),
     });
     PlannedEntry {
         protocol: acquisition.name.clone(),

@@ -445,6 +445,7 @@ impl SessionState {
                 reference: ticket.display.clone(),
                 ticket_number: ticket.number,
                 tracker_identity: ticket.tracker_identity.clone(),
+                work_unit_identity: ticket.work_unit_identity.clone(),
             });
         }
         let rendered = render_context_prompt(&context);
@@ -1085,7 +1086,8 @@ name = "runa"
     fn ticket_14() -> crate::TicketRef {
         crate::TicketRef {
             number: 14,
-            tracker_identity: "github@github.com/tracker/tesserine/runa#14".to_string(),
+            tracker_identity: "github@github.com/tracker/tesserine/runa".to_string(),
+            work_unit_identity: "github@github.com/tracker/tesserine/runa#14".to_string(),
             display: "runa#14".to_string(),
         }
     }

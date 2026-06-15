@@ -28,13 +28,14 @@ pub const WORK_UNIT_ARTIFACT_TYPE: &str = "work-unit";
 
 /// A forge ticket reference resolved against the configured forge-address set.
 ///
-/// `tracker_identity` is the canonical full-address match key, identical to
-/// what a recorded work-unit handle yields. `display` is the operator-facing
-/// rendering.
+/// `tracker_identity` is the unnumbered tracker identity. `work_unit_identity`
+/// is the numbered identity that matches a recorded work-unit handle. `display`
+/// is the operator-facing rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketRef {
     pub number: u64,
     pub tracker_identity: String,
+    pub work_unit_identity: String,
     pub display: String,
 }
 
@@ -163,7 +164,8 @@ fn bind_reference_identity(
     let tracker = project.tracker(parsed.tracker_selector.as_deref())?;
     Ok(TicketRef {
         number,
-        tracker_identity: format!("{}#{number}", tracker.identity),
+        tracker_identity: tracker.identity.clone(),
+        work_unit_identity: format!("{}#{number}", tracker.identity),
         display: format!("{}#{number}", tracker.id),
     })
 }
@@ -256,7 +258,7 @@ pub fn check_acquisition_admissible(
 
 /// Resolve a ticket reference to the materialized `work-unit` instance.
 ///
-/// Returns the instance id whose tracker handle identity equals the reference,
+/// Returns the instance id whose work-unit handle identity equals the reference,
 /// or `None` when no such instance exists yet (cold store). Tracker-handle
 /// consistency is enforced first, so a `ScopedWorkUnitError` here signals a
 /// malformed or conflicting recorded work-unit rather than a missing one.
@@ -272,7 +274,7 @@ pub fn resolve_promise(
     ticket: &TicketRef,
 ) -> Result<Option<String>, ScopedWorkUnitError> {
     validate_tracker_consistency(store, project)?;
-    match find_work_unit_by_tracker_identity(store, &ticket.tracker_identity) {
+    match find_work_unit_by_tracker_identity(store, &ticket.work_unit_identity) {
         Some(instance_id) => Ok(Some(instance_id)),
         None if store.has_any_scan_gap_for_type(WORK_UNIT_ARTIFACT_TYPE) => {
             Err(ScopedWorkUnitError::WorkUnitScanIncomplete)
@@ -324,6 +326,10 @@ mod forge_address_tests {
         assert_eq!(ticket.number, 14);
         assert_eq!(
             ticket.tracker_identity,
+            "github@github.com/tracker/tesserine/runa"
+        );
+        assert_eq!(
+            ticket.work_unit_identity,
             "github@github.com/tracker/tesserine/runa#14"
         );
         assert_eq!(ticket.display, "runa#14");
@@ -365,6 +371,10 @@ mod forge_address_tests {
 
         assert_eq!(
             ticket.tracker_identity,
+            "sourcehut@git=git.weforge.build,tracker=todo.weforge.build/tracker/~operator/weforge/4"
+        );
+        assert_eq!(
+            ticket.work_unit_identity,
             "sourcehut@git=git.weforge.build,tracker=todo.weforge.build/tracker/~operator/weforge/4#9"
         );
     }

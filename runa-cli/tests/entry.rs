@@ -316,6 +316,14 @@ fn run_ticket_dry_run_projects_acquisition_then_take() {
     assert_eq!(plan[0]["projection"], "current");
     // The acquisition step carries the entry reference in its context.
     assert_eq!(plan[0]["context"]["entry"]["reference"], "runa#14");
+    assert_eq!(
+        plan[0]["context"]["entry"]["tracker_identity"],
+        "github@github.com/tracker/tesserine/runa"
+    );
+    assert_eq!(
+        plan[0]["context"]["entry"]["work_unit_identity"],
+        "github@github.com/tracker/tesserine/runa#14"
+    );
     assert_eq!(plan[1]["protocol"], "take");
     assert_eq!(plan[1]["projection"], "projected");
     assert_eq!(plan[1]["work_unit"], "work-unit-14");
@@ -922,7 +930,13 @@ fi
     assert!(transcript.contains("## Session entry"), "{transcript}");
     assert!(transcript.contains("runa#14"), "{transcript}");
     assert!(
-        transcript.contains("github@github.com/tracker/tesserine/runa#14"),
+        transcript
+            .contains(r#"\"tracker_identity\": \"github@github.com/tracker/tesserine/runa\""#),
+        "{transcript}"
+    );
+    assert!(
+        transcript
+            .contains(r#"\"work_unit_identity\": \"github@github.com/tracker/tesserine/runa#14\""#),
         "{transcript}"
     );
 }
