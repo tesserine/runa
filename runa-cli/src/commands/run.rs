@@ -570,7 +570,7 @@ fn run_with_scope(
     cli_agent_command_present: bool,
     cli_agent_command_argv: &[String],
 ) -> Result<RunOutcome, RunError> {
-    super::validate_scoped_work_unit(&loaded, work_unit.as_deref())
+    super::validate_scoped_work_unit(&loaded, working_dir, work_unit.as_deref())
         .map_err(StepError::from)
         .map_err(RunError::from)?;
     let scope = match work_unit.as_deref() {

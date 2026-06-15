@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -42,6 +43,7 @@ pub struct ResolvedForgeIdentity {
     pub owner: Option<String>,
     pub name: Option<String>,
     pub tracker_id: Option<String>,
+    pub canonical_deployment_identity: Option<String>,
 }
 
 impl ResolvedForgeIdentity {
@@ -59,6 +61,9 @@ impl ResolvedForgeIdentity {
     }
 
     fn active_deployment_identity(&self) -> Result<String, ScopedWorkUnitError> {
+        if let Some(identity) = self.canonical_deployment_identity.as_deref() {
+            return Ok(identity.to_string());
+        }
         match self.forge_type.as_str() {
             "github" => {
                 let owner = self.required_atom(RUNA_FORGE_OWNER, self.owner.as_deref())?;
@@ -223,11 +228,39 @@ pub fn resolve_forge_identity(config: &ForgeConfig) -> ResolvedForgeIdentity {
         owner: resolve_atom(RUNA_FORGE_OWNER, config.owner.as_deref()),
         name: resolve_atom(RUNA_FORGE_NAME, config.name.as_deref()),
         tracker_id: resolve_atom(RUNA_FORGE_TRACKER_ID, config.tracker_id.as_deref()),
+        canonical_deployment_identity: None,
     }
+}
+
+pub fn resolve_scoped_forge_identity(
+    working_dir: &Path,
+    config: &ForgeConfig,
+) -> ResolvedForgeIdentity {
+    let mut identity = resolve_forge_identity(config);
+    identity.canonical_deployment_identity = canonical_tracker_identity(working_dir);
+    identity
 }
 
 pub fn resolve_forge_environment(config: &ForgeConfig) -> HashMap<String, String> {
     resolve_forge_identity(config).environment()
+}
+
+fn canonical_tracker_identity(working_dir: &Path) -> Option<String> {
+    let project_path = working_dir.join(".runa").join("project.toml");
+    if !project_path.exists() {
+        return None;
+    }
+    crate::resolve_project_payload(&project_path)
+        .ok()
+        .and_then(|payload| {
+            payload
+                .get("trackers")
+                .and_then(Value::as_array)
+                .and_then(|trackers| trackers.first())
+                .and_then(|tracker| tracker.get("identity"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
 }
 
 fn resolve_atom(variable: &'static str, config_value: Option<&str>) -> Option<String> {
@@ -482,6 +515,29 @@ mod tests {
         })
     }
 
+    fn handled_work_unit(handle: serde_json::Value) -> serde_json::Value {
+        json!({
+            "title": "Canonical scope",
+            "description": "Validate canonical scoped identity",
+            "acceptance_criteria": ["Reject mismatched handles"],
+            "handle": handle
+        })
+    }
+
+    fn conformance_handle(name: &str) -> serde_json::Value {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../contracts/forge-address/conformance.json"
+        ))
+        .unwrap();
+        fixture["valid"]["handles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|example| example["name"] == name)
+            .unwrap_or_else(|| panic!("missing conformance handle {name}"))["value"]
+            .clone()
+    }
+
     fn github_identity(repository: &str) -> ResolvedForgeIdentity {
         let (owner, name) = repository.split_once('/').unwrap();
         ResolvedForgeIdentity {
@@ -489,6 +545,7 @@ mod tests {
             owner: Some(owner.to_string()),
             name: Some(name.to_string()),
             tracker_id: None,
+            canonical_deployment_identity: None,
         }
     }
 
@@ -498,6 +555,20 @@ mod tests {
             owner: None,
             name: None,
             tracker_id: Some(tracker_id.to_string()),
+            canonical_deployment_identity: None,
+        }
+    }
+
+    fn canonical_identity(identity: &str) -> ResolvedForgeIdentity {
+        ResolvedForgeIdentity {
+            forge_type: identity
+                .split_once(':')
+                .map_or(identity, |(forge_type, _)| forge_type)
+                .to_string(),
+            owner: None,
+            name: None,
+            tracker_id: None,
+            canonical_deployment_identity: Some(identity.to_string()),
         }
     }
 
@@ -603,6 +674,48 @@ mod tests {
     }
 
     #[test]
+    fn scoped_forge_identity_uses_project_topology_tracker_identity() {
+        let _env = EnvGuard::set(&[
+            ("RUNA_FORGE_TYPE", "github"),
+            ("RUNA_FORGE_OWNER", "wrong"),
+            ("RUNA_FORGE_NAME", "wrong"),
+            ("RUNA_FORGE_TRACKER_ID", "9"),
+        ]);
+        let tmp = TempDir::new().unwrap();
+        let runa_dir = tmp.path().join(".runa");
+        std::fs::create_dir_all(&runa_dir).unwrap();
+        std::fs::write(
+            runa_dir.join("project.toml"),
+            r#"
+[[forge.instances]]
+name = "github-enterprise"
+type = "github"
+host = "github.example.com"
+
+[[forge.repositories]]
+name = "runa"
+instance = "github-enterprise"
+owner = "tesserine"
+repository = "runa"
+
+[[forge.trackers]]
+name = "runa"
+type = "github"
+instance = "github-enterprise"
+repository = "runa"
+"#,
+        )
+        .unwrap();
+
+        let identity = resolve_scoped_forge_identity(tmp.path(), &ForgeConfig::default());
+
+        assert_eq!(
+            identity.active_deployment_identity().unwrap(),
+            "github:github.example.com/tesserine/runa"
+        );
+    }
+
+    #[test]
     fn exact_work_unit_id_without_slug_accepts_matching_github_deployment() {
         let tmp = TempDir::new().unwrap();
         let mut store = work_unit_store(&tmp);
@@ -617,6 +730,58 @@ mod tests {
             &store,
             "work-unit-163",
             &github_identity("tesserine/runa"),
+        );
+
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn exact_work_unit_id_accepts_canonical_non_default_github_tracker_identity() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = work_unit_store(&tmp);
+        let artifact = handled_work_unit(conformance_handle("runa-199"));
+        let artifact_path = tmp.path().join("work-unit-199-scope.json");
+        std::fs::write(&artifact_path, artifact.to_string()).unwrap();
+        store
+            .record_with_timestamp(
+                "work-unit",
+                "work-unit-199-scope",
+                &artifact_path,
+                &artifact,
+                1,
+            )
+            .unwrap();
+
+        let result = validate_scoped_work_unit_with_identity(
+            &store,
+            "work-unit-199-scope",
+            &canonical_identity("github:github.example.com/tesserine/runa"),
+        );
+
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn exact_work_unit_id_accepts_canonical_sourcehut_tracker_host_identity() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = work_unit_store(&tmp);
+        let artifact = handled_work_unit(conformance_handle("groundwork-420"));
+        let artifact_path = tmp.path().join("work-unit-420-scope.json");
+        std::fs::write(&artifact_path, artifact.to_string()).unwrap();
+        store
+            .record_with_timestamp(
+                "work-unit",
+                "work-unit-420-scope",
+                &artifact_path,
+                &artifact,
+                1,
+            )
+            .unwrap();
+
+        let result = validate_scoped_work_unit_with_identity(
+            &store,
+            "work-unit-420-scope",
+            &canonical_identity("sourcehut:todo.weforge.build/~operator/groundwork:4"),
         );
 
         assert_eq!(result, Ok(()));

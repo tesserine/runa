@@ -422,6 +422,7 @@ mod tests {
             owner: Some(owner.to_string()),
             name: Some(name.to_string()),
             tracker_id: None,
+            canonical_deployment_identity: None,
         }
     }
 
@@ -431,6 +432,7 @@ mod tests {
             owner: None,
             name: None,
             tracker_id: Some(tracker_id.to_string()),
+            canonical_deployment_identity: None,
         }
     }
 
@@ -541,6 +543,7 @@ mod tests {
             owner: None,
             name: Some("runa".to_string()),
             tracker_id: None,
+            canonical_deployment_identity: None,
         };
         let error = resolve_ticket_reference("14", &identity).unwrap_err();
         assert!(matches!(
@@ -559,6 +562,7 @@ mod tests {
             owner: Some("tesserine".to_string()),
             name: Some("runa".to_string()),
             tracker_id: None,
+            canonical_deployment_identity: None,
         };
 
         assert!(matches!(

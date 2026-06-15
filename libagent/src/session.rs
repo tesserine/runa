@@ -315,7 +315,7 @@ impl SessionState {
         let mut loaded = crate::project::load(&working_dir, config_override)?;
         let scan_result = crate::scan(&loaded.workspace_dir, &mut loaded.store)?;
         let scan_findings = crate::collect_scan_findings(&scan_result, &loaded.workspace_dir);
-        let identity = crate::resolve_forge_identity(&loaded.config.forge);
+        let identity = crate::resolve_scoped_forge_identity(&working_dir, &loaded.config.forge);
 
         // Resolve the promise first. Re-entry (the work-unit already exists)
         // degrades to an ordinary bound session and needs no acquisition surface;
@@ -605,7 +605,8 @@ impl SessionState {
         require_current_ready: bool,
     ) -> Result<ReconciledScan, SessionError> {
         let scan_result = self.scan_workspace()?;
-        let identity = crate::resolve_forge_identity(&self.loaded.config.forge);
+        let identity =
+            crate::resolve_scoped_forge_identity(&self.working_dir, &self.loaded.config.forge);
         match &self.scope {
             SessionScope::Bound(work_unit) => {
                 crate::validate_scoped_work_unit_with_identity(
@@ -689,7 +690,8 @@ impl SessionState {
     /// work-unit ([`EntryError::Unresolved`]) or the recorded work-unit fails
     /// scoped-identity validation.
     fn bind_promise(&mut self) -> Result<(), SessionError> {
-        let identity = crate::resolve_forge_identity(&self.loaded.config.forge);
+        let identity =
+            crate::resolve_scoped_forge_identity(&self.working_dir, &self.loaded.config.forge);
         let ticket = match &self.scope {
             SessionScope::Promised { ticket, .. } => ticket.clone(),
             SessionScope::Bound(_) => return Ok(()),

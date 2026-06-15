@@ -222,7 +222,8 @@ fn run_bound(
 ) -> Result<StepOutcome, StepError> {
     let agent_command = configured_agent_command(working_dir, config_override)?;
     let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
-    super::validate_scoped_work_unit(&loaded, Some(work_unit)).map_err(StepError::from)?;
+    super::validate_scoped_work_unit(&loaded, working_dir, Some(work_unit))
+        .map_err(StepError::from)?;
     let scope = libagent::EvaluationScope::Scoped(work_unit);
     let state =
         crate::commands::step::evaluate_execution_state(&loaded, working_dir, &scan_result, scope);

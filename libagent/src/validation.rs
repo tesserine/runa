@@ -99,7 +99,7 @@ pub fn validate_artifact(
             detail: e.to_string(),
         })?;
 
-    let violations: Vec<Violation> = validator
+    let mut violations: Vec<Violation> = validator
         .iter_errors(artifact_data)
         .map(|e| Violation {
             artifact_type: artifact_type.name.clone(),
@@ -110,12 +110,53 @@ pub fn validate_artifact(
         .collect();
 
     if violations.is_empty() {
+        violations.extend(semantic_violations(artifact_data, artifact_type));
+    }
+
+    if violations.is_empty() {
         Ok(())
     } else {
         Err(ValidationError::InvalidArtifact {
             artifact_type: artifact_type.name.clone(),
             violations,
         })
+    }
+}
+
+fn semantic_violations(artifact_data: &Value, artifact_type: &ArtifactType) -> Vec<Violation> {
+    if artifact_type.name != "work-unit"
+        || !schema_references_work_unit_handle(&artifact_type.schema)
+    {
+        return Vec::new();
+    }
+    let Some(handle) = artifact_data.get("handle") else {
+        return Vec::new();
+    };
+    match crate::validate_work_unit_handle(handle) {
+        Ok(()) => Vec::new(),
+        Err(error) => vec![Violation {
+            artifact_type: artifact_type.name.clone(),
+            description: error.to_string(),
+            schema_path: "/$defs/work_unit_handle".to_string(),
+            instance_path: "/handle".to_string(),
+        }],
+    }
+}
+
+fn schema_references_work_unit_handle(schema: &Value) -> bool {
+    match schema {
+        Value::Object(map) => {
+            if map
+                .get("$ref")
+                .and_then(Value::as_str)
+                .is_some_and(|reference| reference.ends_with("#/$defs/work_unit_handle"))
+            {
+                return true;
+            }
+            map.values().any(schema_references_work_unit_handle)
+        }
+        Value::Array(values) => values.iter().any(schema_references_work_unit_handle),
+        _ => false,
     }
 }
 
@@ -333,6 +374,55 @@ mod tests {
                 assert!(!detail.is_empty());
             }
             other => panic!("expected InvalidSchema, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn work_unit_handle_identity_disagreement_fails_after_schema_validation() {
+        let at = make_artifact_type(
+            "work-unit",
+            json!({
+                "type": "object",
+                "required": ["title", "description", "acceptance_criteria", "handle"],
+                "properties": {
+                    "title": { "type": "string" },
+                    "description": { "type": "string" },
+                    "acceptance_criteria": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "handle": {
+                        "$ref": "forge-address.schema.json#/$defs/work_unit_handle"
+                    }
+                }
+            }),
+        );
+        let data = json!({
+            "title": "Bad identity",
+            "description": "Stored identity disagrees with its parts.",
+            "acceptance_criteria": ["Reject the disagreement"],
+            "handle": {
+                "tracker": "groundwork",
+                "tracker_identity": "sourcehut:todo.weforge.build/~operator/groundwork:4",
+                "work_unit_identity": "sourcehut:todo.weforge.build/~operator/groundwork:4#421",
+                "number": 420
+            }
+        });
+
+        let err = validate_artifact(&data, &at).unwrap_err();
+
+        match err {
+            ValidationError::InvalidArtifact { violations, .. } => {
+                assert_eq!(violations.len(), 1);
+                assert_eq!(violations[0].instance_path, "/handle");
+                assert!(
+                    violations[0]
+                        .description
+                        .contains("work_unit_identity must be derived"),
+                    "{violations:?}"
+                );
+            }
+            other => panic!("expected InvalidArtifact, got: {other}"),
         }
     }
 
