@@ -210,10 +210,6 @@ fn run_dry_run_accepts_exact_tracker_backed_work_unit_without_slug() {
         .arg("--dry-run")
         .arg("--work-unit")
         .arg("work-unit-163")
-        .env_remove("RUNA_FORGE_TYPE")
-        .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -451,7 +447,7 @@ trigger = { type = "on_artifact", name = "implementation" }
 }
 
 fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
-    let config_path = project_dir.join(".runa/config.toml");
+    let config_path = project_dir.join(".runa/project.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
     let command_entries = command
         .iter()
@@ -460,7 +456,7 @@ fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
         .join("\n");
     fs::write(
         config_path,
-        format!("{existing}\n[agent]\ncommand = [\n{command_entries}\n]\n"),
+        format!("{existing}\n[launch]\ncommand = [\n{command_entries}\n]\n"),
     )
     .unwrap();
 }
@@ -663,7 +659,7 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert!(workspace.join("implementation/impl-1.json").is_file());
 }
 #[test]
-fn run_without_dry_run_cli_agent_command_overrides_configured_agent_command() {
+fn run_rejects_legacy_agent_command_override() {
     let dir = tempfile::tempdir().unwrap();
     let bool_schema =
         r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
@@ -725,19 +721,21 @@ trigger = { type = "on_artifact", name = "constraints" }
         .output()
         .unwrap();
 
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("unexpected argument '--agent-command'"),
+        "stderr: {stderr}"
     );
-
-    let cli_executed = fs::read_to_string(&cli_log_path).unwrap();
-    assert_eq!(cli_executed, "implement\n");
+    assert!(
+        !cli_log_path.exists(),
+        "legacy override agent should not run"
+    );
     assert!(!config_log_path.exists(), "configured agent should not run");
-    assert!(workspace.join("implementation/impl-1.json").is_file());
+    assert!(!workspace.join("implementation/impl-1.json").exists());
 }
 #[test]
-fn run_without_dry_run_cli_agent_command_preserves_hyphenated_tokens() {
+fn run_rejects_legacy_agent_command_override_with_hyphenated_tokens() {
     let dir = tempfile::tempdir().unwrap();
     let bool_schema =
         r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
@@ -797,20 +795,18 @@ trigger = { type = "on_artifact", name = "constraints" }
         .output()
         .unwrap();
 
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("unexpected argument '--agent-command'"),
+        "stderr: {stderr}"
     );
-
-    let argv = fs::read_to_string(&args_path).unwrap();
-    assert_eq!(argv, "--dangerously-skip-permissions\n-p\n");
-    let executed = fs::read_to_string(&log_path).unwrap();
-    assert_eq!(executed, "implement\n");
-    assert!(workspace.join("implementation/impl-1.json").is_file());
+    assert!(!args_path.exists(), "legacy override agent should not run");
+    assert!(!log_path.exists(), "legacy override agent should not run");
+    assert!(!workspace.join("implementation/impl-1.json").exists());
 }
 #[test]
-fn run_without_dry_run_rejects_empty_cli_agent_command_even_when_configured() {
+fn run_rejects_empty_legacy_agent_command_override() {
     let dir = tempfile::tempdir().unwrap();
     let bool_schema =
         r#"{"type":"object","required":["done"],"properties":{"done":{"type":"boolean"}}}"#;
@@ -868,10 +864,10 @@ trigger = { type = "on_artifact", name = "constraints" }
         .output()
         .unwrap();
 
-    assert_eq!(output.status.code(), Some(6), "{output:?}");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no agent command configured"),
+        stderr.contains("unexpected argument '--agent-command'"),
         "stderr: {stderr}"
     );
     assert!(!config_log_path.exists(), "configured agent should not run");
@@ -931,28 +927,24 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert_eq!(output.status.code(), Some(6), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no agent command configured"),
+        stderr.contains("no launch command configured"),
         "stderr: {stderr}"
     );
     assert!(!workspace.join("implementation/impl-1.json").exists());
 }
 
 #[test]
-fn run_help_describes_agent_command_passthrough() {
+fn run_help_omits_legacy_agent_command_passthrough() {
     let output = runa_bin().arg("run").arg("--help").output().unwrap();
 
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Usage: runa run [OPTIONS] [-- [ARGV]...]"),
+        stdout.contains("Usage: runa run [OPTIONS]"),
         "stdout: {stdout}"
     );
-    assert!(stdout.contains("--agent-command"), "stdout: {stdout}");
-    assert!(stdout.contains("-- <argv"), "stdout: {stdout}");
-    assert!(
-        !stdout.contains("Usage: runa run [OPTIONS] [ARGV]..."),
-        "stdout: {stdout}"
-    );
+    assert!(!stdout.contains("--agent-command"), "stdout: {stdout}");
+    assert!(!stdout.contains("-- <argv"), "stdout: {stdout}");
 }
 #[test]
 fn run_without_separator_rejects_agent_command_before_dry_run_flag() {
@@ -1014,10 +1006,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unexpected argument"), "stderr: {stderr}");
-    assert!(
-        stderr.contains(agent_path.to_string_lossy().as_ref()),
-        "stderr: {stderr}"
-    );
     assert!(!log_path.exists(), "agent should not run");
     assert!(!workspace.join("implementation/impl-1.json").exists());
 }
@@ -1082,10 +1070,6 @@ trigger = { type = "on_artifact", name = "constraints" }
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unexpected argument"), "stderr: {stderr}");
-    assert!(
-        stderr.contains(agent_path.to_string_lossy().as_ref()),
-        "stderr: {stderr}"
-    );
     assert!(!log_path.exists(), "agent should not run");
     assert!(!workspace.join("implementation/impl-1.json").exists());
 }
@@ -1605,12 +1589,12 @@ fn run_without_dry_run_with_no_ready_protocols_still_requires_agent_command() {
     assert_eq!(output.status.code(), Some(6), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no agent command configured"),
+        stderr.contains("no launch command configured"),
         "stderr: {stderr}"
     );
 }
 #[test]
-fn run_without_dry_run_rejects_empty_cli_agent_command_when_no_protocols_are_ready() {
+fn run_rejects_empty_legacy_agent_command_override_when_no_protocols_are_ready() {
     let (dir, project_dir) = setup_quiescent_run_project();
     let config_log_path = dir.path().join("configured.log");
     let agent_path = write_single_protocol_agent(dir.path());
@@ -1627,10 +1611,10 @@ fn run_without_dry_run_rejects_empty_cli_agent_command_when_no_protocols_are_rea
         .output()
         .unwrap();
 
-    assert_eq!(output.status.code(), Some(6), "{output:?}");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no agent command configured"),
+        stderr.contains("unexpected argument '--agent-command'"),
         "stderr: {stderr}"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);

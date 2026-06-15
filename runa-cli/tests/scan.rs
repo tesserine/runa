@@ -41,7 +41,7 @@ fn init_project(project_dir: &std::path::Path, manifest_path: &std::path::Path) 
 }
 
 fn append_logging_config(project_dir: &std::path::Path, logging_toml: &str) {
-    let config_path = project_dir.join(".runa/config.toml");
+    let config_path = project_dir.join(".runa/project.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
     fs::write(config_path, format!("{existing}\n{logging_toml}")).unwrap();
 }

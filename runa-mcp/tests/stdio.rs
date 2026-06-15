@@ -253,9 +253,26 @@ fn init_project(project_dir: &Path, manifest_path: &Path) {
     fs::write(
         runa_dir.join("config.toml"),
         format!(
-            "methodology_path = {:?}\n",
+            "methodology_path = {:?}\nproject_config = \"project.toml\"\n",
             manifest_path.display().to_string()
         ),
+    )
+    .unwrap();
+    fs::write(
+        runa_dir.join("project.toml"),
+        r#"schema_version = 1
+
+[[forges.instances]]
+id = "github-com"
+type = "github"
+host = "github.com"
+
+[[forges.repositories]]
+id = "runa"
+instance = "github-com"
+owner = "tesserine"
+name = "runa"
+"#,
     )
     .unwrap();
     fs::write(
@@ -266,11 +283,24 @@ fn init_project(project_dir: &Path, manifest_path: &Path) {
 }
 
 fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
-    let config_path = project_dir.join(".runa/config.toml");
-    let existing = fs::read_to_string(&config_path).unwrap();
+    let config_path = project_dir.join(".runa/project.toml");
     fs::write(
         config_path,
-        format!("{existing}\n[forge]\ntype = \"github\"\nowner = \"{owner}\"\nname = \"{name}\"\n"),
+        format!(
+            r#"schema_version = 1
+
+[[forges.instances]]
+id = "github-com"
+type = "github"
+host = "github.com"
+
+[[forges.repositories]]
+id = "{name}"
+instance = "github-com"
+owner = "{owner}"
+name = "{name}"
+"#
+        ),
     )
     .unwrap();
 }
@@ -405,10 +435,6 @@ async fn session_mode_advertises_driver_verbs_and_current_output_tools() {
                     cmd.arg("--session")
                         .arg("--work-unit")
                         .arg("work-unit-166")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -462,10 +488,6 @@ async fn session_mode_is_caller_agnostic_for_tools_readiness_and_context() {
                         .arg("--work-unit")
                         .arg("work-unit-166")
                         .env("RUNA_CALLER_KIND", "interactive")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -481,10 +503,6 @@ async fn session_mode_is_caller_agnostic_for_tools_readiness_and_context() {
                         .arg("--work-unit")
                         .arg("work-unit-166")
                         .env("RUNA_CALLER_KIND", "autonomous")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -564,10 +582,6 @@ async fn session_record_read_advance_records_execution_for_producing_step() {
                     cmd.arg("--session")
                         .arg("--work-unit")
                         .arg("work-unit-166")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -647,10 +661,6 @@ async fn session_advance_records_context_time_input_provenance() {
                     cmd.arg("--session")
                         .arg("--work-unit")
                         .arg("work-unit-166")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -739,10 +749,6 @@ async fn session_advance_reopens_current_step_when_context_input_changes() {
                     cmd.arg("--session")
                         .arg("--work-unit")
                         .arg("work-unit-166")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -828,10 +834,6 @@ async fn session_advance_reopens_current_step_when_readiness_consumes_context_in
                     cmd.arg("--session")
                         .arg("--work-unit")
                         .arg("work-unit-166")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -902,10 +904,6 @@ async fn session_advance_emits_tool_list_changed_when_current_step_changes() {
                 cmd.arg("--session")
                     .arg("--work-unit")
                     .arg("work-unit-166")
-                    .env_remove("RUNA_FORGE_TYPE")
-                    .env_remove("RUNA_FORGE_TRACKER_ID")
-                    .env("RUNA_FORGE_OWNER", "tesserine")
-                    .env("RUNA_FORGE_NAME", "runa")
                     .current_dir(&project_dir);
             }),
         )
@@ -963,10 +961,6 @@ async fn session_advance_reconciles_deleted_output_before_recording_execution() 
                     cmd.arg("--session")
                         .arg("--work-unit")
                         .arg("work-unit-166")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -1046,10 +1040,6 @@ async fn session_advance_rejects_deleted_required_input_before_downstream_select
                     cmd.arg("--session")
                         .arg("--work-unit")
                         .arg("work-unit-166")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -1116,10 +1106,6 @@ async fn session_readiness_selects_later_ready_step_and_advertises_tools() {
                     cmd.arg("--session")
                         .arg("--work-unit")
                         .arg("work-unit-166")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -1188,10 +1174,6 @@ async fn session_readiness_rejects_newly_ready_step_with_unservable_required_out
                     cmd.arg("--session")
                         .arg("--work-unit")
                         .arg("work-unit-166")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -1260,10 +1242,6 @@ async fn session_readiness_emits_tool_list_changed_when_current_step_becomes_rea
                 cmd.arg("--session")
                     .arg("--work-unit")
                     .arg("work-unit-166")
-                    .env_remove("RUNA_FORGE_TYPE")
-                    .env_remove("RUNA_FORGE_TRACKER_ID")
-                    .env("RUNA_FORGE_OWNER", "tesserine")
-                    .env("RUNA_FORGE_NAME", "runa")
                     .current_dir(&project_dir);
             }),
         )
@@ -1327,10 +1305,6 @@ async fn session_advance_error_preserves_current_step_when_next_step_is_unservab
                     cmd.arg("--session")
                         .arg("--work-unit")
                         .arg("work-unit-166")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -1409,10 +1383,6 @@ async fn session_advance_persistence_error_preserves_current_step_and_no_record(
                     cmd.arg("--session")
                         .arg("--work-unit")
                         .arg("work-unit-166")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -1716,10 +1686,6 @@ async fn mcp_accepts_exact_tracker_backed_work_unit_without_slug() {
                         .arg("take")
                         .arg("--work-unit")
                         .arg("work-unit-163")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -1765,10 +1731,6 @@ async fn mcp_accepts_tracker_backed_work_unit_with_forge_identity_only_in_config
                         .arg("take")
                         .arg("--work-unit")
                         .arg("work-unit-163")
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_OWNER")
-                        .env_remove("RUNA_FORGE_NAME")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
                         .current_dir(&project_dir);
                 }),
             )
@@ -1962,7 +1924,7 @@ async fn tool_calls_append_transcript_events_from_config_when_environment_is_uns
     assert!(events.contains("\"kind\":\"tool_result\""));
     assert!(events.contains("\"tool_name\":\"implementation\""));
     assert!(events.contains("\"schema_version\":2"));
-    assert!(events.contains("\"deployment\":\"project:sha256:"));
+    assert!(events.contains("\"deployment\":\"github@github.com/repo/tesserine/runa\""));
     assert!(events.contains("\"run_id\":\"run-"));
 
     service.cancel().await.unwrap();
@@ -1998,10 +1960,6 @@ async fn session_driver_calls_append_transcript_events_when_enabled() {
                         .arg("--work-unit")
                         .arg("work-unit-166")
                         .env("RUNA_TRANSCRIPT_DIR", &transcript_dir)
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )
@@ -2030,7 +1988,7 @@ async fn session_driver_calls_append_transcript_events_when_enabled() {
     service.call_tool(session_call("advance")).await.unwrap();
 
     let events = read_transcript_events(&transcript_dir);
-    assert!(events.contains("\"deployment\":\"github:tesserine/runa\""));
+    assert!(events.contains("\"deployment\":\"github@github.com/repo/tesserine/runa\""));
     assert!(events.contains("\"run_id\":\"run-"));
     for tool_name in ["readiness", "next-protocol-context", "advance"] {
         assert!(
@@ -2076,10 +2034,6 @@ async fn failed_session_driver_calls_append_transcript_result_when_enabled() {
                         .arg("--work-unit")
                         .arg("work-unit-166")
                         .env("RUNA_TRANSCRIPT_DIR", &transcript_dir)
-                        .env_remove("RUNA_FORGE_TYPE")
-                        .env_remove("RUNA_FORGE_TRACKER_ID")
-                        .env("RUNA_FORGE_OWNER", "tesserine")
-                        .env("RUNA_FORGE_NAME", "runa")
                         .current_dir(&project_dir);
                 }),
             )

@@ -89,27 +89,34 @@ Scoped evaluation is a runtime capability. When the caller supplies
 `work-unit` artifact instance when any such instances exist. Tracker-looking
 aliases such as bare issue numbers are not accepted as scope identifiers.
 
-For tracker-backed delegated work, runa also owns the active deployment
-identity used by scoped work-unit validation. The durable operator surface is
-the project-local `[forge]` config section:
+For tracker-backed delegated work, runa also owns the forge-address contract
+used by scoped work-unit validation. The durable operator surface is the
+portable `.runa/project.toml` forge table: an instance declares its type and
+service hosts, and repositories or trackers declare resources hosted by that
+instance.
 
 ```toml
-[forge]
+[[forges.instances]]
+id = "github-com"
 type = "github"
+host = "github.com"
+
+[[forges.repositories]]
+id = "runa"
+instance = "github-com"
 owner = "tesserine"
 name = "runa"
-tracker_id = "4"
 ```
 
-The matching per-invocation override and launched-runtime environment surface
-is runa-owned: `RUNA_FORGE_TYPE`, `RUNA_FORGE_OWNER`, `RUNA_FORGE_NAME`, and
-`RUNA_FORGE_TRACKER_ID`. Non-empty environment values override matching config
-fields, and `RUNA_FORGE_TYPE` defaults to `github` when omitted.
+The launched-runtime environment surface is the runa-owned
+`RUNA_FORGE_ADDRESSES` JSON payload. Callers do not override individual forge
+coordinates; they select configured resources by non-secret selector where a
+forge operation needs one.
 
-Runa computes the active deployment identity from those atoms. For GitHub, the
-identity is `github:<owner>/<name>`. For SourceHut, the identity is
-`sourcehut:<tracker_id>`. Endpoint or host resolution is not part of scoped
-identity validation.
+Runa computes deployment and tracker identities from that contract. A GitHub
+repository identity is shaped as `github@github.com/repo/<owner>/<name>`, and
+its tracker identity is `github@github.com/tracker/<owner>/<name>`. SourceHut
+trackers include the declared git and tracker hosts plus tracker coordinates.
 
 When a valid recorded `work-unit` root contains a forge-tagged tracker handle,
 runa enforces the runtime checks that JSON Schema cannot express: the canonical

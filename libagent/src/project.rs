@@ -9,10 +9,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::forge_address::{ForgeAddressError, ForgeProject, RawForges, reject_legacy_environment};
 use crate::{ArtifactStore, DependencyGraph, GraphError, Manifest, ManifestError, StoreError};
 
 pub const RUNA_DIR: &str = ".runa";
 pub const CONFIG_FILENAME: &str = "config.toml";
+pub const PROJECT_FILENAME: &str = "project.toml";
 pub const STATE_FILENAME: &str = "state.toml";
 pub const DEFAULT_WORKSPACE_DIR: &str = "workspace";
 pub const STORE_DIRNAME: &str = "store";
@@ -41,7 +43,7 @@ impl LoggingConfig {
     }
 }
 
-/// The `[agent]` section of `.runa/config.toml`.
+/// Effective launch command, sourced from `[launch]` in the portable project file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,7 +56,7 @@ impl AgentConfig {
     }
 }
 
-/// The `[transcript]` section of `.runa/config.toml`.
+/// Effective transcript config. `dir` is machine-local; `redact_env` is portable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TranscriptConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,43 +65,96 @@ pub struct TranscriptConfig {
     pub redact_env: Vec<String>,
 }
 
-impl TranscriptConfig {
-    fn is_default(&self) -> bool {
-        self == &Self::default()
-    }
-}
-
-/// The `[forge]` section of `.runa/config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct ForgeConfig {
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    pub forge_type: Option<String>,
+pub struct DeploymentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub owner: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tracker_id: Option<String>,
+    pub repository: Option<String>,
 }
 
-impl ForgeConfig {
+impl DeploymentConfig {
     fn is_default(&self) -> bool {
         self == &Self::default()
     }
 }
 
-/// On-disk format for `.runa/config.toml` — operator configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Effective project configuration built from local and portable files.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub methodology_path: String,
+    pub logging: LoggingConfig,
+    pub agent: AgentConfig,
+    pub transcript: TranscriptConfig,
+    pub deployment: DeploymentConfig,
+    pub forge: ForgeProject,
+    pub project_config_path: PathBuf,
+}
+
+/// On-disk format for `.runa/config.toml` — machine-local paths and directories.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct LocalConfig {
+    pub methodology_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_config: Option<String>,
+    #[serde(default, skip_serializing_if = "LocalTranscriptConfig::is_default")]
+    pub transcript: LocalTranscriptConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+struct LocalTranscriptConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+}
+
+impl LocalTranscriptConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// On-disk format for `.runa/project.toml` — portable project surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortableConfig {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     #[serde(default, skip_serializing_if = "LoggingConfig::is_default")]
     pub logging: LoggingConfig,
     #[serde(default, skip_serializing_if = "AgentConfig::is_default")]
-    pub agent: AgentConfig,
-    #[serde(default, skip_serializing_if = "TranscriptConfig::is_default")]
-    pub transcript: TranscriptConfig,
-    #[serde(default, skip_serializing_if = "ForgeConfig::is_default")]
-    pub forge: ForgeConfig,
+    pub launch: AgentConfig,
+    #[serde(default, skip_serializing_if = "PortableTranscriptConfig::is_default")]
+    pub transcript: PortableTranscriptConfig,
+    #[serde(default, skip_serializing_if = "DeploymentConfig::is_default")]
+    pub deployment: DeploymentConfig,
+    #[serde(default)]
+    pub forges: RawForges,
+}
+
+impl Default for PortableConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: default_schema_version(),
+            logging: LoggingConfig::default(),
+            launch: AgentConfig::default(),
+            transcript: PortableTranscriptConfig::default(),
+            deployment: DeploymentConfig::default(),
+            forges: RawForges::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PortableTranscriptConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redact_env: Vec<String>,
+}
+
+impl PortableTranscriptConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+fn default_schema_version() -> u32 {
+    1
 }
 
 /// On-disk format for `.runa/state.toml` — initialization metadata managed by runa.
@@ -127,6 +182,8 @@ pub enum ProjectError {
     ConfigPathNotFound(PathBuf),
     /// Config file exists but cannot be parsed.
     ConfigParseFailed(String),
+    /// Portable forge-address contract is invalid.
+    ForgeAddressInvalid(ForgeAddressError),
     /// `.runa/state.toml` is missing — project not initialized.
     NotInitialized,
     /// Filesystem I/O failure.
@@ -153,6 +210,7 @@ impl fmt::Display for ProjectError {
             ProjectError::ConfigParseFailed(detail) => {
                 write!(f, "failed to parse config: {detail}")
             }
+            ProjectError::ForgeAddressInvalid(error) => write!(f, "{error}"),
             ProjectError::NotInitialized => {
                 write!(f, "not a runa project (run 'runa init' first)")
             }
@@ -174,6 +232,7 @@ impl std::error::Error for ProjectError {
             ProjectError::ManifestInvalid(e) => Some(e),
             ProjectError::GraphInvalid(e) => Some(e),
             ProjectError::StoreError(e) => Some(e),
+            ProjectError::ForgeAddressInvalid(e) => Some(e),
             _ => None,
         }
     }
@@ -235,19 +294,142 @@ pub fn read_config(
     working_dir: &Path,
     config_override: Option<&Path>,
 ) -> Result<Config, ProjectError> {
+    reject_legacy_environment().map_err(ProjectError::ForgeAddressInvalid)?;
     let config_path = resolve_config(working_dir, config_override)?;
     let config_content = std::fs::read_to_string(&config_path).map_err(ProjectError::Io)?;
     let config_value: toml::Value = toml::from_str(&config_content)
         .map_err(|e| ProjectError::ConfigParseFailed(e.to_string()))?;
-    if config_value.get("artifacts_dir").is_some() {
+    reject_removed_and_legacy_local_settings(&config_value)?;
+    let local: LocalConfig = config_value
+        .try_into()
+        .map_err(|e| ProjectError::ConfigParseFailed(e.to_string()))?;
+
+    let project_config_path = resolve_project_config_path(working_dir, &config_path, &local);
+    let portable = read_portable_config(&project_config_path)?;
+    let forge =
+        ForgeProject::resolve(portable.forges).map_err(ProjectError::ForgeAddressInvalid)?;
+    validate_deployment_repository(&portable.deployment, &forge)
+        .map_err(ProjectError::ForgeAddressInvalid)?;
+
+    Ok(Config {
+        methodology_path: local.methodology_path,
+        logging: portable.logging,
+        agent: portable.launch,
+        transcript: TranscriptConfig {
+            dir: local.transcript.dir,
+            redact_env: portable.transcript.redact_env,
+        },
+        deployment: portable.deployment,
+        forge,
+        project_config_path,
+    })
+}
+
+fn validate_deployment_repository(
+    deployment: &DeploymentConfig,
+    forge: &ForgeProject,
+) -> Result<(), ForgeAddressError> {
+    if forge.repositories.is_empty() {
+        return Ok(());
+    }
+    match deployment.repository.as_deref() {
+        Some(selector) => forge.deployment_identity(Some(selector)).map(|_| ()),
+        None if forge.repositories.len() == 1 => Ok(()),
+        None => Err(ForgeAddressError::AmbiguousDeploymentRepository),
+    }
+}
+
+fn read_portable_config(path: &Path) -> Result<PortableConfig, ProjectError> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PortableConfig::default());
+        }
+        Err(error) => return Err(ProjectError::Io(error)),
+    };
+    let value: toml::Value =
+        toml::from_str(&content).map_err(|e| ProjectError::ConfigParseFailed(e.to_string()))?;
+    reject_machine_local_portable_settings(&value)?;
+    let portable: PortableConfig = value
+        .try_into()
+        .map_err(|e| ProjectError::ConfigParseFailed(e.to_string()))?;
+    if portable.schema_version != 1 {
+        return Err(ProjectError::ConfigParseFailed(format!(
+            "unsupported project config schema_version {}; expected 1",
+            portable.schema_version
+        )));
+    }
+    Ok(portable)
+}
+
+fn resolve_project_config_path(
+    working_dir: &Path,
+    config_path: &Path,
+    local: &LocalConfig,
+) -> PathBuf {
+    let Some(path) = local.project_config.as_deref() else {
+        return working_dir.join(RUNA_DIR).join(PROJECT_FILENAME);
+    };
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        config_path.parent().unwrap_or(working_dir).join(path)
+    }
+}
+
+fn reject_removed_and_legacy_local_settings(value: &toml::Value) -> Result<(), ProjectError> {
+    if value.get("artifacts_dir").is_some() {
         return Err(ProjectError::ConfigParseFailed(
             "'artifacts_dir' has been removed; artifacts always live under '.runa/workspace/' and are no longer configurable"
                 .to_string(),
         ));
     }
-    config_value
-        .try_into()
-        .map_err(|e| ProjectError::ConfigParseFailed(e.to_string()))
+    for legacy in ["agent", "forge"] {
+        if value.get(legacy).is_some() {
+            return Err(ProjectError::ConfigParseFailed(format!(
+                "'[{legacy}]' has been removed; configure launch and forge addresses in '.runa/project.toml' using '[launch]' and '[forges.*]'"
+            )));
+        }
+    }
+    if value
+        .get("transcript")
+        .and_then(|section| section.get("redact_env"))
+        .is_some()
+    {
+        return Err(ProjectError::ConfigParseFailed(
+            "'[transcript].redact_env' belongs in portable '.runa/project.toml', not machine-local '.runa/config.toml'"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn reject_machine_local_portable_settings(value: &toml::Value) -> Result<(), ProjectError> {
+    for local in ["methodology_path", "project_config"] {
+        if value.get(local).is_some() {
+            return Err(ProjectError::ConfigParseFailed(format!(
+                "'{local}' belongs in machine-local '.runa/config.toml', not portable '.runa/project.toml'"
+            )));
+        }
+    }
+    if value
+        .get("transcript")
+        .and_then(|section| section.get("dir"))
+        .is_some()
+    {
+        return Err(ProjectError::ConfigParseFailed(
+            "'[transcript].dir' belongs in machine-local '.runa/config.toml', not portable '.runa/project.toml'"
+                .to_string(),
+        ));
+    }
+    if value.get("agent").is_some() || value.get("forge").is_some() {
+        return Err(ProjectError::ConfigParseFailed(
+            "legacy '[agent]' and '[forge]' sections are not accepted; use '[launch]' and '[forges.*]' in '.runa/project.toml'"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Load a runa project from `working_dir`.
@@ -337,18 +519,12 @@ trigger = { type = "on_change", name = "constraints" }
         fs::create_dir_all(&runa_dir).unwrap();
 
         let canonical = fs::canonicalize(manifest_path).unwrap();
-        let config = Config {
-            methodology_path: canonical.display().to_string(),
-            logging: LoggingConfig::default(),
-            agent: AgentConfig::default(),
-            transcript: TranscriptConfig::default(),
-            forge: ForgeConfig::default(),
-        };
         fs::write(
             runa_dir.join("config.toml"),
-            toml::to_string(&config).unwrap(),
+            format!("methodology_path = {:?}\n", canonical.display().to_string()),
         )
         .unwrap();
+        fs::write(runa_dir.join("project.toml"), "schema_version = 1\n").unwrap();
 
         let state = State {
             initialized_at: "2026-01-01T00:00:00Z".to_string(),
@@ -400,14 +576,11 @@ trigger = { type = "on_change", name = "constraints" }
 
         let canonical = fs::canonicalize(&manifest_path).unwrap();
         let external_config_path = dir.path().join("external-config.toml");
-        let config = Config {
-            methodology_path: canonical.display().to_string(),
-            logging: LoggingConfig::default(),
-            agent: AgentConfig::default(),
-            transcript: TranscriptConfig::default(),
-            forge: ForgeConfig::default(),
-        };
-        fs::write(&external_config_path, toml::to_string(&config).unwrap()).unwrap();
+        fs::write(
+            &external_config_path,
+            format!("methodology_path = {:?}\n", canonical.display().to_string()),
+        )
+        .unwrap();
 
         let loaded = load(&working, Some(&external_config_path)).unwrap();
         assert_eq!(loaded.manifest.name, "test-methodology");
@@ -483,18 +656,12 @@ artifacts_dir = "custom-artifacts"
         let runa_dir = working.join(".runa");
         fs::create_dir_all(&runa_dir).unwrap();
         let canonical = fs::canonicalize(&manifest_path).unwrap();
-        let config = Config {
-            methodology_path: canonical.display().to_string(),
-            logging: LoggingConfig::default(),
-            agent: AgentConfig::default(),
-            transcript: TranscriptConfig::default(),
-            forge: ForgeConfig::default(),
-        };
         fs::write(
             runa_dir.join("config.toml"),
-            toml::to_string(&config).unwrap(),
+            format!("methodology_path = {:?}\n", canonical.display().to_string()),
         )
         .unwrap();
+        fs::write(runa_dir.join("project.toml"), "schema_version = 1\n").unwrap();
 
         let err = load(&working, None).unwrap_err();
         assert!(
@@ -587,67 +754,68 @@ artifacts_dir = "custom-artifacts"
     }
 
     #[test]
-    fn config_without_logging_uses_default_logging_settings() {
-        let config: Config = toml::from_str(
-            r#"
-methodology_path = "/tmp/methodology.toml"
-"#,
+    fn config_without_project_file_uses_default_portable_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            r#"methodology_path = "/tmp/methodology.toml""#,
         )
         .unwrap();
+
+        let config = read_config(&working, None).unwrap();
 
         assert_eq!(config.logging.format, LogFormat::Text);
         assert_eq!(config.logging.filter, None);
         assert_eq!(config.agent.command, None);
+        assert!(config.forge.instances.is_empty());
     }
 
     #[test]
-    fn config_with_logging_table_parses_format_and_filter() {
-        let config: Config = toml::from_str(
+    fn split_config_parses_local_and_portable_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
             r#"
 methodology_path = "/tmp/methodology.toml"
+project_config = "project.toml"
+
+[transcript]
+dir = "var/transcripts"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            runa_dir.join("project.toml"),
+            r#"
+schema_version = 1
 
 [logging]
 format = "json"
 filter = "info"
-"#,
-        )
-        .unwrap();
 
-        assert_eq!(config.logging.format, LogFormat::Json);
-        assert_eq!(config.logging.filter.as_deref(), Some("info"));
-        assert_eq!(config.agent.command, None);
-    }
-
-    #[test]
-    fn config_with_agent_table_parses_command() {
-        let config: Config = toml::from_str(
-            r#"
-methodology_path = "/tmp/methodology.toml"
-
-[agent]
+[launch]
 command = ["agent-runtime", "exec"]
-"#,
-        )
-        .unwrap();
-
-        assert_eq!(
-            config.agent.command,
-            Some(vec!["agent-runtime".to_string(), "exec".to_string()])
-        );
-    }
-
-    #[test]
-    fn config_with_transcript_and_forge_tables_parses_durable_runtime_settings() {
-        let config: Config = toml::from_str(
-            r#"
-methodology_path = "/tmp/methodology.toml"
 
 [transcript]
-dir = "var/transcripts"
 redact_env = ["SECRET_TOKEN", "API_KEY"]
 
-[forge]
+[[forges.instances]]
+id = "weforge"
 type = "sourcehut"
+git_host = "git.weforge.build"
+tracker_host = "todo.weforge.build"
+
+[[forges.trackers]]
+id = "weforge"
+instance = "weforge"
 owner = "operator"
 name = "weforge"
 tracker_id = "4"
@@ -655,35 +823,90 @@ tracker_id = "4"
         )
         .unwrap();
 
+        let config = read_config(&working, None).unwrap();
+
+        assert_eq!(config.logging.format, LogFormat::Json);
+        assert_eq!(config.logging.filter.as_deref(), Some("info"));
+        assert_eq!(
+            config.agent.command,
+            Some(vec!["agent-runtime".to_string(), "exec".to_string()])
+        );
         assert_eq!(config.transcript.dir.as_deref(), Some("var/transcripts"));
         assert_eq!(config.transcript.redact_env, ["SECRET_TOKEN", "API_KEY"]);
-        assert_eq!(config.forge.forge_type.as_deref(), Some("sourcehut"));
-        assert_eq!(config.forge.owner.as_deref(), Some("operator"));
-        assert_eq!(config.forge.name.as_deref(), Some("weforge"));
-        assert_eq!(config.forge.tracker_id.as_deref(), Some("4"));
+        assert_eq!(config.forge.instances[0].forge_type.as_str(), "sourcehut");
+        assert_eq!(config.forge.trackers[0].tracker_id.as_deref(), Some("4"));
     }
 
     #[test]
-    fn config_serializes_and_deserializes_new_durable_runtime_settings() {
-        let config = Config {
-            methodology_path: "/tmp/methodology.toml".to_string(),
-            logging: LoggingConfig::default(),
-            agent: AgentConfig::default(),
-            transcript: TranscriptConfig {
-                dir: Some("transcripts".to_string()),
-                redact_env: vec!["SECRET_TOKEN".to_string()],
-            },
-            forge: ForgeConfig {
-                forge_type: Some("github".to_string()),
-                owner: Some("tesserine".to_string()),
-                name: Some("runa".to_string()),
-                tracker_id: Some("4".to_string()),
-            },
-        };
+    fn config_resolution_rejects_unsupported_forge_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            r#"methodology_path = "/tmp/methodology.toml""#,
+        )
+        .unwrap();
+        fs::write(
+            runa_dir.join("project.toml"),
+            r#"
+schema_version = 1
 
-        let serialized = toml::to_string(&config).unwrap();
-        let round_tripped: Config = toml::from_str(&serialized).unwrap();
+[[forges.instances]]
+id = "gitlab"
+type = "gitlab"
+host = "gitlab.example"
+"#,
+        )
+        .unwrap();
 
-        assert_eq!(round_tripped, config);
+        let error = read_config(&working, None).unwrap_err();
+
+        assert!(matches!(
+            error,
+            ProjectError::ForgeAddressInvalid(ForgeAddressError::UnsupportedForgeType { forge_type })
+                if forge_type == "gitlab"
+        ));
+    }
+
+    #[test]
+    fn single_repository_resolves_deployment_without_selector() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            r#"methodology_path = "/tmp/methodology.toml""#,
+        )
+        .unwrap();
+        fs::write(
+            runa_dir.join("project.toml"),
+            r#"
+schema_version = 1
+
+[[forges.instances]]
+id = "github-com"
+type = "github"
+host = "github.com"
+
+[[forges.repositories]]
+id = "runa"
+instance = "github-com"
+owner = "tesserine"
+name = "runa"
+"#,
+        )
+        .unwrap();
+
+        let config = read_config(&working, None).unwrap();
+
+        assert_eq!(
+            config.forge.deployment_identity(None).unwrap(),
+            "github@github.com/repo/tesserine/runa"
+        );
     }
 }

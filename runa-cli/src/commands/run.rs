@@ -196,17 +196,7 @@ fn candidate_key(protocol: &str, work_unit: Option<&str>) -> CandidateKey {
 fn resolve_agent_command(
     working_dir: &Path,
     config_override: Option<&Path>,
-    cli_override_present: bool,
-    cli_override: &[String],
 ) -> Result<Vec<String>, RunError> {
-    if cli_override_present {
-        return if is_usable_agent_command(cli_override) {
-            Ok(cli_override.to_vec())
-        } else {
-            Err(RunError::from(StepError::AgentCommandNotConfigured))
-        };
-    }
-
     let config = crate::project::read_config(working_dir, config_override)
         .map_err(CommandError::from)
         .map_err(StepError::from)
@@ -367,6 +357,7 @@ fn execute_and_reconcile(
     let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &loaded.config.transcript,
+        &loaded.config.deployment,
         &loaded.config.forge,
     );
     let execution_entry = build_plan_entries(
@@ -451,7 +442,6 @@ fn refresh_state_after_scan(
     evaluate_execution_state(loaded, working_dir, scan_result, scope)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn run(
     working_dir: &Path,
     config_override: Option<&Path>,
@@ -459,8 +449,6 @@ pub fn run(
     json_output: bool,
     work_unit: Option<&str>,
     ticket: Option<&str>,
-    cli_agent_command_present: bool,
-    cli_agent_command_argv: &[String],
 ) -> Result<RunOutcome, RunError> {
     if !dry_run && json_output {
         return Err(RunError::from(StepError::JsonRequiresDryRun));
@@ -471,12 +459,11 @@ pub fn run(
         .map_err(RunError::from)?;
 
     if let Some(raw) = ticket {
-        let (ticket_ref, identity) =
-            entry::resolve_reference(&loaded, raw).map_err(RunError::from)?;
+        let ticket_ref = entry::resolve_reference(&loaded, raw).map_err(RunError::from)?;
 
         // Re-entry: the work-unit already exists — behave as `--work-unit <id>`.
         if let Some(work_unit) =
-            entry::resolve_existing(&loaded, &identity, &ticket_ref).map_err(RunError::from)?
+            entry::resolve_existing(&loaded, &ticket_ref).map_err(RunError::from)?
         {
             return run_with_scope(
                 working_dir,
@@ -487,8 +474,6 @@ pub fn run(
                 scan_result,
                 Some(work_unit),
                 false,
-                cli_agent_command_present,
-                cli_agent_command_argv,
             );
         }
 
@@ -511,19 +496,13 @@ pub fn run(
             println!("{reason}");
             return Ok(RunOutcome::QuiescentBlocked);
         }
-        let agent_command = resolve_agent_command(
-            working_dir,
-            config_override,
-            cli_agent_command_present,
-            cli_agent_command_argv,
-        )?;
+        let agent_command = resolve_agent_command(working_dir, config_override)?;
         let (work_unit, scan_result) = acquire_ticket(
             working_dir,
             config_override,
             &mut loaded,
             &scan_result,
             &ticket_ref,
-            &identity,
             &agent_command,
         )?;
         // Acquisition already executed; carry that into the downstream outcome
@@ -537,8 +516,6 @@ pub fn run(
             scan_result,
             Some(work_unit),
             true,
-            cli_agent_command_present,
-            cli_agent_command_argv,
         );
     }
 
@@ -551,8 +528,6 @@ pub fn run(
         scan_result,
         work_unit.map(str::to_owned),
         false,
-        cli_agent_command_present,
-        cli_agent_command_argv,
     )
 }
 
@@ -567,8 +542,6 @@ fn run_with_scope(
     scan_result: libagent::ScanResult,
     work_unit: Option<String>,
     prior_execution: bool,
-    cli_agent_command_present: bool,
-    cli_agent_command_argv: &[String],
 ) -> Result<RunOutcome, RunError> {
     super::validate_scoped_work_unit(&loaded, work_unit.as_deref())
         .map_err(StepError::from)
@@ -645,12 +618,7 @@ fn run_with_scope(
         return Ok(classify_outcome(&initial_state.evaluated, false));
     }
 
-    let agent_command = resolve_agent_command(
-        working_dir,
-        config_override,
-        cli_agent_command_present,
-        cli_agent_command_argv,
-    )?;
+    let agent_command = resolve_agent_command(working_dir, config_override)?;
     let mut state = initial_state;
     if state.planned_entries.is_empty() {
         let outcome = classify_live_outcome(&state.evaluated, false, prior_execution);
@@ -924,7 +892,6 @@ fn acquire_ticket(
     loaded: &mut crate::project::LoadedProject,
     scan_result: &libagent::ScanResult,
     ticket_ref: &libagent::TicketRef,
-    identity: &libagent::ResolvedForgeIdentity,
     agent_command: &[String],
 ) -> Result<(String, libagent::ScanResult), RunError> {
     let acquisition = entry::acquisition_surface(loaded).map_err(RunError::from)?;
@@ -967,7 +934,7 @@ fn acquire_ticket(
     // The acquisition record is persisted; it only stands if the promise binds.
     // When acquisition satisfied its contract but did not materialize a work-unit
     // for this ticket, clear the record so no metadata claims the step completed.
-    match entry::resolve_existing(loaded, identity, ticket_ref) {
+    match entry::resolve_existing(loaded, ticket_ref) {
         Ok(Some(work_unit)) => Ok((work_unit, post_scan)),
         Ok(None) => {
             clear_acquisition_record(loaded, &acquisition.name)?;

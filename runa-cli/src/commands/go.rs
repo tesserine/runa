@@ -81,11 +81,11 @@ fn run_ticket(
     ticket: &str,
 ) -> Result<StepOutcome, StepError> {
     let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
-    let (ticket_ref, identity) = entry::resolve_reference(&loaded, ticket)?;
+    let ticket_ref = entry::resolve_reference(&loaded, ticket)?;
 
     // Re-entry (the work-unit already exists) degrades to a bound session and
     // needs no acquisition surface — resolve before discovering it.
-    if let Some(work_unit) = entry::resolve_existing(&loaded, &identity, &ticket_ref)? {
+    if let Some(work_unit) = entry::resolve_existing(&loaded, &ticket_ref)? {
         println!(
             "Ticket {} resolves to recorded work-unit {work_unit}",
             ticket_ref.display
@@ -113,6 +113,7 @@ fn run_ticket(
     let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &loaded.config.transcript,
+        &loaded.config.deployment,
         &loaded.config.forge,
     );
     let mcp_binary = locate_runa_mcp()?;
@@ -191,7 +192,7 @@ fn run_ticket(
                 source,
             }
         })?;
-    let work_unit = entry::resolve_existing(&loaded, &identity, &ticket_ref)?.ok_or_else(|| {
+    let work_unit = entry::resolve_existing(&loaded, &ticket_ref)?.ok_or_else(|| {
         StepError::TicketReference(libagent::EntryError::Unresolved {
             reference: ticket_ref.display.clone(),
         })
@@ -253,6 +254,7 @@ fn run_bound(
     let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &loaded.config.transcript,
+        &loaded.config.deployment,
         &loaded.config.forge,
     );
     let mcp_binary = locate_runa_mcp()?;

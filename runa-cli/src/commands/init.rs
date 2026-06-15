@@ -4,7 +4,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::project::{
-    CONFIG_FILENAME, Config, DEFAULT_WORKSPACE_DIR, RUNA_DIR, STATE_FILENAME, STORE_DIRNAME, State,
+    CONFIG_FILENAME, DEFAULT_WORKSPACE_DIR, PROJECT_FILENAME, PortableConfig, RUNA_DIR,
+    STATE_FILENAME, STORE_DIRNAME, State,
 };
 
 #[derive(Debug)]
@@ -113,20 +114,23 @@ pub fn run(
     let workspace_dir = runa_dir.join(DEFAULT_WORKSPACE_DIR);
     fs::create_dir_all(&workspace_dir).map_err(InitError::Io)?;
 
-    // Write config.
-    let config = Config {
-        methodology_path: canonical_path.display().to_string(),
-        logging: crate::project::LoggingConfig::default(),
-        agent: crate::project::AgentConfig::default(),
-        transcript: crate::project::TranscriptConfig::default(),
-        forge: crate::project::ForgeConfig::default(),
-    };
-    let config_toml = toml::to_string(&config).expect("Config serialization should not fail");
+    // Write machine-local config plus the portable project config skeleton.
+    let config_toml = format!(
+        "methodology_path = {:?}\nproject_config = {:?}\n",
+        canonical_path.display().to_string(),
+        PROJECT_FILENAME
+    );
 
     if let Some(parent) = config_dest.parent() {
         fs::create_dir_all(parent).map_err(InitError::Io)?;
     }
     fs::write(&config_dest, config_toml).map_err(InitError::Io)?;
+    let project_config_dest = runa_dir.join(PROJECT_FILENAME);
+    if !project_config_dest.exists() {
+        let project_toml = toml::to_string(&PortableConfig::default())
+            .expect("PortableConfig serialization should not fail");
+        fs::write(project_config_dest, project_toml).map_err(InitError::Io)?;
+    }
 
     // Write state.
     let state = State {

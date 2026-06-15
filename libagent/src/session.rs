@@ -315,13 +315,17 @@ impl SessionState {
         let mut loaded = crate::project::load(&working_dir, config_override)?;
         let scan_result = crate::scan(&loaded.workspace_dir, &mut loaded.store)?;
         let scan_findings = crate::collect_scan_findings(&scan_result, &loaded.workspace_dir);
-        let identity = crate::resolve_forge_identity(&loaded.config.forge);
-
         // Resolve the promise first. Re-entry (the work-unit already exists)
         // degrades to an ordinary bound session and needs no acquisition surface;
         // only a cold start requires one.
-        if let Some(work_unit) = crate::resolve_promise(&loaded.store, &identity, &ticket)? {
-            crate::validate_scoped_work_unit_with_identity(&loaded.store, &work_unit, &identity)?;
+        if let Some(work_unit) =
+            crate::resolve_promise(&loaded.store, &loaded.config.forge, &ticket)?
+        {
+            crate::validate_scoped_work_unit_with_project(
+                &loaded.store,
+                &work_unit,
+                &loaded.config.forge,
+            )?;
             let mut session = Self {
                 working_dir,
                 loaded,
@@ -337,7 +341,7 @@ impl SessionState {
         }
 
         // Cold start: the acquisition surface is required.
-        crate::validate_tracker_consistency(&loaded.store, &identity)?;
+        crate::validate_tracker_consistency(&loaded.store, &loaded.config.forge)?;
         let acquisition_name = crate::discover_acquisition_surface(&loaded.manifest.protocols)?
             .name
             .clone();
@@ -604,17 +608,16 @@ impl SessionState {
         require_current_ready: bool,
     ) -> Result<ReconciledScan, SessionError> {
         let scan_result = self.scan_workspace()?;
-        let identity = crate::resolve_forge_identity(&self.loaded.config.forge);
         match &self.scope {
             SessionScope::Bound(work_unit) => {
-                crate::validate_scoped_work_unit_with_identity(
+                crate::validate_scoped_work_unit_with_project(
                     &self.loaded.store,
                     work_unit,
-                    &identity,
+                    &self.loaded.config.forge,
                 )?;
             }
             SessionScope::Promised { .. } => {
-                crate::validate_tracker_consistency(&self.loaded.store, &identity)?;
+                crate::validate_tracker_consistency(&self.loaded.store, &self.loaded.config.forge)?;
             }
         }
         self.refresh_exhaustion_after_scan(&scan_result);
@@ -688,17 +691,16 @@ impl SessionState {
     /// work-unit ([`EntryError::Unresolved`]) or the recorded work-unit fails
     /// scoped-identity validation.
     fn bind_promise(&mut self) -> Result<(), SessionError> {
-        let identity = crate::resolve_forge_identity(&self.loaded.config.forge);
         let ticket = match &self.scope {
             SessionScope::Promised { ticket, .. } => ticket.clone(),
             SessionScope::Bound(_) => return Ok(()),
         };
-        match crate::resolve_promise(&self.loaded.store, &identity, &ticket)? {
+        match crate::resolve_promise(&self.loaded.store, &self.loaded.config.forge, &ticket)? {
             Some(work_unit) => {
-                crate::validate_scoped_work_unit_with_identity(
+                crate::validate_scoped_work_unit_with_project(
                     &self.loaded.store,
                     &work_unit,
-                    &identity,
+                    &self.loaded.config.forge,
                 )?;
                 self.scope = SessionScope::Bound(work_unit);
                 Ok(())
@@ -1035,9 +1037,27 @@ trigger = { type = "on_artifact", name = "work-unit" }
         fs::write(
             runa_dir.join("config.toml"),
             format!(
-                "methodology_path = {:?}\n\n[forge]\ntype = \"github\"\nowner = \"tesserine\"\nname = \"runa\"\n",
+                "methodology_path = {:?}\n",
                 manifest_path.display().to_string()
             ),
+        )
+        .unwrap();
+        fs::write(
+            runa_dir.join("project.toml"),
+            r#"
+schema_version = 1
+
+[[forges.instances]]
+id = "github-com"
+type = "github"
+host = "github.com"
+
+[[forges.repositories]]
+id = "runa"
+instance = "github-com"
+owner = "tesserine"
+name = "runa"
+"#,
         )
         .unwrap();
         fs::write(
@@ -1057,7 +1077,7 @@ trigger = { type = "on_artifact", name = "work-unit" }
         fs::create_dir_all(workspace.join("work-unit")).unwrap();
         fs::write(
             workspace.join("work-unit/work-unit-14-cold-start.json"),
-            r#"{"title":"Cold start","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/14","number":14}}"#,
+            r#"{"title":"Cold start","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/14","number":14,"tracker_identity":"github@github.com/tracker/tesserine/runa","work_unit_identity":"github@github.com/tracker/tesserine/runa#14"}}"#,
         )
         .unwrap();
     }
@@ -1065,8 +1085,8 @@ trigger = { type = "on_artifact", name = "work-unit" }
     fn ticket_14() -> crate::TicketRef {
         crate::TicketRef {
             number: 14,
-            tracker_identity: "github:tesserine/runa:14".to_string(),
-            display: "github:tesserine/runa#14".to_string(),
+            tracker_identity: "github@github.com/tracker/tesserine/runa#14".to_string(),
+            display: "runa#14".to_string(),
         }
     }
 

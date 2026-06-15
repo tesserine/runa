@@ -21,6 +21,7 @@ pub(crate) mod completion;
 pub mod context;
 pub mod enforcement;
 pub mod entry;
+pub mod forge_address;
 pub mod graph;
 pub mod logging;
 pub mod manifest;
@@ -47,6 +48,10 @@ pub use entry::{
     AcquisitionBlock, EntryError, RUNA_ENTRY_TICKET, TicketRef, check_acquisition_admissible,
     discover_acquisition_surface, resolve_promise, resolve_ticket_reference,
 };
+pub use forge_address::{
+    FORGE_ADDRESSES_ENV, ForgeAddressError, ForgeInstance, ForgeProject, ForgeRepository,
+    ForgeTracker, ForgeType, RawForges, payload_env,
+};
 pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use logging::{LoggingError, ResolvedLoggingConfig, configure_tracing, resolve_logging_config};
 pub use manifest::ManifestError;
@@ -55,8 +60,8 @@ pub use model::{
     UnscopedOutputRequiresWorkUnitError, validate_output_scope,
 };
 pub use project::{
-    Config, ForgeConfig, LoadedProject, LogFormat, LoggingConfig, ProjectError, State,
-    TranscriptConfig,
+    Config, DeploymentConfig, LoadedProject, LogFormat, LoggingConfig, PortableConfig,
+    ProjectError, State, TranscriptConfig,
 };
 pub use projection::{
     ProjectionCandidate, ProjectionClass, project_cascade, project_entry_cascade,
@@ -66,9 +71,8 @@ pub use scan::{
     UnreadableArtifact, scan,
 };
 pub use scoped_identity::{
-    ResolvedForgeIdentity, ScopedWorkUnitError, find_work_unit_by_tracker_identity,
-    resolve_forge_environment, resolve_forge_identity, validate_scoped_work_unit,
-    validate_scoped_work_unit_with_identity, validate_tracker_consistency,
+    ScopedWorkUnitError, find_work_unit_by_tracker_identity, validate_scoped_work_unit,
+    validate_scoped_work_unit_with_project, validate_tracker_consistency,
 };
 pub use selection::{
     Candidate, CandidateKey, CandidateStatus, ClassifiedCandidate, EvaluationScope,

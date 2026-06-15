@@ -77,19 +77,19 @@ Semantic Versioning.
 
 ### Changed
 
-- Durable transcript capture settings and scoped forge identity can now live in
-  `.runa/config.toml`, with `RUNA_TRANSCRIPT_*` and `RUNA_FORGE_*`
-  environment variables retained as per-invocation overrides. Resolved forge
-  identity is forwarded into launched agent and MCP environments.
-- Scoped forge identity now uses runa-owned `RUNA_FORGE_*` environment names
-  instead of Groundwork's private `GROUNDWORK_FORGE_*` namespace.
+- Durable transcript capture settings and forge addresses are split across
+  local `.runa/config.toml` and portable `.runa/project.toml`. Resolved forge
+  identity is forwarded into launched agent and MCP environments as
+  `RUNA_FORGE_ADDRESSES`.
+- Scoped forge identity no longer uses legacy `RUNA_FORGE_*` atoms or
+  Groundwork's private `GROUNDWORK_FORGE_*` namespace.
 - Live agent launch is now agent-agnostic. A command named `claude` is no
   longer launched with injected `--mcp-config` / `--strict-mcp-config` flags;
   it receives the MCP session config through `RUNA_MCP_CONFIG` like every other
   runtime. Operators who relied on the old auto-injection should adapt by
   having their agent command or wrapper consume `RUNA_MCP_CONFIG`.
 - Breaking migration for Claude Code adapter configs: the previously documented
-  `./examples/agent-claude-code.sh` path is gone. Repoint `[agent].command` to
+  `./examples/agent-claude-code.sh` path is gone. Repoint `[launch].command` to
   `./adapters/agent-claude-code.sh`; the old `examples/` adapter path is not
   retained as a wrapper or symlink.
 
@@ -193,10 +193,8 @@ Semantic Versioning.
   artifacts make a protocol READY during that refresh, the same invocation
   executes that protocol instead of incorrectly reporting `No READY protocols.`
   with exit `3` or `4`.
-- `runa run` now accepts `--agent-command -- <argv tokens>` as a per-invocation
-  override for `[agent].command`. When the override flag is present but no
-  usable argv follows `--`, `run` keeps the existing
-  `AgentCommandNotConfigured` failure instead of falling back to config.
+- `runa run` no longer accepts `--agent-command`; live execution resolves its
+  launch argv only from `[launch].command` in `.runa/project.toml`.
 - `runa run` now validates its effective agent command before reporting a
   quiescent `nothing_ready` outcome, so malformed or missing live command
   input is no longer masked when no protocols are READY.
@@ -277,7 +275,7 @@ agent invocation.
 
 ### Execution model
 
-- Agent execution via configurable `[agent].command` with a rendered
+- Agent execution via configurable launch command with a rendered
   natural-language prompt on stdin.
 - `RUNA_MCP_CONFIG` exports the resolved runa-mcp command, arguments, and
   environment so agent wrappers can launch the MCP server as a child process.

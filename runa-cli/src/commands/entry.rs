@@ -8,9 +8,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use libagent::{
-    Config, ProtocolDeclaration, ResolvedForgeIdentity, ScanFindings, ScanResult, TicketRef,
-};
+use libagent::{Config, ProtocolDeclaration, ScanFindings, ScanResult, TicketRef};
 
 use crate::commands::CommandError;
 use crate::commands::step::{PlannedEntry, StepError, resolved_runtime_env};
@@ -37,24 +35,18 @@ pub(crate) fn acquisition_block_reason(
 }
 
 /// Parse and resolve a ticket reference against the project's forge deployment.
-pub(crate) fn resolve_reference(
-    loaded: &LoadedProject,
-    raw: &str,
-) -> Result<(TicketRef, ResolvedForgeIdentity), StepError> {
-    let identity = libagent::resolve_forge_identity(&loaded.config.forge);
-    let ticket =
-        libagent::resolve_ticket_reference(raw, &identity).map_err(StepError::TicketReference)?;
-    Ok((ticket, identity))
+pub(crate) fn resolve_reference(loaded: &LoadedProject, raw: &str) -> Result<TicketRef, StepError> {
+    libagent::resolve_ticket_reference(raw, &loaded.config.forge)
+        .map_err(StepError::TicketReference)
 }
 
 /// Resolve the reference to an already-recorded work-unit (re-entry), or `None`
 /// when the work-unit does not exist yet (cold start).
 pub(crate) fn resolve_existing(
     loaded: &LoadedProject,
-    identity: &ResolvedForgeIdentity,
     ticket: &TicketRef,
 ) -> Result<Option<String>, StepError> {
-    libagent::resolve_promise(&loaded.store, identity, ticket)
+    libagent::resolve_promise(&loaded.store, &loaded.config.forge, ticket)
         .map_err(CommandError::from)
         .map_err(StepError::from)
 }

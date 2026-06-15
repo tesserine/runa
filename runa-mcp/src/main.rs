@@ -68,14 +68,16 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     apply_transcript_settings(&working_dir, &loaded.config);
     libagent::scan(&loaded.workspace_dir, &mut loaded.store)?;
     if let Some(work_unit) = cli.work_unit.as_deref() {
-        let identity = libagent::resolve_forge_identity(&loaded.config.forge);
-        libagent::validate_scoped_work_unit_with_identity(&loaded.store, work_unit, &identity)?;
+        libagent::validate_scoped_work_unit_with_project(
+            &loaded.store,
+            work_unit,
+            &loaded.config.forge,
+        )?;
     }
     if cli.session {
         let handler = match cli.ticket.as_deref() {
             Some(ticket) => {
-                let identity = libagent::resolve_forge_identity(&loaded.config.forge);
-                let ticket_ref = libagent::resolve_ticket_reference(ticket, &identity)?;
+                let ticket_ref = libagent::resolve_ticket_reference(ticket, &loaded.config.forge)?;
                 RunaHandler::new_session_entry(working_dir.clone(), config_ref, ticket_ref)?
             }
             None => RunaHandler::new_session(working_dir.clone(), config_ref, cli.work_unit)?,
@@ -156,6 +158,7 @@ fn apply_transcript_settings(working_dir: &std::path::Path, config: &project::Co
     let settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &config.transcript,
+        &config.deployment,
         &config.forge,
     );
     for (name, value) in libagent::transcript::transcript_env_from_settings(&settings) {

@@ -31,9 +31,9 @@ fn init_project(project_dir: &Path, manifest_path: &Path) {
 }
 
 fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
-    let config_path = project_dir.join(".runa/config.toml");
+    let config_path = project_dir.join(".runa/project.toml");
     let mut config = fs::read_to_string(&config_path).unwrap();
-    config.push_str("\n[agent]\ncommand = [");
+    config.push_str("\n[launch]\ncommand = [");
     for (index, part) in command.iter().enumerate() {
         if index > 0 {
             config.push_str(", ");
@@ -76,10 +76,6 @@ fi
         .arg("drive-session")
         .arg(runa_mcp_path)
         .arg(log_path)
-        .env_remove("RUNA_FORGE_TYPE")
-        .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
         .current_dir(project_dir)
         .output()
         .unwrap();
@@ -142,10 +138,6 @@ fn scoped_state_json(project_dir: &Path) -> serde_json::Value {
         .arg("--json")
         .arg("--work-unit")
         .arg("work-unit-168")
-        .env_remove("RUNA_FORGE_TYPE")
-        .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
         .current_dir(project_dir)
         .output()
         .unwrap();
@@ -216,10 +208,6 @@ fi
         .arg("go")
         .arg("--work-unit")
         .arg("work-unit-168")
-        .env_remove("RUNA_FORGE_TYPE")
-        .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -285,10 +273,6 @@ fn go_fails_when_agent_exits_without_advancing_the_session_step() {
         .arg("go")
         .arg("--work-unit")
         .arg("work-unit-168")
-        .env_remove("RUNA_FORGE_TYPE")
-        .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -342,10 +326,6 @@ fn go_matches_direct_session_surface_when_regenerating_deleted_output_with_uncha
         .arg("go")
         .arg("--work-unit")
         .arg("work-unit-168")
-        .env_remove("RUNA_FORGE_TYPE")
-        .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
         .current_dir(&go_project_dir)
         .output()
         .unwrap();

@@ -173,10 +173,6 @@ fn state_accepts_exact_tracker_backed_work_unit_without_slug() {
         .arg("state")
         .arg("--work-unit")
         .arg("work-unit-163")
-        .env_remove("RUNA_FORGE_TYPE")
-        .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -218,10 +214,6 @@ fn state_accepts_tracker_backed_work_unit_with_forge_identity_only_in_config() {
         .arg("state")
         .arg("--work-unit")
         .arg("work-unit-163")
-        .env_remove("RUNA_FORGE_TYPE")
-        .env_remove("RUNA_FORGE_OWNER")
-        .env_remove("RUNA_FORGE_NAME")
-        .env_remove("RUNA_FORGE_TRACKER_ID")
         .current_dir(&project_dir)
         .output()
         .unwrap();

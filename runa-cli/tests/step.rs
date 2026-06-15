@@ -278,10 +278,6 @@ fn step_dry_run_accepts_exact_tracker_backed_work_unit_without_slug() {
         .arg("--dry-run")
         .arg("--work-unit")
         .arg("work-unit-163")
-        .env_remove("RUNA_FORGE_TYPE")
-        .env_remove("RUNA_FORGE_TRACKER_ID")
-        .env("RUNA_FORGE_OWNER", "tesserine")
-        .env("RUNA_FORGE_NAME", "runa")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -428,7 +424,7 @@ trigger = { type = "on_artifact", name = "constraints" }
 }
 
 fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
-    let config_path = project_dir.join(".runa/config.toml");
+    let config_path = project_dir.join(".runa/project.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
     let command_entries = command
         .iter()
@@ -437,7 +433,7 @@ fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
         .join("\n");
     fs::write(
         config_path,
-        format!("{existing}\n[agent]\ncommand = [\n{command_entries}\n]\n"),
+        format!("{existing}\n[launch]\ncommand = [\n{command_entries}\n]\n"),
     )
     .unwrap();
 }
@@ -452,19 +448,39 @@ fn append_transcript_config(project_dir: &Path, transcript_dir: &Path, redact_en
     fs::write(
         config_path,
         format!(
-            "{existing}\n[transcript]\ndir = {:?}\nredact_env = [{redact_entries}]\n",
+            "{existing}\n[transcript]\ndir = {:?}\n",
             transcript_dir.display().to_string()
         ),
+    )
+    .unwrap();
+    let project_config_path = project_dir.join(".runa/project.toml");
+    let existing_project = fs::read_to_string(&project_config_path).unwrap();
+    fs::write(
+        project_config_path,
+        format!("{existing_project}\n[transcript]\nredact_env = [{redact_entries}]\n"),
     )
     .unwrap();
 }
 
 fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
-    let config_path = project_dir.join(".runa/config.toml");
-    let existing = fs::read_to_string(&config_path).unwrap();
+    let config_path = project_dir.join(".runa/project.toml");
     fs::write(
         config_path,
-        format!("{existing}\n[forge]\ntype = \"github\"\nowner = \"{owner}\"\nname = \"{name}\"\n"),
+        format!(
+            r#"schema_version = 1
+
+[[forges.instances]]
+id = "github-com"
+type = "github"
+host = "github.com"
+
+[[forges.repositories]]
+id = "{name}"
+instance = "github-com"
+owner = "{owner}"
+name = "{name}"
+"#
+        ),
     )
     .unwrap();
 }
@@ -706,14 +722,20 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
         execution_plan[0]["mcp_config"]["args"],
         serde_json::json!(["--protocol", "implement"])
     );
+    let mcp_env = execution_plan[0]["mcp_config"]["env"].as_object().unwrap();
     assert_eq!(
-        execution_plan[0]["mcp_config"]["env"],
-        serde_json::json!({
-            "RUNA_FORGE_TYPE": "github",
-            "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
-            "RUNA_WORKING_DIR": project_dir
-        })
+        mcp_env.get("RUNA_CONFIG").unwrap(),
+        project_dir
+            .join(".runa/config.toml")
+            .to_string_lossy()
+            .as_ref()
     );
+    assert_eq!(
+        mcp_env.get("RUNA_WORKING_DIR").unwrap(),
+        project_dir.to_string_lossy().as_ref()
+    );
+    assert!(mcp_env.contains_key("RUNA_FORGE_ADDRESSES"), "{mcp_env:?}");
+    assert!(!mcp_env.contains_key("RUNA_FORGE_TYPE"), "{mcp_env:?}");
     let mcp_command = execution_plan[0]["mcp_config"]["command"]
         .as_str()
         .expect("mcp command should be a string");
@@ -1081,11 +1103,11 @@ fn step_without_dry_run_fails_when_agent_command_is_not_configured() {
     assert!(stderr.contains("command"), "stderr: {stderr}");
     assert!(stderr.contains("step"), "stderr: {stderr}");
     assert!(
-        stderr.contains("no agent command configured"),
+        stderr.contains("no launch command configured"),
         "stderr: {stderr}"
     );
-    assert!(stderr.contains("[agent]"), "stderr: {stderr}");
-    assert!(stderr.contains("config.toml"), "stderr: {stderr}");
+    assert!(stderr.contains("[launch]"), "stderr: {stderr}");
+    assert!(stderr.contains("project.toml"), "stderr: {stderr}");
 }
 #[test]
 fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
@@ -1180,14 +1202,20 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
         mcp_config["args"],
         serde_json::json!(["--protocol", "implement"])
     );
+    let mcp_env = mcp_config["env"].as_object().unwrap();
     assert_eq!(
-        mcp_config["env"],
-        serde_json::json!({
-            "RUNA_FORGE_TYPE": "github",
-            "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
-            "RUNA_WORKING_DIR": project_dir
-        })
+        mcp_env.get("RUNA_CONFIG").unwrap(),
+        project_dir
+            .join(".runa/config.toml")
+            .to_string_lossy()
+            .as_ref()
     );
+    assert_eq!(
+        mcp_env.get("RUNA_WORKING_DIR").unwrap(),
+        project_dir.to_string_lossy().as_ref()
+    );
+    assert!(mcp_env.contains_key("RUNA_FORGE_ADDRESSES"), "{mcp_env:?}");
+    assert!(!mcp_env.contains_key("RUNA_FORGE_TYPE"), "{mcp_env:?}");
 }
 #[test]
 fn step_without_dry_run_launches_claude_named_agent_agnostically() {
@@ -1243,14 +1271,20 @@ fn step_without_dry_run_launches_claude_named_agent_agnostically() {
         mcp_config["args"],
         serde_json::json!(["--protocol", "implement"])
     );
+    let mcp_env = mcp_config["env"].as_object().unwrap();
     assert_eq!(
-        mcp_config["env"],
-        serde_json::json!({
-            "RUNA_FORGE_TYPE": "github",
-            "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
-            "RUNA_WORKING_DIR": project_dir
-        })
+        mcp_env.get("RUNA_CONFIG").unwrap(),
+        project_dir
+            .join(".runa/config.toml")
+            .to_string_lossy()
+            .as_ref()
     );
+    assert_eq!(
+        mcp_env.get("RUNA_WORKING_DIR").unwrap(),
+        project_dir.to_string_lossy().as_ref()
+    );
+    assert!(mcp_env.contains_key("RUNA_FORGE_ADDRESSES"), "{mcp_env:?}");
+    assert!(!mcp_env.contains_key("RUNA_FORGE_TYPE"), "{mcp_env:?}");
     let mcp_command = mcp_config["command"]
         .as_str()
         .expect("mcp command should be a string");
@@ -1507,11 +1541,11 @@ trigger = { type = "on_artifact", name = "constraints" }
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        rendered_paths.contains("github%3Atesserine%2Falpha"),
+        rendered_paths.contains("github%40github.com%2Frepo%2Ftesserine%2Falpha"),
         "{rendered_paths}"
     );
     assert!(
-        rendered_paths.contains("github%3Atesserine%2Fbeta"),
+        rendered_paths.contains("github%40github.com%2Frepo%2Ftesserine%2Fbeta"),
         "{rendered_paths}"
     );
 
@@ -1519,20 +1553,20 @@ trigger = { type = "on_artifact", name = "constraints" }
         let events = fs::read_to_string(&path).unwrap();
         if path.to_string_lossy().contains("alpha") {
             assert!(
-                events.contains(r#""deployment":"github:tesserine/alpha""#),
+                events.contains(r#""deployment":"github@github.com/repo/tesserine/alpha""#),
                 "{events}"
             );
             assert!(
-                !events.contains(r#""deployment":"github:tesserine/beta""#),
+                !events.contains(r#""deployment":"github@github.com/repo/tesserine/beta""#),
                 "{events}"
             );
         } else {
             assert!(
-                events.contains(r#""deployment":"github:tesserine/beta""#),
+                events.contains(r#""deployment":"github@github.com/repo/tesserine/beta""#),
                 "{events}"
             );
             assert!(
-                !events.contains(r#""deployment":"github:tesserine/alpha""#),
+                !events.contains(r#""deployment":"github@github.com/repo/tesserine/alpha""#),
                 "{events}"
             );
         }
@@ -2085,7 +2119,7 @@ fn codex_adapter_translates_runa_mcp_config_to_mcp_server_overrides() {
         .arg("gpt-test")
         .env(
             "RUNA_MCP_CONFIG",
-            r#"{"command":"/tmp/runa mcp","args":["--session","--work-unit","wu-a","--sentinel=kept"],"env":{"RUNA_CONFIG":"/tmp/config.toml","RUNA_WORKING_DIR":"/tmp/project dir","EMPTY_VALUE":"","RUNA_FORGE_OWNER":"tesserine"}}"#,
+            r#"{"command":"/tmp/runa mcp","args":["--session","--work-unit","wu-a","--sentinel=kept"],"env":{"RUNA_CONFIG":"/tmp/config.toml","RUNA_WORKING_DIR":"/tmp/project dir","EMPTY_VALUE":"","CUSTOM_RESOURCE_OWNER":"tesserine"}}"#,
         )
         .env("PATH", &path)
         .env("FAKE_CODEX_ARGV_CAPTURE", &argv_capture)
@@ -2161,7 +2195,7 @@ fn codex_adapter_translates_runa_mcp_config_to_mcp_server_overrides() {
     );
     assert_eq!(env_table.get("EMPTY_VALUE").unwrap().as_str(), Some(""));
     assert_eq!(
-        env_table.get("RUNA_FORGE_OWNER").unwrap().as_str(),
+        env_table.get("CUSTOM_RESOURCE_OWNER").unwrap().as_str(),
         Some("tesserine")
     );
     assert_eq!(env_table.len(), 4);
