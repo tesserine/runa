@@ -45,6 +45,9 @@ Semantic Versioning.
 
 ### Fixed
 
+- SourceHut tracker ids are now validated as decimal integers while resolving
+  forge addresses, so malformed tracker coordinates fail before they are baked
+  into `RUNA_FORGE_ADDRESSES`.
 - SourceHut repository and tracker owners are normalized to the canonical
   `~owner` form when resolving forge addresses, so `alice` and `~alice`
   produce the same `RUNA_FORGE_ADDRESSES` resource identities.

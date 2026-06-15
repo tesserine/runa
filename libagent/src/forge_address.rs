@@ -156,6 +156,10 @@ pub enum ForgeAddressError {
     MissingSourcehutTrackerId {
         tracker: String,
     },
+    InvalidSourcehutTrackerId {
+        tracker: String,
+        tracker_id: String,
+    },
     AmbiguousBareTrackerReference,
     UnknownRepositorySelector(String),
     UnknownTrackerSelector(String),
@@ -197,6 +201,13 @@ impl fmt::Display for ForgeAddressError {
             ForgeAddressError::MissingSourcehutTrackerId { tracker } => write!(
                 f,
                 "sourcehut tracker '{tracker}' is missing required tracker_id"
+            ),
+            ForgeAddressError::InvalidSourcehutTrackerId {
+                tracker,
+                tracker_id,
+            } => write!(
+                f,
+                "sourcehut tracker '{tracker}' has invalid tracker_id '{tracker_id}'; expected a decimal integer"
             ),
             ForgeAddressError::AmbiguousBareTrackerReference => write!(
                 f,
@@ -325,11 +336,15 @@ impl ForgeProject {
             })?;
             let tracker_id = match instance.forge_type {
                 ForgeType::Github => None,
-                ForgeType::Sourcehut => Some(raw_tracker.tracker_id.clone().ok_or_else(|| {
-                    ForgeAddressError::MissingSourcehutTrackerId {
-                        tracker: raw_tracker.id.clone(),
-                    }
-                })?),
+                ForgeType::Sourcehut => {
+                    let tracker_id = raw_tracker.tracker_id.clone().ok_or_else(|| {
+                        ForgeAddressError::MissingSourcehutTrackerId {
+                            tracker: raw_tracker.id.clone(),
+                        }
+                    })?;
+                    validate_sourcehut_tracker_id(&raw_tracker.id, &tracker_id)?;
+                    Some(tracker_id)
+                }
             };
             let owner = canonical_resource_owner(instance.forge_type, raw_tracker.owner);
             let identity = match instance.forge_type {
@@ -437,6 +452,20 @@ impl ForgeProject {
             .iter()
             .find(|tracker| tracker.identity == identity)
     }
+}
+
+fn validate_sourcehut_tracker_id(tracker: &str, tracker_id: &str) -> Result<(), ForgeAddressError> {
+    if !tracker_id.is_empty()
+        && tracker_id
+            .chars()
+            .all(|character| character.is_ascii_digit())
+    {
+        return Ok(());
+    }
+    Err(ForgeAddressError::InvalidSourcehutTrackerId {
+        tracker: tracker.to_string(),
+        tracker_id: tracker_id.to_string(),
+    })
 }
 
 pub fn forge_type_from_handle(
@@ -624,7 +653,7 @@ mod tests {
                 instance: "sourcehut-main".to_string(),
                 owner: "alice".to_string(),
                 name: "tool".to_string(),
-                tracker_id: Some("ABC".to_string()),
+                tracker_id: Some("4".to_string()),
             }],
         })
         .unwrap();
@@ -647,7 +676,7 @@ mod tests {
                 instance: "sourcehut-main".to_string(),
                 owner: "~alice".to_string(),
                 name: "tool".to_string(),
-                tracker_id: Some("ABC".to_string()),
+                tracker_id: Some("4".to_string()),
             }],
         })
         .unwrap();
@@ -660,7 +689,34 @@ mod tests {
         );
         assert_eq!(
             with_plain_owner.trackers[0].identity,
-            "sourcehut@git=git.sr.ht,tracker=todo.sr.ht/tracker/~alice/tool/ABC"
+            "sourcehut@git=git.sr.ht,tracker=todo.sr.ht/tracker/~alice/tool/4"
+        );
+    }
+
+    #[test]
+    fn sourcehut_tracker_id_must_be_numeric_at_resolution() {
+        let error = ForgeProject::resolve(RawForges {
+            instances: vec![RawForgeInstance {
+                id: "sourcehut-main".to_string(),
+                forge_type: "sourcehut".to_string(),
+                host: None,
+                git_host: Some("git.sr.ht".to_string()),
+                tracker_host: Some("todo.sr.ht".to_string()),
+            }],
+            repositories: vec![],
+            trackers: vec![RawTracker {
+                id: "tool".to_string(),
+                instance: "sourcehut-main".to_string(),
+                owner: "~alice".to_string(),
+                name: "tool".to_string(),
+                tracker_id: Some("ABC".to_string()),
+            }],
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "sourcehut tracker 'tool' has invalid tracker_id 'ABC'; expected a decimal integer"
         );
     }
 }

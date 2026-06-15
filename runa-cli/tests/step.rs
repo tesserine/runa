@@ -1266,7 +1266,7 @@ id = "srht-tool"
 instance = "sourcehut-main"
 owner = "~alice"
 name = "tool"
-tracker_id = "ABC"
+tracker_id = "4"
 "#,
     )
     .unwrap();
@@ -1326,7 +1326,7 @@ tracker_id = "ABC"
     assert!(identities.contains("github@github.com/tracker/tesserine/runa"));
     assert!(identities.contains("sourcehut@git=git.sr.ht,tracker=todo.sr.ht/repo/~alice/tool"));
     assert!(
-        identities.contains("sourcehut@git=git.sr.ht,tracker=todo.sr.ht/tracker/~alice/tool/ABC")
+        identities.contains("sourcehut@git=git.sr.ht,tracker=todo.sr.ht/tracker/~alice/tool/4")
     );
 }
 
