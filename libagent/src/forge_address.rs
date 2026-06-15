@@ -265,16 +265,17 @@ impl ForgeProject {
                     resource: raw_repository.id.clone(),
                     instance: raw_repository.instance.clone(),
                 })?;
+            let owner = canonical_resource_owner(instance.forge_type, raw_repository.owner);
             repositories.push(ForgeRepository {
                 identity: format!(
                     "{}/repo/{}/{}",
                     instance.identity_prefix(),
-                    raw_repository.owner,
+                    owner,
                     raw_repository.name
                 ),
                 id: raw_repository.id,
                 instance: raw_repository.instance,
-                owner: raw_repository.owner,
+                owner,
                 name: raw_repository.name,
             });
         }
@@ -330,19 +331,20 @@ impl ForgeProject {
                     }
                 })?),
             };
+            let owner = canonical_resource_owner(instance.forge_type, raw_tracker.owner);
             let identity = match instance.forge_type {
                 ForgeType::Github => {
                     format!(
                         "{}/tracker/{}/{}",
                         instance.identity_prefix(),
-                        raw_tracker.owner,
+                        owner,
                         raw_tracker.name
                     )
                 }
                 ForgeType::Sourcehut => format!(
                     "{}/tracker/{}/{}/{}",
                     instance.identity_prefix(),
-                    raw_tracker.owner,
+                    owner,
                     raw_tracker.name,
                     tracker_id.as_deref().unwrap_or_default()
                 ),
@@ -350,7 +352,7 @@ impl ForgeProject {
             trackers.push(ForgeTracker {
                 id: raw_tracker.id,
                 instance: raw_tracker.instance,
-                owner: raw_tracker.owner,
+                owner,
                 name: raw_tracker.name,
                 tracker_id,
                 repository: None,
@@ -484,6 +486,13 @@ pub fn work_unit_identity_from_handle(
     Ok(Some(format!("{tracker_identity}#{number}")))
 }
 
+fn canonical_resource_owner(forge_type: ForgeType, owner: String) -> String {
+    match forge_type {
+        ForgeType::Github => owner,
+        ForgeType::Sourcehut => format!("~{}", owner.trim_start_matches('~')),
+    }
+}
+
 fn resolve_instance(raw: RawForgeInstance) -> Result<ForgeInstance, ForgeAddressError> {
     let forge_type = ForgeType::parse(&raw.forge_type)?;
     let services = match forge_type {
@@ -592,5 +601,66 @@ mod tests {
             error,
             ForgeAddressError::MalformedPayload(detail) if detail == "synthetic failure"
         ));
+    }
+
+    #[test]
+    fn sourcehut_owner_is_canonical_with_single_tilde_in_payload_identities() {
+        let with_plain_owner = ForgeProject::resolve(RawForges {
+            instances: vec![RawForgeInstance {
+                id: "sourcehut-main".to_string(),
+                forge_type: "sourcehut".to_string(),
+                host: None,
+                git_host: Some("git.sr.ht".to_string()),
+                tracker_host: Some("todo.sr.ht".to_string()),
+            }],
+            repositories: vec![RawRepository {
+                id: "tool".to_string(),
+                instance: "sourcehut-main".to_string(),
+                owner: "alice".to_string(),
+                name: "tool".to_string(),
+            }],
+            trackers: vec![RawTracker {
+                id: "tool".to_string(),
+                instance: "sourcehut-main".to_string(),
+                owner: "alice".to_string(),
+                name: "tool".to_string(),
+                tracker_id: Some("ABC".to_string()),
+            }],
+        })
+        .unwrap();
+        let with_prefixed_owner = ForgeProject::resolve(RawForges {
+            instances: vec![RawForgeInstance {
+                id: "sourcehut-main".to_string(),
+                forge_type: "sourcehut".to_string(),
+                host: None,
+                git_host: Some("git.sr.ht".to_string()),
+                tracker_host: Some("todo.sr.ht".to_string()),
+            }],
+            repositories: vec![RawRepository {
+                id: "tool".to_string(),
+                instance: "sourcehut-main".to_string(),
+                owner: "~alice".to_string(),
+                name: "tool".to_string(),
+            }],
+            trackers: vec![RawTracker {
+                id: "tool".to_string(),
+                instance: "sourcehut-main".to_string(),
+                owner: "~alice".to_string(),
+                name: "tool".to_string(),
+                tracker_id: Some("ABC".to_string()),
+            }],
+        })
+        .unwrap();
+
+        assert_eq!(with_plain_owner, with_prefixed_owner);
+        assert_eq!(with_plain_owner.repositories[0].owner, "~alice");
+        assert_eq!(
+            with_plain_owner.repositories[0].identity,
+            "sourcehut@git=git.sr.ht,tracker=todo.sr.ht/repo/~alice/tool"
+        );
+        assert_eq!(
+            with_plain_owner.trackers[0].identity,
+            "sourcehut@git=git.sr.ht,tracker=todo.sr.ht/tracker/~alice/tool/ABC"
+        );
     }
 }

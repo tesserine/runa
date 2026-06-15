@@ -45,6 +45,9 @@ Semantic Versioning.
 
 ### Fixed
 
+- SourceHut repository and tracker owners are normalized to the canonical
+  `~owner` form when resolving forge addresses, so `alice` and `~alice`
+  produce the same `RUNA_FORGE_ADDRESSES` resource identities.
 - Invariant-bearing modules now document their invariants at the code:
   `session.rs` opens with the session state-machine contract (state derives
   from artifacts, single current step, transactional `advance`,

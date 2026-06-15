@@ -116,7 +116,9 @@ forge operation needs one.
 Runa computes deployment and tracker identities from that contract. A GitHub
 repository identity is shaped as `github@github.com/repo/<owner>/<name>`, and
 its tracker identity is `github@github.com/tracker/<owner>/<name>`. SourceHut
-trackers include the declared git and tracker hosts plus tracker coordinates.
+owners are normalized to the canonical `~owner` form before identity
+generation, and SourceHut trackers include the declared git and tracker hosts
+plus tracker coordinates.
 
 When a valid recorded `work-unit` root contains a forge-tagged tracker handle,
 runa enforces the runtime checks that JSON Schema cannot express: the canonical

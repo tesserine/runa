@@ -365,7 +365,7 @@ mod forge_address_tests {
 
         assert_eq!(
             ticket.tracker_identity,
-            "sourcehut@git=git.weforge.build,tracker=todo.weforge.build/tracker/operator/weforge/4#9"
+            "sourcehut@git=git.weforge.build,tracker=todo.weforge.build/tracker/~operator/weforge/4#9"
         );
     }
 }
