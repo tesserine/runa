@@ -73,7 +73,7 @@ impl fmt::Display for StepError {
             StepError::Json(err) => write!(f, "{err}"),
             StepError::AgentCommandNotConfigured => write!(
                 f,
-                "no agent command configured in config.toml; add [agent] command = [\"binary\", ...]"
+                "no agent command configured in config.toml; add [runtime] command = [\"binary\", ...]"
             ),
             StepError::JsonRequiresDryRun => {
                 write!(f, "--json is only supported with --dry-run")
@@ -425,19 +425,15 @@ pub(crate) fn resolved_runtime_env(
             .into_iter()
             .collect();
 
-    let forge_environment = libagent::resolve_forge_environment(&config.forge);
-    for name in [
-        "RUNA_FORGE_TYPE",
-        "RUNA_FORGE_OWNER",
-        "RUNA_FORGE_NAME",
-        "RUNA_FORGE_TRACKER_ID",
-    ] {
-        if let Some(value) = forge_environment
-            .get(name)
-            .filter(|value| !value.is_empty())
-        {
-            env.insert(name.to_string(), value.clone());
-        }
+    let project_toml = working_dir.join(".runa").join("project.toml");
+    if project_toml.exists() {
+        let payload = libagent::resolve_project_payload(&project_toml).unwrap_or_else(|error| {
+            panic!(
+                "failed to validate forge address payload from {} before emission: {error}",
+                project_toml.display()
+            )
+        });
+        env.insert("RUNA_FORGE_ADDRESSES".to_string(), payload.to_string());
     }
 
     env
@@ -894,7 +890,7 @@ fn run_internal(
         let config = crate::project::read_config(working_dir, config_override)
             .map_err(CommandError::from)
             .map_err(StepError::from)?;
-        let command = config.agent.command.filter(|command| {
+        let command = config.runtime.command.filter(|command| {
             !command.is_empty() && !command.first().is_some_and(|part| part.is_empty())
         });
         if command.is_none() {
@@ -1720,23 +1716,40 @@ cat >/dev/null
     }
 
     #[test]
-    fn resolved_runtime_env_materializes_default_github_forge_type_from_config_identity() {
+    fn resolved_runtime_env_materializes_valid_forge_address_payload_from_project_topology() {
         let _lock = transcript_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _env = EnvGuard::unset(&[
-            "RUNA_FORGE_TYPE",
-            "RUNA_FORGE_OWNER",
-            "RUNA_FORGE_NAME",
-            "RUNA_FORGE_TRACKER_ID",
-            "RUNA_TRANSCRIPT_DIR",
-            "RUNA_TRANSCRIPT_REDACT_ENV",
-        ]);
+        let _env = EnvGuard::unset(&["RUNA_TRANSCRIPT_DIR", "RUNA_TRANSCRIPT_REDACT_ENV"]);
         let temp = tempfile::tempdir().unwrap();
+        let runa_dir = temp.path().join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("project.toml"),
+            r#"
+[[forge.instances]]
+name = "github"
+type = "github"
+host = "github.example.com"
+
+[[forge.repositories]]
+name = "runa"
+instance = "github"
+owner = "tesserine"
+repository = "runa"
+
+[[forge.trackers]]
+name = "runa"
+type = "github"
+instance = "github"
+repository = "runa"
+"#,
+        )
+        .unwrap();
         let config = libagent::Config {
             methodology_path: "methodology.toml".to_string(),
             logging: libagent::LoggingConfig::default(),
-            agent: libagent::project::AgentConfig::default(),
+            runtime: libagent::project::RuntimeConfig::default(),
             transcript: libagent::TranscriptConfig::default(),
             forge: libagent::ForgeConfig {
                 forge_type: None,
@@ -1748,16 +1761,22 @@ cat >/dev/null
 
         let env = resolved_runtime_env(temp.path(), &config);
 
-        assert_eq!(env.get("RUNA_FORGE_TYPE"), Some(&"github".to_string()));
-        assert_eq!(env.get("RUNA_FORGE_OWNER"), Some(&"tesserine".to_string()));
-        assert_eq!(env.get("RUNA_FORGE_NAME"), Some(&"runa".to_string()));
+        let payload: serde_json::Value =
+            serde_json::from_str(env.get("RUNA_FORGE_ADDRESSES").unwrap()).unwrap();
+        assert_eq!(
+            payload["trackers"][0]["identity"],
+            "github:github.example.com/tesserine/runa"
+        );
+        libagent::validate_forge_address(&payload).unwrap();
     }
 
     #[test]
     fn build_mcp_config_includes_supplied_runtime_environment() {
         let runtime_env = BTreeMap::from([
-            ("RUNA_FORGE_OWNER".to_string(), "tesserine".to_string()),
-            ("RUNA_FORGE_NAME".to_string(), "runa".to_string()),
+            (
+                "RUNA_FORGE_ADDRESSES".to_string(),
+                r#"{"schema_version":"1.0.0","instances":[{"name":"github","type":"github","host":"github.example.com"}],"repositories":[],"trackers":[]}"#.to_string(),
+            ),
         ]);
 
         let config = build_mcp_config(
@@ -1770,10 +1789,9 @@ cat >/dev/null
         );
 
         assert_eq!(
-            config.env.get("RUNA_FORGE_OWNER"),
-            Some(&"tesserine".to_string())
+            config.env.get("RUNA_FORGE_ADDRESSES"),
+            runtime_env.get("RUNA_FORGE_ADDRESSES")
         );
-        assert_eq!(config.env.get("RUNA_FORGE_NAME"), Some(&"runa".to_string()));
     }
 
     #[test]

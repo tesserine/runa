@@ -266,11 +266,28 @@ fn init_project(project_dir: &Path, manifest_path: &Path) {
 }
 
 fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
-    let config_path = project_dir.join(".runa/config.toml");
-    let existing = fs::read_to_string(&config_path).unwrap();
     fs::write(
-        config_path,
-        format!("{existing}\n[forge]\ntype = \"github\"\nowner = \"{owner}\"\nname = \"{name}\"\n"),
+        project_dir.join(".runa/project.toml"),
+        format!(
+            r#"
+[[forge.instances]]
+name = "github"
+type = "github"
+host = "github.com"
+
+[[forge.repositories]]
+name = "{name}"
+instance = "github"
+owner = "{owner}"
+repository = "{name}"
+
+[[forge.trackers]]
+name = "{name}"
+type = "github"
+instance = "github"
+repository = "{name}"
+"#
+        ),
     )
     .unwrap();
 }

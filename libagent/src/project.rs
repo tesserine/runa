@@ -41,14 +41,14 @@ impl LoggingConfig {
     }
 }
 
-/// The `[agent]` section of `.runa/config.toml`.
+/// The `[runtime]` section of `.runa/config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AgentConfig {
+pub struct RuntimeConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<Vec<String>>,
 }
 
-impl AgentConfig {
+impl RuntimeConfig {
     fn is_default(&self) -> bool {
         self == &Self::default()
     }
@@ -69,7 +69,7 @@ impl TranscriptConfig {
     }
 }
 
-/// The `[forge]` section of `.runa/config.toml`.
+/// Internal resolved forge identity used by legacy scoped-selection code.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ForgeConfig {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
@@ -94,8 +94,8 @@ pub struct Config {
     pub methodology_path: String,
     #[serde(default, skip_serializing_if = "LoggingConfig::is_default")]
     pub logging: LoggingConfig,
-    #[serde(default, skip_serializing_if = "AgentConfig::is_default")]
-    pub agent: AgentConfig,
+    #[serde(default, skip_serializing_if = "RuntimeConfig::is_default")]
+    pub runtime: RuntimeConfig,
     #[serde(default, skip_serializing_if = "TranscriptConfig::is_default")]
     pub transcript: TranscriptConfig,
     #[serde(default, skip_serializing_if = "ForgeConfig::is_default")]
@@ -245,6 +245,18 @@ pub fn read_config(
                 .to_string(),
         ));
     }
+    if config_value.get("agent").is_some() {
+        return Err(ProjectError::ConfigParseFailed(
+            "'[agent]' has been removed; configure machine-local execution with '[runtime] command = [...]'"
+                .to_string(),
+        ));
+    }
+    if config_value.get("forge").is_some() {
+        return Err(ProjectError::ConfigParseFailed(
+            "'[forge]' has been removed; configure portable forge topology in '.runa/project.toml'"
+                .to_string(),
+        ));
+    }
     config_value
         .try_into()
         .map_err(|e| ProjectError::ConfigParseFailed(e.to_string()))
@@ -258,7 +270,8 @@ pub fn load(
     working_dir: &Path,
     config_override: Option<&Path>,
 ) -> Result<LoadedProject, ProjectError> {
-    let config = read_config(working_dir, config_override)?;
+    let mut config = read_config(working_dir, config_override)?;
+    derive_internal_forge_from_project_topology(working_dir, &mut config)?;
 
     // Verify state.toml exists (project was initialized).
     let runa_dir = working_dir.join(RUNA_DIR);
@@ -293,6 +306,78 @@ pub fn load(
         store,
         workspace_dir,
     })
+}
+
+fn derive_internal_forge_from_project_topology(
+    working_dir: &Path,
+    config: &mut Config,
+) -> Result<(), ProjectError> {
+    if !config.forge.is_default() {
+        return Ok(());
+    }
+    let project_path = working_dir.join(RUNA_DIR).join("project.toml");
+    if !project_path.exists() {
+        return Ok(());
+    }
+    let payload = crate::resolve_project_payload(&project_path)
+        .map_err(|error| ProjectError::ConfigParseFailed(error.to_string()))?;
+    let Some(trackers) = payload.get("trackers").and_then(|value| value.as_array()) else {
+        return Ok(());
+    };
+    let Some(tracker) = trackers.first().and_then(|value| value.as_object()) else {
+        return Ok(());
+    };
+    match tracker.get("type").and_then(|value| value.as_str()) {
+        Some("github") => {
+            let Some(repository_name) = tracker.get("repository").and_then(|value| value.as_str())
+            else {
+                return Ok(());
+            };
+            let repository = payload
+                .get("repositories")
+                .and_then(|value| value.as_array())
+                .and_then(|repositories| {
+                    repositories.iter().find(|repository| {
+                        repository.get("name").and_then(|value| value.as_str())
+                            == Some(repository_name)
+                    })
+                })
+                .and_then(|value| value.as_object());
+            if let Some(repository) = repository {
+                config.forge = ForgeConfig {
+                    forge_type: Some("github".to_string()),
+                    owner: repository
+                        .get("owner")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    name: repository
+                        .get("repository")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    tracker_id: None,
+                };
+            }
+        }
+        Some("sourcehut") => {
+            config.forge = ForgeConfig {
+                forge_type: Some("sourcehut".to_string()),
+                owner: tracker
+                    .get("owner")
+                    .and_then(|value| value.as_str())
+                    .map(|owner| owner.trim_start_matches('~').to_string()),
+                name: tracker
+                    .get("tracker")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                tracker_id: tracker
+                    .get("tracker_id")
+                    .and_then(|value| value.as_i64())
+                    .map(|value| value.to_string()),
+            };
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -340,7 +425,7 @@ trigger = { type = "on_change", name = "constraints" }
         let config = Config {
             methodology_path: canonical.display().to_string(),
             logging: LoggingConfig::default(),
-            agent: AgentConfig::default(),
+            runtime: RuntimeConfig::default(),
             transcript: TranscriptConfig::default(),
             forge: ForgeConfig::default(),
         };
@@ -403,7 +488,7 @@ trigger = { type = "on_change", name = "constraints" }
         let config = Config {
             methodology_path: canonical.display().to_string(),
             logging: LoggingConfig::default(),
-            agent: AgentConfig::default(),
+            runtime: RuntimeConfig::default(),
             transcript: TranscriptConfig::default(),
             forge: ForgeConfig::default(),
         };
@@ -486,7 +571,7 @@ artifacts_dir = "custom-artifacts"
         let config = Config {
             methodology_path: canonical.display().to_string(),
             logging: LoggingConfig::default(),
-            agent: AgentConfig::default(),
+            runtime: RuntimeConfig::default(),
             transcript: TranscriptConfig::default(),
             forge: ForgeConfig::default(),
         };
@@ -597,7 +682,7 @@ methodology_path = "/tmp/methodology.toml"
 
         assert_eq!(config.logging.format, LogFormat::Text);
         assert_eq!(config.logging.filter, None);
-        assert_eq!(config.agent.command, None);
+        assert_eq!(config.runtime.command, None);
     }
 
     #[test]
@@ -615,12 +700,36 @@ filter = "info"
 
         assert_eq!(config.logging.format, LogFormat::Json);
         assert_eq!(config.logging.filter.as_deref(), Some("info"));
-        assert_eq!(config.agent.command, None);
+        assert_eq!(config.runtime.command, None);
     }
 
     #[test]
-    fn config_with_agent_table_parses_command() {
+    fn config_with_runtime_table_parses_command() {
         let config: Config = toml::from_str(
+            r#"
+methodology_path = "/tmp/methodology.toml"
+
+[runtime]
+command = ["agent-runtime", "exec"]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.runtime.command,
+            Some(vec!["agent-runtime".to_string(), "exec".to_string()])
+        );
+    }
+
+    #[test]
+    fn read_config_rejects_legacy_agent_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
             r#"
 methodology_path = "/tmp/methodology.toml"
 
@@ -630,10 +739,9 @@ command = ["agent-runtime", "exec"]
         )
         .unwrap();
 
-        assert_eq!(
-            config.agent.command,
-            Some(vec!["agent-runtime".to_string(), "exec".to_string()])
-        );
+        let err = read_config(&working, None).unwrap_err();
+
+        assert!(err.to_string().contains("[agent]"), "{err}");
     }
 
     #[test]
@@ -664,11 +772,36 @@ tracker_id = "4"
     }
 
     #[test]
+    fn read_config_rejects_legacy_forge_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            r#"
+methodology_path = "/tmp/methodology.toml"
+
+[forge]
+type = "github"
+owner = "tesserine"
+name = "runa"
+"#,
+        )
+        .unwrap();
+
+        let err = read_config(&working, None).unwrap_err();
+
+        assert!(err.to_string().contains("[forge]"), "{err}");
+    }
+
+    #[test]
     fn config_serializes_and_deserializes_new_durable_runtime_settings() {
         let config = Config {
             methodology_path: "/tmp/methodology.toml".to_string(),
             logging: LoggingConfig::default(),
-            agent: AgentConfig::default(),
+            runtime: RuntimeConfig::default(),
             transcript: TranscriptConfig {
                 dir: Some("transcripts".to_string()),
                 redact_env: vec!["SECRET_TOKEN".to_string()],

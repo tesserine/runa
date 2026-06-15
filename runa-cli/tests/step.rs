@@ -437,7 +437,7 @@ fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
         .join("\n");
     fs::write(
         config_path,
-        format!("{existing}\n[agent]\ncommand = [\n{command_entries}\n]\n"),
+        format!("{existing}\n[runtime]\ncommand = [\n{command_entries}\n]\n"),
     )
     .unwrap();
 }
@@ -460,13 +460,48 @@ fn append_transcript_config(project_dir: &Path, transcript_dir: &Path, redact_en
 }
 
 fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
-    let config_path = project_dir.join(".runa/config.toml");
-    let existing = fs::read_to_string(&config_path).unwrap();
     fs::write(
-        config_path,
-        format!("{existing}\n[forge]\ntype = \"github\"\nowner = \"{owner}\"\nname = \"{name}\"\n"),
+        project_dir.join(".runa/project.toml"),
+        format!(
+            r#"
+[[forge.instances]]
+name = "github"
+type = "github"
+host = "github.com"
+
+[[forge.repositories]]
+name = "{name}"
+instance = "github"
+owner = "{owner}"
+repository = "{name}"
+
+[[forge.trackers]]
+name = "{name}"
+type = "github"
+instance = "github"
+repository = "{name}"
+"#
+        ),
     )
     .unwrap();
+}
+
+fn assert_mcp_env_has_project_paths_only(env: &serde_json::Value, project_dir: &Path) {
+    assert_eq!(
+        env["RUNA_CONFIG"],
+        serde_json::Value::String(
+            project_dir
+                .join(".runa/config.toml")
+                .to_string_lossy()
+                .to_string()
+        )
+    );
+    assert_eq!(
+        env["RUNA_WORKING_DIR"],
+        serde_json::Value::String(project_dir.to_string_lossy().to_string())
+    );
+    assert!(env.get("RUNA_FORGE_ADDRESSES").is_none(), "{env}");
+    assert_eq!(env.as_object().unwrap().len(), 2);
 }
 
 fn transcript_event_files(root: &Path) -> Vec<std::path::PathBuf> {
@@ -706,14 +741,7 @@ fn step_dry_run_json_reports_ready_execution_plan_and_full_skill_status() {
         execution_plan[0]["mcp_config"]["args"],
         serde_json::json!(["--protocol", "implement"])
     );
-    assert_eq!(
-        execution_plan[0]["mcp_config"]["env"],
-        serde_json::json!({
-            "RUNA_FORGE_TYPE": "github",
-            "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
-            "RUNA_WORKING_DIR": project_dir
-        })
-    );
+    assert_mcp_env_has_project_paths_only(&execution_plan[0]["mcp_config"]["env"], &project_dir);
     let mcp_command = execution_plan[0]["mcp_config"]["command"]
         .as_str()
         .expect("mcp command should be a string");
@@ -1084,7 +1112,7 @@ fn step_without_dry_run_fails_when_agent_command_is_not_configured() {
         stderr.contains("no agent command configured"),
         "stderr: {stderr}"
     );
-    assert!(stderr.contains("[agent]"), "stderr: {stderr}");
+    assert!(stderr.contains("[runtime]"), "stderr: {stderr}");
     assert!(stderr.contains("config.toml"), "stderr: {stderr}");
 }
 #[test]
@@ -1180,14 +1208,7 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
         mcp_config["args"],
         serde_json::json!(["--protocol", "implement"])
     );
-    assert_eq!(
-        mcp_config["env"],
-        serde_json::json!({
-            "RUNA_FORGE_TYPE": "github",
-            "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
-            "RUNA_WORKING_DIR": project_dir
-        })
-    );
+    assert_mcp_env_has_project_paths_only(&mcp_config["env"], &project_dir);
 }
 #[test]
 fn step_without_dry_run_launches_claude_named_agent_agnostically() {
@@ -1243,14 +1264,7 @@ fn step_without_dry_run_launches_claude_named_agent_agnostically() {
         mcp_config["args"],
         serde_json::json!(["--protocol", "implement"])
     );
-    assert_eq!(
-        mcp_config["env"],
-        serde_json::json!({
-            "RUNA_FORGE_TYPE": "github",
-            "RUNA_CONFIG": project_dir.join(".runa/config.toml"),
-            "RUNA_WORKING_DIR": project_dir
-        })
-    );
+    assert_mcp_env_has_project_paths_only(&mcp_config["env"], &project_dir);
     let mcp_command = mcp_config["command"]
         .as_str()
         .expect("mcp command should be a string");

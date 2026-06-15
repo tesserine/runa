@@ -33,7 +33,7 @@ fn init_project(project_dir: &Path, manifest_path: &Path) {
 fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
     let config_path = project_dir.join(".runa/config.toml");
     let mut config = fs::read_to_string(&config_path).unwrap();
-    config.push_str("\n[agent]\ncommand = [");
+    config.push_str("\n[runtime]\ncommand = [");
     for (index, part) in command.iter().enumerate() {
         if index > 0 {
             config.push_str(", ");

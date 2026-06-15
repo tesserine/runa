@@ -61,6 +61,8 @@ pub struct EntryDelivery {
     pub ticket_number: u64,
     /// Canonical tracker identity, e.g. `github:tesserine/runa:188`.
     pub tracker_identity: String,
+    /// Canonical work-unit identity for this ticket.
+    pub work_unit_identity: String,
 }
 
 /// Artifact type names the agent is expected to produce for this protocol invocation.
@@ -739,7 +741,8 @@ mod tests {
             entry: Some(EntryDelivery {
                 reference: "github:tesserine/runa#188".into(),
                 ticket_number: 188,
-                tracker_identity: "github:tesserine/runa:188".into(),
+                tracker_identity: "github:github.com/tesserine/runa".into(),
+                work_unit_identity: "github:github.com/tesserine/runa#188".into(),
             }),
             expected_outputs: ExpectedOutputs {
                 produces: vec!["work-unit".into()],

@@ -221,12 +221,12 @@ payload=$(cat)
 case "$payload" in
   *"# Protocol: decompose"*)
     case "$payload" in
-      *"## Session entry"*"github:tesserine/runa#14"*) : ;;
+      *"## Session entry"*"github:github.com/tesserine/runa#14"*) : ;;
       *) printf '%s\n' "$payload" > "$log_file.no-entry"; exit 23 ;;
     esac
     printf 'decompose\n' >> "$log_file"
     mkdir -p .runa/workspace/work-unit
-    printf '%s\n' '{"title":"Cold start","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/14","number":14}}' > .runa/workspace/work-unit/work-unit-14-cold-start.json
+    printf '%s\n' '{"title":"Cold start","handle":{"tracker":"runa","tracker_identity":"github:github.com/tesserine/runa","work_unit_identity":"github:github.com/tesserine/runa#14","number":14}}' > .runa/workspace/work-unit/work-unit-14-cold-start.json
     ;;
   *"# Protocol: take"*)
     printf 'take\n' >> "$log_file"
@@ -259,7 +259,7 @@ case "$payload" in
   *"# Protocol: decompose"*)
     printf 'decompose\n' >> "$log_file"
     mkdir -p .runa/workspace/work-unit
-    printf '%s\n' '{"title":"Other","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/99","number":99}}' > .runa/workspace/work-unit/work-unit-99-other.json
+    printf '%s\n' '{"title":"Other","handle":{"tracker":"runa","tracker_identity":"github:github.com/tesserine/runa","work_unit_identity":"github:github.com/tesserine/runa#99","number":99}}' > .runa/workspace/work-unit/work-unit-99-other.json
     ;;
   *)
     printf '%s\n' "$payload" > "$log_file.unexpected"
@@ -283,7 +283,7 @@ fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
         .join("\n");
     fs::write(
         config_path,
-        format!("{existing}\n[agent]\ncommand = [\n{command_entries}\n]\n"),
+        format!("{existing}\n[runtime]\ncommand = [\n{command_entries}\n]\n"),
     )
     .unwrap();
 }
@@ -310,7 +310,10 @@ fn run_ticket_dry_run_projects_acquisition_then_take() {
     );
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["version"], 3, "{value:#}");
-    assert_eq!(value["entry"]["reference"], "github:tesserine/runa#14");
+    assert_eq!(
+        value["entry"]["reference"],
+        "github:github.com/tesserine/runa#14"
+    );
     assert_eq!(value["entry"]["ticket_number"], 14);
     assert_eq!(value["entry"]["acquisition_protocol"], "decompose");
 
@@ -321,7 +324,7 @@ fn run_ticket_dry_run_projects_acquisition_then_take() {
     // The acquisition step carries the entry reference in its context.
     assert_eq!(
         plan[0]["context"]["entry"]["reference"],
-        "github:tesserine/runa#14"
+        "github:github.com/tesserine/runa#14"
     );
     assert_eq!(plan[1]["protocol"], "take");
     assert_eq!(plan[1]["projection"], "projected");
@@ -778,7 +781,7 @@ fn taint_work_unit_scan(project_dir: &Path) {
     let unreadable = wu_dir.join("hidden.json");
     fs::write(
         &unreadable,
-        r#"{"title":"hidden","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/14","number":14}}"#,
+        r#"{"title":"hidden","handle":{"tracker":"runa","tracker_identity":"github:github.com/tesserine/runa","work_unit_identity":"github:github.com/tesserine/runa#14","number":14}}"#,
     )
     .unwrap();
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
@@ -894,7 +897,7 @@ set -eu
     printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"entry-test","version":"1.0.0"}}}'
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
     printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"next-protocol-context","arguments":{}}}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"work-unit","arguments":{"instance_id":"work-unit-14-cold-start","title":"Cold start","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/14","number":14}}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"work-unit","arguments":{"instance_id":"work-unit-14-cold-start","title":"Cold start","handle":{"tracker":"runa","tracker_identity":"github:github.com/tesserine/runa","work_unit_identity":"github:github.com/tesserine/runa#14","number":14}}}}'
     printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"advance","arguments":{}}}'
     sleep 1
 } | "$1" --session --ticket '#14' > "$2"
@@ -927,7 +930,7 @@ fi
     // session binds — advance reports `take` as the next step.
     assert!(transcript.contains("## Session entry"), "{transcript}");
     assert!(
-        transcript.contains("github:tesserine/runa#14"),
+        transcript.contains("github:github.com/tesserine/runa#14"),
         "{transcript}"
     );
     // advance reports `take` as the bound next step.

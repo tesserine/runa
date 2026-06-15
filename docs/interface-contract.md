@@ -90,26 +90,36 @@ Scoped evaluation is a runtime capability. When the caller supplies
 aliases such as bare issue numbers are not accepted as scope identifiers.
 
 For tracker-backed delegated work, runa also owns the active deployment
-identity used by scoped work-unit validation. The durable operator surface is
-the project-local `[forge]` config section:
+identity used by scoped work-unit validation. The durable portable surface is
+the project-local `.runa/project.toml` forge topology:
 
 ```toml
-[forge]
+[[forge.instances]]
+name = "github"
 type = "github"
-owner = "tesserine"
+host = "github.com"
+
+[[forge.repositories]]
 name = "runa"
-tracker_id = "4"
+instance = "github"
+owner = "tesserine"
+repository = "runa"
+
+[[forge.trackers]]
+name = "runa"
+type = "github"
+instance = "github"
+repository = "runa"
 ```
 
-The matching per-invocation override and launched-runtime environment surface
-is runa-owned: `RUNA_FORGE_TYPE`, `RUNA_FORGE_OWNER`, `RUNA_FORGE_NAME`, and
-`RUNA_FORGE_TRACKER_ID`. Non-empty environment values override matching config
-fields, and `RUNA_FORGE_TYPE` defaults to `github` when omitted.
+The launched-runtime environment surface is the runa-owned
+`RUNA_FORGE_ADDRESSES` JSON payload. Runa derives repository, tracker, and
+work-unit identities from the project topology and validates the payload before
+emitting it.
 
-Runa computes the active deployment identity from those atoms. For GitHub, the
-identity is `github:<owner>/<name>`. For SourceHut, the identity is
-`sourcehut:<tracker_id>`. Endpoint or host resolution is not part of scoped
-identity validation.
+For GitHub, repository and tracker identities are
+`github:<host>/<owner>/<repository>`. For SourceHut, tracker identities include
+the tracker host, owner, tracker name, and tracker id.
 
 When a valid recorded `work-unit` root contains a forge-tagged tracker handle,
 runa enforces the runtime checks that JSON Schema cannot express: the canonical

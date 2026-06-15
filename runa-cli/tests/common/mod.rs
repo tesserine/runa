@@ -71,17 +71,33 @@ pub fn scoped_work_unit_schemas() -> &'static [(&'static str, &'static str)] {
 #[allow(dead_code)]
 pub fn github_work_unit_json(number: u64) -> String {
     format!(
-        r#"{{"title":"Scope","description":"Enforce canonical scope","acceptance_criteria":["Reject aliases"],"handle":{{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/{number}","number":{number}}}}}"#
+        r#"{{"title":"Scope","description":"Enforce canonical scope","acceptance_criteria":["Reject aliases"],"handle":{{"tracker":"runa","tracker_identity":"github:github.com/tesserine/runa","work_unit_identity":"github:github.com/tesserine/runa#{number}","number":{number}}}}}"#
     )
 }
 
 #[allow(dead_code)]
 pub fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
     fs::write(
-        project_dir.join(".runa/config.toml"),
+        project_dir.join(".runa/project.toml"),
         format!(
-            "{}\n[forge]\ntype = \"github\"\nowner = \"{owner}\"\nname = \"{name}\"\n",
-            fs::read_to_string(project_dir.join(".runa/config.toml")).unwrap()
+            r#"
+[[forge.instances]]
+name = "github"
+type = "github"
+host = "github.com"
+
+[[forge.repositories]]
+name = "{name}"
+instance = "github"
+owner = "{owner}"
+repository = "{name}"
+
+[[forge.trackers]]
+name = "{name}"
+type = "github"
+instance = "github"
+repository = "{name}"
+"#
         ),
     )
     .unwrap();

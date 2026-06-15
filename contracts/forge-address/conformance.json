@@ -1,0 +1,118 @@
+{
+  "schema": "forge-address.schema.json",
+  "valid": {
+    "payloads": [
+      {
+        "name": "multi-forge",
+        "value": {
+          "schema_version": "1.0.0",
+          "instances": [
+            {
+              "name": "github-enterprise",
+              "type": "github",
+              "host": "github.example.com"
+            },
+            {
+              "name": "srht",
+              "type": "sourcehut",
+              "git_host": "git.weforge.build",
+              "tracker_host": "todo.weforge.build"
+            }
+          ],
+          "repositories": [
+            {
+              "name": "runa",
+              "instance": "github-enterprise",
+              "owner": "tesserine",
+              "repository": "runa",
+              "identity": "github:github.example.com/tesserine/runa"
+            },
+            {
+              "name": "groundwork-srht",
+              "instance": "srht",
+              "owner": "~operator",
+              "repository": "groundwork",
+              "identity": "sourcehut:git.weforge.build/~operator/groundwork"
+            }
+          ],
+          "trackers": [
+            {
+              "name": "runa",
+              "type": "github",
+              "instance": "github-enterprise",
+              "repository": "runa",
+              "identity": "github:github.example.com/tesserine/runa"
+            },
+            {
+              "name": "groundwork",
+              "type": "sourcehut",
+              "instance": "srht",
+              "owner": "~operator",
+              "tracker": "groundwork",
+              "tracker_id": 4,
+              "identity": "sourcehut:todo.weforge.build/~operator/groundwork:4"
+            }
+          ]
+        }
+      }
+    ],
+    "handles": [
+      {
+        "name": "runa-199",
+        "value": {
+          "tracker": "runa",
+          "tracker_identity": "github:github.example.com/tesserine/runa",
+          "work_unit_identity": "github:github.example.com/tesserine/runa#199",
+          "number": 199
+        }
+      },
+      {
+        "name": "groundwork-420",
+        "value": {
+          "tracker": "groundwork",
+          "tracker_identity": "sourcehut:todo.weforge.build/~operator/groundwork:4",
+          "work_unit_identity": "sourcehut:todo.weforge.build/~operator/groundwork:4#420",
+          "number": 420
+        }
+      }
+    ]
+  },
+  "invalid": {
+    "payloads": [
+      {
+        "name": "sourcehut-missing-tracker-host",
+        "value": {
+          "schema_version": "1.0.0",
+          "instances": [
+            {
+              "name": "srht",
+              "type": "sourcehut",
+              "git_host": "git.weforge.build"
+            }
+          ],
+          "repositories": [],
+          "trackers": []
+        }
+      }
+    ],
+    "handles": [
+      {
+        "name": "stored-independent-identity-disagrees",
+        "value": {
+          "tracker": "groundwork",
+          "tracker_identity": "sourcehut:todo.weforge.build/~operator/groundwork:4",
+          "work_unit_identity": "sourcehut:todo.weforge.build/~operator/groundwork:4#421",
+          "number": 420
+        }
+      },
+      {
+        "name": "legacy-github-url-handle",
+        "value": {
+          "forge_tag": "github",
+          "url": "https://github.com/tesserine/runa/issues/199",
+          "number": 199
+        }
+      }
+    ]
+  }
+}

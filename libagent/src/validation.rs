@@ -78,12 +78,26 @@ pub fn validate_artifact(
     artifact_data: &Value,
     artifact_type: &ArtifactType,
 ) -> Result<(), ValidationError> {
-    let validator = jsonschema::validator_for(&artifact_type.schema).map_err(|e| {
-        ValidationError::InvalidSchema {
+    let forge_address_schema = crate::forge_address_schema();
+    let validator = jsonschema::options()
+        .with_resources(
+            [
+                (
+                    "forge-address.schema.json",
+                    jsonschema::Resource::from_contents(forge_address_schema.clone()),
+                ),
+                (
+                    "https://raw.githubusercontent.com/tesserine/groundwork/main/schemas/forge-address.schema.json",
+                    jsonschema::Resource::from_contents(forge_address_schema),
+                ),
+            ]
+            .into_iter(),
+        )
+        .build(&artifact_type.schema)
+        .map_err(|e| ValidationError::InvalidSchema {
             artifact_type: artifact_type.name.clone(),
             detail: e.to_string(),
-        }
-    })?;
+        })?;
 
     let violations: Vec<Violation> = validator
         .iter_errors(artifact_data)

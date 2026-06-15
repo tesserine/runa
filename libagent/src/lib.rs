@@ -21,6 +21,7 @@ pub(crate) mod completion;
 pub mod context;
 pub mod enforcement;
 pub mod entry;
+pub mod forge_address;
 pub mod graph;
 pub mod logging;
 pub mod manifest;
@@ -47,6 +48,10 @@ pub use entry::{
     AcquisitionBlock, EntryError, RUNA_ENTRY_TICKET, TicketRef, check_acquisition_admissible,
     discover_acquisition_surface, resolve_promise, resolve_ticket_reference,
 };
+pub use forge_address::{
+    ForgeAddressError, resolve_project_payload, schema as forge_address_schema,
+    validate_against_schema as validate_forge_address, validate_work_unit_handle, work_unit_handle,
+};
 pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use logging::{LoggingError, ResolvedLoggingConfig, configure_tracing, resolve_logging_config};
 pub use manifest::ManifestError;
@@ -55,8 +60,8 @@ pub use model::{
     UnscopedOutputRequiresWorkUnitError, validate_output_scope,
 };
 pub use project::{
-    Config, ForgeConfig, LoadedProject, LogFormat, LoggingConfig, ProjectError, State,
-    TranscriptConfig,
+    Config, ForgeConfig, LoadedProject, LogFormat, LoggingConfig, ProjectError, RuntimeConfig,
+    State, TranscriptConfig,
 };
 pub use projection::{
     ProjectionCandidate, ProjectionClass, project_cascade, project_entry_cascade,

@@ -31,13 +31,14 @@ pub const RUNA_ENTRY_TICKET: &str = "RUNA_ENTRY_TICKET";
 
 /// A forge ticket reference resolved against the active deployment identity.
 ///
-/// `tracker_identity` is the canonical match key (`github:<owner>/<name>:<n>`
-/// or `sourcehut:<tracker_id>:<n>`), identical to what a recorded work-unit
-/// handle yields. `display` is the operator-facing rendering.
+/// `tracker_identity` is the canonical tracker root. `work_unit_identity` is
+/// the exact identity a recorded work-unit handle yields. `display` is the
+/// operator-facing rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketRef {
     pub number: u64,
     pub tracker_identity: String,
+    pub work_unit_identity: String,
     pub display: String,
 }
 
@@ -278,18 +279,22 @@ fn require_atom<'a>(value: Option<&'a str>, variable: &'static str) -> Result<&'
 }
 
 fn github_ticket(owner: &str, name: &str, number: u64) -> TicketRef {
+    let tracker_identity = format!("github:github.com/{owner}/{name}");
     TicketRef {
         number,
-        tracker_identity: format!("github:{owner}/{name}:{number}"),
-        display: format!("github:{owner}/{name}#{number}"),
+        work_unit_identity: format!("{tracker_identity}#{number}"),
+        display: format!("{tracker_identity}#{number}"),
+        tracker_identity,
     }
 }
 
 fn sourcehut_ticket(tracker_id: &str, number: u64) -> TicketRef {
+    let tracker_identity = format!("sourcehut:{tracker_id}");
     TicketRef {
         number,
-        tracker_identity: format!("sourcehut:{tracker_id}:{number}"),
+        work_unit_identity: format!("{tracker_identity}#{number}"),
         display: format!("sourcehut:{tracker_id}#{number}"),
+        tracker_identity,
     }
 }
 
@@ -397,7 +402,7 @@ pub fn resolve_promise(
     ticket: &TicketRef,
 ) -> Result<Option<String>, ScopedWorkUnitError> {
     validate_tracker_consistency(store, identity)?;
-    match find_work_unit_by_tracker_identity(store, &ticket.tracker_identity) {
+    match find_work_unit_by_tracker_identity(store, &ticket.work_unit_identity) {
         Some(instance_id) => Ok(Some(instance_id)),
         None if store.has_any_scan_gap_for_type(WORK_UNIT_ARTIFACT_TYPE) => {
             Err(ScopedWorkUnitError::WorkUnitScanIncomplete)
@@ -450,15 +455,23 @@ mod tests {
         let ticket =
             resolve_ticket_reference("188", &github_identity("tesserine", "runa")).unwrap();
         assert_eq!(ticket.number, 188);
-        assert_eq!(ticket.tracker_identity, "github:tesserine/runa:188");
-        assert_eq!(ticket.display, "github:tesserine/runa#188");
+        assert_eq!(ticket.tracker_identity, "github:github.com/tesserine/runa");
+        assert_eq!(
+            ticket.work_unit_identity,
+            "github:github.com/tesserine/runa#188"
+        );
+        assert_eq!(ticket.display, "github:github.com/tesserine/runa#188");
     }
 
     #[test]
     fn hash_number_inherits_deployment() {
         let ticket =
             resolve_ticket_reference("#14", &github_identity("tesserine", "runa")).unwrap();
-        assert_eq!(ticket.tracker_identity, "github:tesserine/runa:14");
+        assert_eq!(ticket.tracker_identity, "github:github.com/tesserine/runa");
+        assert_eq!(
+            ticket.work_unit_identity,
+            "github:github.com/tesserine/runa#14"
+        );
     }
 
     #[test]
@@ -466,7 +479,11 @@ mod tests {
         let ticket =
             resolve_ticket_reference("tesserine/runa#14", &github_identity("tesserine", "runa"))
                 .unwrap();
-        assert_eq!(ticket.tracker_identity, "github:tesserine/runa:14");
+        assert_eq!(ticket.tracker_identity, "github:github.com/tesserine/runa");
+        assert_eq!(
+            ticket.work_unit_identity,
+            "github:github.com/tesserine/runa#14"
+        );
     }
 
     #[test]
@@ -477,7 +494,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ticket.number, 188);
-        assert_eq!(ticket.tracker_identity, "github:tesserine/runa:188");
+        assert_eq!(ticket.tracker_identity, "github:github.com/tesserine/runa");
+        assert_eq!(
+            ticket.work_unit_identity,
+            "github:github.com/tesserine/runa#188"
+        );
     }
 
     #[test]
@@ -493,7 +514,8 @@ mod tests {
     #[test]
     fn sourcehut_form_matches_active_tracker() {
         let ticket = resolve_ticket_reference("sourcehut:4#9", &sourcehut_identity("4")).unwrap();
-        assert_eq!(ticket.tracker_identity, "sourcehut:4:9");
+        assert_eq!(ticket.tracker_identity, "sourcehut:4");
+        assert_eq!(ticket.work_unit_identity, "sourcehut:4#9");
         assert_eq!(ticket.display, "sourcehut:4#9");
     }
 
@@ -508,7 +530,8 @@ mod tests {
     #[test]
     fn bare_number_under_sourcehut_inherits_tracker() {
         let ticket = resolve_ticket_reference("9", &sourcehut_identity("4")).unwrap();
-        assert_eq!(ticket.tracker_identity, "sourcehut:4:9");
+        assert_eq!(ticket.tracker_identity, "sourcehut:4");
+        assert_eq!(ticket.work_unit_identity, "sourcehut:4#9");
     }
 
     #[test]

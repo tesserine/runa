@@ -91,20 +91,6 @@ struct RunArgs {
     /// Open the cascade from a forge ticket reference (cold-start entry)
     #[arg(long, conflicts_with = "work_unit")]
     ticket: Option<String>,
-
-    /// Override the live agent command; pass argv after `--`, for example `--agent-command -- <argv tokens>`
-    #[arg(long = "agent-command")]
-    agent_command: bool,
-
-    /// Agent argv passed through after `--` when `--agent-command` is set
-    #[arg(
-        num_args = 0..,
-        last = true,
-        allow_hyphen_values = true,
-        requires = "agent_command",
-        value_name = "ARGV"
-    )]
-    agent_command_argv: Vec<String>,
 }
 
 fn main() {
@@ -225,8 +211,8 @@ fn main() {
                 args.json,
                 args.work_unit.as_deref(),
                 args.ticket.as_deref(),
-                args.agent_command,
-                &args.agent_command_argv,
+                false,
+                &[],
             ) {
                 Ok(outcome) => {
                     let exit_code = outcome.exit_code();

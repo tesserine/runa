@@ -441,6 +441,7 @@ impl SessionState {
                 reference: ticket.display.clone(),
                 ticket_number: ticket.number,
                 tracker_identity: ticket.tracker_identity.clone(),
+                work_unit_identity: ticket.work_unit_identity.clone(),
             });
         }
         let rendered = render_context_prompt(&context);
@@ -1035,9 +1036,31 @@ trigger = { type = "on_artifact", name = "work-unit" }
         fs::write(
             runa_dir.join("config.toml"),
             format!(
-                "methodology_path = {:?}\n\n[forge]\ntype = \"github\"\nowner = \"tesserine\"\nname = \"runa\"\n",
+                "methodology_path = {:?}\n",
                 manifest_path.display().to_string()
             ),
+        )
+        .unwrap();
+        fs::write(
+            runa_dir.join("project.toml"),
+            r#"
+[[forge.instances]]
+name = "github"
+type = "github"
+host = "github.com"
+
+[[forge.repositories]]
+name = "runa"
+instance = "github"
+owner = "tesserine"
+repository = "runa"
+
+[[forge.trackers]]
+name = "runa"
+type = "github"
+instance = "github"
+repository = "runa"
+"#,
         )
         .unwrap();
         fs::write(
@@ -1057,7 +1080,7 @@ trigger = { type = "on_artifact", name = "work-unit" }
         fs::create_dir_all(workspace.join("work-unit")).unwrap();
         fs::write(
             workspace.join("work-unit/work-unit-14-cold-start.json"),
-            r#"{"title":"Cold start","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/14","number":14}}"#,
+            r#"{"title":"Cold start","handle":{"tracker":"runa","tracker_identity":"github:github.com/tesserine/runa","work_unit_identity":"github:github.com/tesserine/runa#14","number":14}}"#,
         )
         .unwrap();
     }
@@ -1065,8 +1088,9 @@ trigger = { type = "on_artifact", name = "work-unit" }
     fn ticket_14() -> crate::TicketRef {
         crate::TicketRef {
             number: 14,
-            tracker_identity: "github:tesserine/runa:14".to_string(),
-            display: "github:tesserine/runa#14".to_string(),
+            tracker_identity: "github:github.com/tesserine/runa".to_string(),
+            work_unit_identity: "github:github.com/tesserine/runa#14".to_string(),
+            display: "github:github.com/tesserine/runa#14".to_string(),
         }
     }
 

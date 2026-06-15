@@ -212,7 +212,7 @@ fn resolve_agent_command(
         .map_err(StepError::from)
         .map_err(RunError::from)?;
     config
-        .agent
+        .runtime
         .command
         .filter(|command| is_usable_agent_command(command))
         .ok_or(RunError::from(StepError::AgentCommandNotConfigured))

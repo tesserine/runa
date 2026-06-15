@@ -17,7 +17,7 @@ fn configured_agent_command(
         .map_err(CommandError::from)
         .map_err(StepError::from)?;
     config
-        .agent
+        .runtime
         .command
         .filter(|command| {
             !command.is_empty() && !command.first().is_some_and(|part| part.is_empty())

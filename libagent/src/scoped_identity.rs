@@ -63,7 +63,7 @@ impl ResolvedForgeIdentity {
             "github" => {
                 let owner = self.required_atom(RUNA_FORGE_OWNER, self.owner.as_deref())?;
                 let name = self.required_atom(RUNA_FORGE_NAME, self.name.as_deref())?;
-                Ok(format!("github:{owner}/{name}"))
+                Ok(format!("github:github.com/{owner}/{name}"))
             }
             "sourcehut" => {
                 let tracker_id =
@@ -339,6 +339,16 @@ fn validate_deployment_identity(
 
     let handle_identity = deployment_identity_for_handle(handle)?;
     let active_identity = identity.active_deployment_identity()?;
+    if handle.get("tracker_identity").is_some() {
+        if handle_identity != active_identity {
+            return Err(ScopedWorkUnitError::DeploymentDisagreement {
+                instance_id: instance_id.to_string(),
+                handle_identity,
+                active_identity,
+            });
+        }
+        return Ok(());
+    }
     if handle_forge != identity.forge_type || handle_identity != active_identity {
         return Err(ScopedWorkUnitError::DeploymentDisagreement {
             instance_id: instance_id.to_string(),
@@ -353,6 +363,9 @@ fn validate_deployment_identity(
 fn deployment_identity_for_handle(
     handle: &serde_json::Map<String, Value>,
 ) -> Result<String, ScopedWorkUnitError> {
+    if let Some(tracker_identity) = handle.get("tracker_identity").and_then(Value::as_str) {
+        return Ok(tracker_identity.to_string());
+    }
     match handle
         .get("forge_tag")
         .and_then(Value::as_str)
@@ -366,7 +379,7 @@ fn deployment_identity_for_handle(
                     .unwrap_or_default(),
             )
             .unwrap_or_default();
-            Ok(format!("github:{repository}"))
+            Ok(format!("github:github.com/{repository}"))
         }
         "sourcehut" => {
             let tracker_id = handle
@@ -380,11 +393,14 @@ fn deployment_identity_for_handle(
 }
 
 fn tracker_identity(handle: &serde_json::Map<String, Value>) -> Option<String> {
+    if let Some(work_unit_identity) = handle.get("work_unit_identity").and_then(Value::as_str) {
+        return Some(work_unit_identity.to_string());
+    }
     match handle.get("forge_tag").and_then(Value::as_str)? {
         "github" => {
             let repository = github_repository(handle.get("url")?.as_str()?)?;
             let number = handle.get("number")?.as_u64()?;
-            Some(format!("github:{repository}:{number}"))
+            Some(format!("github:github.com/{repository}#{number}"))
         }
         "sourcehut" => {
             let tracker_id = handle.get("tracker_id")?.as_u64()?;

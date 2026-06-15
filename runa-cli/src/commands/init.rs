@@ -117,7 +117,7 @@ pub fn run(
     let config = Config {
         methodology_path: canonical_path.display().to_string(),
         logging: crate::project::LoggingConfig::default(),
-        agent: crate::project::AgentConfig::default(),
+        runtime: crate::project::RuntimeConfig::default(),
         transcript: crate::project::TranscriptConfig::default(),
         forge: crate::project::ForgeConfig::default(),
     };
