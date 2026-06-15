@@ -145,7 +145,8 @@ runa init --methodology <PATH> [--config <PATH>]
 
 Initializes a runa project. Parses the methodology manifest at `<PATH>`, validates its structure and layout convention (schemas and instruction files at their conventional paths), canonicalizes the methodology path, and creates the `.runa/` project directory containing:
 
-- `config.toml` — methodology path, optional logging and agent settings
+- `config.toml` — machine-local methodology path and portable config pointer
+- `project.toml` — portable launch, logging, transcript redaction, and forge settings
 - `state.toml` — initialization timestamp, runa version
 - `store/` — internal artifact state store
 - the fixed artifact workspace directory `.runa/workspace/`

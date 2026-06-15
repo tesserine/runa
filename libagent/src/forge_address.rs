@@ -94,6 +94,7 @@ pub struct ForgeProject {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawForges {
     #[serde(default)]
     pub instances: Vec<RawForgeInstance>,
@@ -104,6 +105,7 @@ pub struct RawForges {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawForgeInstance {
     pub id: String,
     #[serde(rename = "type")]
@@ -114,6 +116,7 @@ pub struct RawForgeInstance {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawRepository {
     pub id: String,
     pub instance: String,
@@ -122,6 +125,7 @@ pub struct RawRepository {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawTracker {
     pub id: String,
     pub instance: String,
@@ -159,6 +163,9 @@ pub enum ForgeAddressError {
     InvalidSourcehutTrackerId {
         tracker: String,
         tracker_id: String,
+    },
+    StandaloneGithubTracker {
+        tracker: String,
     },
     AmbiguousBareTrackerReference,
     UnknownRepositorySelector(String),
@@ -208,6 +215,10 @@ impl fmt::Display for ForgeAddressError {
             } => write!(
                 f,
                 "sourcehut tracker '{tracker}' has invalid tracker_id '{tracker_id}'; expected a decimal integer"
+            ),
+            ForgeAddressError::StandaloneGithubTracker { tracker } => write!(
+                f,
+                "github tracker '{tracker}' must be declared as a repository in '.runa/project.toml'; GitHub issue trackers are repository-backed"
             ),
             ForgeAddressError::AmbiguousBareTrackerReference => write!(
                 f,
@@ -335,7 +346,11 @@ impl ForgeProject {
                 }
             })?;
             let tracker_id = match instance.forge_type {
-                ForgeType::Github => None,
+                ForgeType::Github => {
+                    return Err(ForgeAddressError::StandaloneGithubTracker {
+                        tracker: raw_tracker.id,
+                    });
+                }
                 ForgeType::Sourcehut => {
                     let tracker_id = raw_tracker.tracker_id.clone().ok_or_else(|| {
                         ForgeAddressError::MissingSourcehutTrackerId {
@@ -717,6 +732,62 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "sourcehut tracker 'tool' has invalid tracker_id 'ABC'; expected a decimal integer"
+        );
+    }
+
+    #[test]
+    fn github_tracker_must_be_backed_by_a_configured_repository() {
+        let error = ForgeProject::resolve(RawForges {
+            instances: vec![RawForgeInstance {
+                id: "github-com".to_string(),
+                forge_type: "github".to_string(),
+                host: Some("github.com".to_string()),
+                git_host: None,
+                tracker_host: None,
+            }],
+            repositories: vec![],
+            trackers: vec![RawTracker {
+                id: "issues".to_string(),
+                instance: "github-com".to_string(),
+                owner: "tesserine".to_string(),
+                name: "runa".to_string(),
+                tracker_id: None,
+            }],
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "github tracker 'issues' must be declared as a repository in '.runa/project.toml'; GitHub issue trackers are repository-backed"
+        );
+    }
+
+    #[test]
+    fn github_repository_synthesizes_repository_backed_tracker() {
+        let project = ForgeProject::resolve(RawForges {
+            instances: vec![RawForgeInstance {
+                id: "github-com".to_string(),
+                forge_type: "github".to_string(),
+                host: Some("github.com".to_string()),
+                git_host: None,
+                tracker_host: None,
+            }],
+            repositories: vec![RawRepository {
+                id: "runa".to_string(),
+                instance: "github-com".to_string(),
+                owner: "tesserine".to_string(),
+                name: "runa".to_string(),
+            }],
+            trackers: vec![],
+        })
+        .unwrap();
+
+        assert_eq!(project.trackers.len(), 1);
+        assert_eq!(project.trackers[0].id, "runa");
+        assert_eq!(project.trackers[0].repository.as_deref(), Some("runa"));
+        assert_eq!(
+            project.trackers[0].identity,
+            "github@github.com/tracker/tesserine/runa"
         );
     }
 }

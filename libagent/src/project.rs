@@ -28,8 +28,9 @@ pub enum LogFormat {
     Json,
 }
 
-/// The `[logging]` section of `.runa/config.toml`.
+/// The `[logging]` section of portable `.runa/project.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
     #[serde(default)]
     pub format: LogFormat,
@@ -45,6 +46,7 @@ impl LoggingConfig {
 
 /// Effective launch command, sourced from `[launch]` in the portable project file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<Vec<String>>,
@@ -58,6 +60,7 @@ impl AgentConfig {
 
 /// Effective transcript config. `dir` is machine-local; `redact_env` is portable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct TranscriptConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
@@ -66,6 +69,7 @@ pub struct TranscriptConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct DeploymentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository: Option<String>,
@@ -91,6 +95,7 @@ pub struct Config {
 
 /// On-disk format for `.runa/config.toml` — machine-local paths and directories.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LocalConfig {
     pub methodology_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,6 +105,7 @@ struct LocalConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct LocalTranscriptConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
@@ -113,6 +119,7 @@ impl LocalTranscriptConfig {
 
 /// On-disk format for `.runa/project.toml` — portable project surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PortableConfig {
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
@@ -142,6 +149,7 @@ impl Default for PortableConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PortableTranscriptConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redact_env: Vec<String>,
@@ -329,14 +337,16 @@ fn validate_deployment_repository(
     deployment: &DeploymentConfig,
     forge: &ForgeProject,
 ) -> Result<(), ForgeAddressError> {
+    if let Some(selector) = deployment.repository.as_deref() {
+        return forge.deployment_identity(Some(selector)).map(|_| ());
+    }
     if forge.repositories.is_empty() {
         return Ok(());
     }
-    match deployment.repository.as_deref() {
-        Some(selector) => forge.deployment_identity(Some(selector)).map(|_| ()),
-        None if forge.repositories.len() == 1 => Ok(()),
-        None => Err(ForgeAddressError::AmbiguousDeploymentRepository),
+    if forge.repositories.len() == 1 {
+        return Ok(());
     }
+    Err(ForgeAddressError::AmbiguousDeploymentRepository)
 }
 
 fn read_portable_config(path: &Path) -> Result<PortableConfig, ProjectError> {
@@ -392,17 +402,44 @@ fn reject_removed_and_legacy_local_settings(value: &toml::Value) -> Result<(), P
             )));
         }
     }
-    if value
-        .get("transcript")
-        .and_then(|section| section.get("redact_env"))
-        .is_some()
-    {
-        return Err(ProjectError::ConfigParseFailed(
-            "'[transcript].redact_env' belongs in portable '.runa/project.toml', not machine-local '.runa/config.toml'"
-                .to_string(),
-        ));
+    reject_unknown_local_settings(value)?;
+    if let Some(transcript) = value.get("transcript").and_then(toml::Value::as_table) {
+        for key in transcript.keys() {
+            if key != "dir" {
+                return Err(ProjectError::ConfigParseFailed(format!(
+                    "'[transcript].{key}' belongs in portable '.runa/project.toml', not machine-local '.runa/config.toml'"
+                )));
+            }
+        }
     }
     Ok(())
+}
+
+fn reject_unknown_local_settings(value: &toml::Value) -> Result<(), ProjectError> {
+    let Some(table) = value.as_table() else {
+        return Ok(());
+    };
+    for (key, nested) in table {
+        if matches!(
+            key.as_str(),
+            "methodology_path" | "project_config" | "transcript"
+        ) {
+            continue;
+        }
+        return Err(ProjectError::ConfigParseFailed(format!(
+            "'{}' is not a machine-local setting; portable project settings belong in '.runa/project.toml', not machine-local '.runa/config.toml'",
+            config_key_display(key, nested)
+        )));
+    }
+    Ok(())
+}
+
+fn config_key_display(key: &str, value: &toml::Value) -> String {
+    if value.as_table().is_some() {
+        format!("[{key}]")
+    } else {
+        key.to_string()
+    }
 }
 
 fn reject_machine_local_portable_settings(value: &toml::Value) -> Result<(), ProjectError> {
@@ -754,6 +791,95 @@ artifacts_dir = "custom-artifacts"
     }
 
     #[test]
+    fn read_config_rejects_portable_launch_section_in_local_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            r#"
+methodology_path = "/tmp/methodology.toml"
+
+[launch]
+command = ["agent-runtime", "exec"]
+"#,
+        )
+        .unwrap();
+
+        let err = read_config(&working, None).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("[launch]"),
+            "error should name misplaced section: {message}"
+        );
+        assert!(
+            message.contains(".runa/project.toml"),
+            "error should name portable project file: {message}"
+        );
+    }
+
+    #[test]
+    fn read_config_rejects_unknown_top_level_key_in_local_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            r#"
+methodology_path = "/tmp/methodology.toml"
+future_portable = true
+"#,
+        )
+        .unwrap();
+
+        let err = read_config(&working, None).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("future_portable"),
+            "error should name unknown key: {message}"
+        );
+        assert!(
+            message.contains(".runa/project.toml"),
+            "error should direct portable settings to project file: {message}"
+        );
+    }
+
+    #[test]
+    fn read_config_rejects_unknown_nested_key_in_local_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            r#"
+methodology_path = "/tmp/methodology.toml"
+
+[transcript]
+dir = "var/transcripts"
+redact_env = ["SECRET_TOKEN"]
+"#,
+        )
+        .unwrap();
+
+        let err = read_config(&working, None).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("[transcript].redact_env"),
+            "error should name misplaced nested key: {message}"
+        );
+        assert!(
+            message.contains(".runa/project.toml"),
+            "error should name portable project file: {message}"
+        );
+    }
+
+    #[test]
     fn config_without_project_file_uses_default_portable_settings() {
         let dir = tempfile::tempdir().unwrap();
         let working = dir.path().join("project");
@@ -838,6 +964,71 @@ tracker_id = "4"
     }
 
     #[test]
+    fn read_config_rejects_machine_local_methodology_path_in_portable_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            r#"methodology_path = "/tmp/methodology.toml""#,
+        )
+        .unwrap();
+        fs::write(
+            runa_dir.join("project.toml"),
+            r#"
+schema_version = 1
+methodology_path = "/tmp/other-methodology.toml"
+"#,
+        )
+        .unwrap();
+
+        let err = read_config(&working, None).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("methodology_path"),
+            "error should name misplaced local key: {message}"
+        );
+        assert!(
+            message.contains(".runa/config.toml"),
+            "error should name machine-local config file: {message}"
+        );
+    }
+
+    #[test]
+    fn read_config_rejects_unknown_nested_key_in_portable_logging() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            r#"methodology_path = "/tmp/methodology.toml""#,
+        )
+        .unwrap();
+        fs::write(
+            runa_dir.join("project.toml"),
+            r#"
+schema_version = 1
+
+[logging]
+format = "json"
+extra = "ignored"
+"#,
+        )
+        .unwrap();
+
+        let err = read_config(&working, None).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("extra"),
+            "error should name unknown nested field: {message}"
+        );
+    }
+
+    #[test]
     fn config_resolution_rejects_unsupported_forge_type() {
         let dir = tempfile::tempdir().unwrap();
         let working = dir.path().join("project");
@@ -907,6 +1098,37 @@ name = "runa"
         assert_eq!(
             config.forge.deployment_identity(None).unwrap(),
             "github@github.com/repo/tesserine/runa"
+        );
+    }
+
+    #[test]
+    fn read_config_rejects_unknown_deployment_repository_selector() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("project");
+        fs::create_dir(&working).unwrap();
+        let runa_dir = working.join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            r#"methodology_path = "/tmp/methodology.toml""#,
+        )
+        .unwrap();
+        fs::write(
+            runa_dir.join("project.toml"),
+            r#"
+schema_version = 1
+
+[deployment]
+repository = "missing"
+"#,
+        )
+        .unwrap();
+
+        let err = read_config(&working, None).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("missing"),
+            "error should name unresolved deployment selector: {message}"
         );
     }
 }
