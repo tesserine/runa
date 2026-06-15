@@ -109,7 +109,7 @@ fn run_ticket(
     let config_path = crate::project::resolve_config(working_dir, config_override)
         .map_err(CommandError::from)
         .map_err(StepError::from)?;
-    let runtime_env = entry::entry_runtime_env(working_dir, &loaded.config, &ticket_ref);
+    let runtime_env = entry::entry_runtime_env(working_dir, &loaded.config, &ticket_ref)?;
     let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &loaded.config.transcript,
@@ -250,7 +250,7 @@ fn run_bound(
     let config_path = crate::project::resolve_config(working_dir, config_override)
         .map_err(CommandError::from)
         .map_err(StepError::from)?;
-    let runtime_env = crate::commands::step::resolved_runtime_env(working_dir, &loaded.config);
+    let runtime_env = crate::commands::step::resolved_runtime_env(working_dir, &loaded.config)?;
     let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &loaded.config.transcript,

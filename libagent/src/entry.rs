@@ -26,9 +26,6 @@ use crate::store::ArtifactStore;
 /// surface is the sole unscoped protocol that produces this type.
 pub const WORK_UNIT_ARTIFACT_TYPE: &str = "work-unit";
 
-/// Environment atom carrying the entry ticket number to acquisition mechanics.
-pub const RUNA_ENTRY_TICKET: &str = "RUNA_ENTRY_TICKET";
-
 /// A forge ticket reference resolved against the configured forge-address set.
 ///
 /// `tracker_identity` is the canonical full-address match key, identical to

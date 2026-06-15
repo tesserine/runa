@@ -45,7 +45,7 @@ pub use enforcement::{
     enforce_preconditions,
 };
 pub use entry::{
-    AcquisitionBlock, EntryError, RUNA_ENTRY_TICKET, TicketRef, check_acquisition_admissible,
+    AcquisitionBlock, EntryError, TicketRef, check_acquisition_admissible,
     discover_acquisition_surface, resolve_promise, resolve_ticket_reference,
 };
 pub use forge_address::{

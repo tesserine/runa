@@ -38,7 +38,7 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 6. **Protocol selection.** `selection::discover_ready_candidates` evaluates protocols in topological order under an explicit `EvaluationScope`. `EvaluationScope::Unscoped` evaluates only protocols with `scoped = false` and always uses `work_unit = None`. `EvaluationScope::Scoped(id)` evaluates only protocols with `scoped = true` for that exact delegated work unit. Readiness no longer discovers sibling work units from artifact instances. Current work is suppressed only when outputs are valid and trusted plus either: the current freshness-relevant input snapshot matches the last successful execution record for that `(protocol, work_unit)` pair, or no execution record exists and the timestamp fallback still shows outputs newer than all relevant inputs. Execution-record snapshots are mode-aware: `on_change`/`on_invalid` preserve any recorded matching instance, while `on_artifact` and `requires` compare only valid instances. The timestamp fallback still considers the latest recorded modification across relevant inputs.
 
-7. **Scoped work-unit identity validation.** After workspace scan and before scoped readiness evaluation, `runa state`, `runa step`, `runa run`, and `runa go` validate that the supplied `--work-unit` exactly matches a recorded `work-unit` instance id when any are recorded. Invalid and malformed recorded roots still establish canonical ids. Valid tracker-backed roots also enforce instance-id/handle number agreement, duplicate tracker-root rejection, and agreement with the active forge deployment identity resolved from `.runa/config.toml` with `RUNA_FORGE_*` env overrides. With no recorded `work-unit` roots, scoped evaluation remains inert.
+7. **Scoped work-unit identity validation.** After workspace scan and before scoped readiness evaluation, `runa state`, `runa step`, `runa run`, and `runa go` validate that the supplied `--work-unit` exactly matches a recorded `work-unit` instance id when any are recorded. Invalid and malformed recorded roots still establish canonical ids. Valid tracker-backed roots also enforce instance-id/handle number agreement, explicit work-unit identity agreement, duplicate tracker-root rejection, and agreement with the active forge deployment identity resolved from `.runa/project.toml`. With no recorded `work-unit` roots, scoped evaluation remains inert.
 
    **Cold-start ticket entry.** `entry::resolve_ticket_reference` parses a `--ticket <REF>` into a tracker identity against the active deployment (no forge read; identity only). `entry::discover_acquisition_surface` derives the methodology's acquisition surface — the sole unscoped producer of the `work-unit` artifact — from the manifest alone. `entry::resolve_promise` matches the reference to a recorded `work-unit` by tracker identity. `SessionState::open_entry` opens a *promised scope* that pins that acquisition step (the reference substitutes its trigger) until `advance` resolves the promise and binds the session to the materialized work-unit; a reference that already resolves opens bound directly. `runa run --ticket` mirrors this in the cascade — `projection::project_entry_cascade` seeds the acquisition output so the dry-run shows `take` projected next.
 
@@ -136,20 +136,19 @@ Canonical scoped work-unit identity validation shared by CLI commands and
 including invalid and malformed records. Valid tracker-backed roots receive the
 runtime checks that schema validation cannot express: id/handle number
 agreement, duplicate tracker identity detection, and active deployment
-agreement from config-resolved `RUNA_FORGE_*` atoms.
+agreement from the configured forge-address payload.
 
 ### `entry.rs`
 
 Cold-start ticket entry. `resolve_ticket_reference` parses a forge ticket
-reference (bare number, `#<N>`, `owner/repo#<N>`, GitHub issue URL, or
-`sourcehut:<tracker_id>#<N>`) and resolves it to a `TicketRef` carrying the
+reference (bare number, `#<N>`, or `<tracker>#<N>`) and resolves it to a `TicketRef` carrying the
 canonical tracker identity against the active deployment — identity only, never a
 forge read. `discover_acquisition_surface` derives the methodology's acquisition
 surface as the single unscoped protocol declaring `work-unit` among its outputs,
 naming the offending declarations when zero or many exist. `resolve_promise`
 matches a reference to the recorded `work-unit` instance of equal tracker
-identity (after tracker-consistency validation). `RUNA_ENTRY_TICKET` carries the
-ticket number to acquisition mechanics.
+identity (after tracker-consistency validation). Forge coordinates are delivered
+through `RUNA_FORGE_ADDRESSES`.
 
 ## runa-mcp Modules
 

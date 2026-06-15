@@ -131,15 +131,15 @@ checks described here.
 A session may be opened from a forge ticket reference instead of a recorded
 `work-unit` instance id, via `runa run --ticket <REF>` or
 `runa go --ticket <REF>`. The accepted reference forms are a bare ticket number,
-`#<N>`, `owner/repo#<N>`, a GitHub issue URL, or `sourcehut:<tracker_id>#<N>`.
-runa parses the reference and normalizes it to a tracker identity
-(`github:<owner>/<name>:<N>` or `sourcehut:<tracker_id>:<N>`); a reference that
-asserts a deployment other than the active one is rejected, and a bare reference
-inherits the active deployment identity. **runa never reads ticket content** —
-the reference carries identity only, and the methodology performs all forge
-reads through its own mechanics. During entry, runa exports `RUNA_ENTRY_TICKET`
-(the ticket number) alongside the `RUNA_FORGE_*` atoms so those mechanics can
-resolve the ticket.
+`#<N>`, or `<tracker>#<N>`, where `<tracker>` is a configured tracker id from
+`.runa/project.toml`. Bare references are accepted only when the project has
+exactly one configured tracker. runa parses the reference and normalizes it to
+the same full tracker identity used by recorded `work-unit` handles; a
+reference that names an unknown tracker is rejected. **runa never reads ticket
+content** — the reference carries identity only, and the methodology performs
+all forge reads through its own mechanics. Forge coordinates for those mechanics
+are delivered through `RUNA_FORGE_ADDRESSES`, the same JSON payload used for
+launched agents and MCP servers.
 
 The acquisition surface runa serves is the single unscoped protocol whose
 declared outputs (`produces`, `may_produce`, or required output choice members)

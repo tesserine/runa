@@ -115,17 +115,18 @@ pub fn run(
     fs::create_dir_all(&workspace_dir).map_err(InitError::Io)?;
 
     // Write machine-local config plus the portable project config skeleton.
+    let project_config_dest = runa_dir.join(PROJECT_FILENAME);
+    let project_config_ref = project_config_reference(&config_dest, &project_config_dest);
     let config_toml = format!(
         "methodology_path = {:?}\nproject_config = {:?}\n",
         canonical_path.display().to_string(),
-        PROJECT_FILENAME
+        project_config_ref.display().to_string()
     );
 
     if let Some(parent) = config_dest.parent() {
         fs::create_dir_all(parent).map_err(InitError::Io)?;
     }
     fs::write(&config_dest, config_toml).map_err(InitError::Io)?;
-    let project_config_dest = runa_dir.join(PROJECT_FILENAME);
     if !project_config_dest.exists() {
         let project_toml = toml::to_string(&PortableConfig::default())
             .expect("PortableConfig serialization should not fail");
@@ -145,6 +146,14 @@ pub fn run(
         artifact_type_count: manifest.artifact_types.len(),
         protocol_count: manifest.protocols.len(),
     })
+}
+
+fn project_config_reference(config_dest: &Path, project_config_dest: &Path) -> PathBuf {
+    if config_dest.parent() == project_config_dest.parent() {
+        PathBuf::from(PROJECT_FILENAME)
+    } else {
+        project_config_dest.to_path_buf()
+    }
 }
 
 fn preflight_existing_runa_paths(runa_dir: &Path, config_dest: &Path) -> Result<(), InitError> {

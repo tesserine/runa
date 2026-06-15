@@ -105,16 +105,11 @@ pub(crate) fn acquisition_planned_entry(
     }
 }
 
-/// Runtime env for an entry step: the forge atoms plus the entry ticket number.
+/// Runtime env for an entry step: the resolved forge-address payload.
 pub(crate) fn entry_runtime_env(
     working_dir: &Path,
     config: &Config,
-    ticket: &TicketRef,
-) -> BTreeMap<String, String> {
-    let mut env = resolved_runtime_env(working_dir, config);
-    env.insert(
-        libagent::RUNA_ENTRY_TICKET.to_string(),
-        ticket.number.to_string(),
-    );
-    env
+    _ticket: &TicketRef,
+) -> Result<BTreeMap<String, String>, StepError> {
+    resolved_runtime_env(working_dir, config)
 }

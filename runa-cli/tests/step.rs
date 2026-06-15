@@ -1217,6 +1217,119 @@ fn step_without_dry_run_invokes_configured_agent_with_execution_prompt() {
     assert!(mcp_env.contains_key("RUNA_FORGE_ADDRESSES"), "{mcp_env:?}");
     assert!(!mcp_env.contains_key("RUNA_FORGE_TYPE"), "{mcp_env:?}");
 }
+
+#[test]
+fn step_without_dry_run_delivers_multi_instance_multi_repository_forge_payload() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = common::write_methodology(
+        dir.path(),
+        implement_only_manifest_toml(),
+        &methodology_schemas(),
+        &implement_only_methodology_protocols(),
+    );
+
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    fs::write(
+        project_dir.join(".runa/project.toml"),
+        r#"schema_version = 1
+
+[deployment]
+repository = "runa"
+
+[[forges.instances]]
+id = "github-com"
+type = "github"
+host = "github.com"
+
+[[forges.instances]]
+id = "sourcehut-main"
+type = "sourcehut"
+git_host = "git.sr.ht"
+tracker_host = "todo.sr.ht"
+
+[[forges.repositories]]
+id = "runa"
+instance = "github-com"
+owner = "tesserine"
+name = "runa"
+
+[[forges.repositories]]
+id = "srht-tool"
+instance = "sourcehut-main"
+owner = "~alice"
+name = "tool"
+
+[[forges.trackers]]
+id = "srht-tool"
+instance = "sourcehut-main"
+owner = "~alice"
+name = "tool"
+tracker_id = "ABC"
+"#,
+    )
+    .unwrap();
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("constraints")).unwrap();
+    fs::create_dir_all(workspace.join("implementation")).unwrap();
+    fs::write(
+        workspace.join("constraints/spec-1.json"),
+        r#"{"title":"ship step"}"#,
+    )
+    .unwrap();
+
+    let payload_path = dir.path().join("captured-payload.json");
+    let mcp_config_path = dir.path().join("captured-mcp-config.json");
+    let agent_path = write_capture_agent(dir.path());
+    append_agent_command_config(
+        &project_dir,
+        &[
+            agent_path.as_path(),
+            payload_path.as_path(),
+            mcp_config_path.as_path(),
+        ],
+    );
+
+    let output = runa_bin()
+        .arg("step")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mcp_config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&mcp_config_path).unwrap()).unwrap();
+    let payload: serde_json::Value =
+        serde_json::from_str(mcp_config["env"]["RUNA_FORGE_ADDRESSES"].as_str().unwrap()).unwrap();
+
+    assert_eq!(payload["schema_version"], 1);
+    assert_eq!(payload["instances"].as_array().unwrap().len(), 2);
+    assert_eq!(payload["repositories"].as_array().unwrap().len(), 2);
+    assert_eq!(payload["trackers"].as_array().unwrap().len(), 2);
+
+    let identities = payload["repositories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(payload["trackers"].as_array().unwrap())
+        .map(|resource| resource["identity"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(identities.len(), 4, "{payload:#}");
+    assert!(identities.contains("github@github.com/repo/tesserine/runa"));
+    assert!(identities.contains("github@github.com/tracker/tesserine/runa"));
+    assert!(identities.contains("sourcehut@git=git.sr.ht,tracker=todo.sr.ht/repo/~alice/tool"));
+    assert!(
+        identities.contains("sourcehut@git=git.sr.ht,tracker=todo.sr.ht/tracker/~alice/tool/ABC")
+    );
+}
+
 #[test]
 fn step_without_dry_run_launches_claude_named_agent_agnostically() {
     let dir = tempfile::tempdir().unwrap();

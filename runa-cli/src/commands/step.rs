@@ -56,6 +56,7 @@ pub enum StepError {
         work_unit: Option<String>,
         source: libagent::StoreError,
     },
+    ForgeAddress(libagent::ForgeAddressError),
     TicketReference(libagent::EntryError),
 }
 
@@ -170,6 +171,7 @@ impl fmt::Display for StepError {
                     "post-execution reconciliation failed for protocol '{protocol}': agent command succeeded but execution metadata could not be recorded: {source}"
                 ),
             },
+            StepError::ForgeAddress(err) => write!(f, "{err}"),
             StepError::TicketReference(err) => write!(f, "{err}"),
         }
     }
@@ -189,6 +191,7 @@ impl std::error::Error for StepError {
             StepError::PostExecutionScan { source, .. } => Some(source),
             StepError::PostExecutionEnforcement { source, .. } => Some(source),
             StepError::PostExecutionRecord { source, .. } => Some(source),
+            StepError::ForgeAddress(source) => Some(source),
             StepError::TicketReference(source) => Some(source),
         }
     }
@@ -223,7 +226,8 @@ impl StepError {
             | StepError::McpBinaryNotFound { .. }
             | StepError::AgentCommandIo { .. }
             | StepError::PostExecutionScan { .. }
-            | StepError::PostExecutionRecord { .. } => ExitCode::InfrastructureFailure,
+            | StepError::PostExecutionRecord { .. }
+            | StepError::ForgeAddress(_) => ExitCode::InfrastructureFailure,
         }
     }
 }
@@ -412,7 +416,7 @@ fn format_exit_status(status: ExitStatus) -> String {
 pub(crate) fn resolved_runtime_env(
     working_dir: &Path,
     config: &libagent::Config,
-) -> BTreeMap<String, String> {
+) -> Result<BTreeMap<String, String>, StepError> {
     let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &config.transcript,
@@ -424,13 +428,13 @@ pub(crate) fn resolved_runtime_env(
             .into_iter()
             .collect();
 
-    for (name, value) in libagent::payload_env(&config.forge) {
+    for (name, value) in libagent::payload_env(&config.forge).map_err(StepError::ForgeAddress)? {
         if !value.is_empty() {
             env.insert(name, value);
         }
     }
 
-    env
+    Ok(env)
 }
 
 #[cfg(test)]
@@ -871,7 +875,7 @@ fn run_internal(
     let config_path = crate::project::resolve_config(working_dir, config_override)
         .map_err(CommandError::from)
         .map_err(StepError::from)?;
-    let runtime_env = resolved_runtime_env(working_dir, &loaded.config);
+    let runtime_env = resolved_runtime_env(working_dir, &loaded.config)?;
     let transcript_settings = libagent::transcript::resolve_transcript_settings_with_forge(
         working_dir,
         &loaded.config.transcript,
@@ -1748,7 +1752,7 @@ cat >/dev/null
             project_config_path: temp.path().join(".runa/project.toml"),
         };
 
-        let env = resolved_runtime_env(temp.path(), &config);
+        let env = resolved_runtime_env(temp.path(), &config).unwrap();
         let payload: serde_json::Value =
             serde_json::from_str(env.get(libagent::FORGE_ADDRESSES_ENV).unwrap()).unwrap();
 

@@ -462,6 +462,17 @@ pub fn work_unit_identity_from_handle(
 ) -> Result<Option<String>, ForgeAddressError> {
     let _ = forge_type_from_handle(handle)?;
     if let Some(identity) = handle.get("work_unit_identity").and_then(Value::as_str) {
+        if let (Some(tracker_identity), Some(number)) = (
+            handle.get("tracker_identity").and_then(Value::as_str),
+            handle.get("number").and_then(Value::as_u64),
+        ) {
+            let expected = format!("{tracker_identity}#{number}");
+            if identity != expected {
+                return Err(ForgeAddressError::MalformedPayload(format!(
+                    "work_unit_identity '{identity}' disagrees with tracker_identity and number; expected '{expected}'"
+                )));
+            }
+        }
         return Ok(Some(identity.to_string()));
     }
     let Some(tracker_identity) = handle.get("tracker_identity").and_then(Value::as_str) else {
@@ -554,10 +565,32 @@ pub fn reject_legacy_environment() -> Result<(), ForgeAddressError> {
     )))
 }
 
-pub fn payload_env(project: &ForgeProject) -> BTreeMap<String, String> {
+fn payload_env_from_json_result(
+    payload_json: Result<String, ForgeAddressError>,
+) -> Result<BTreeMap<String, String>, ForgeAddressError> {
     let mut env = BTreeMap::new();
-    if let Ok(payload) = project.payload_json() {
-        env.insert(FORGE_ADDRESSES_ENV.to_string(), payload);
+    env.insert(FORGE_ADDRESSES_ENV.to_string(), payload_json?);
+    Ok(env)
+}
+
+pub fn payload_env(project: &ForgeProject) -> Result<BTreeMap<String, String>, ForgeAddressError> {
+    payload_env_from_json_result(project.payload_json())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payload_env_returns_payload_serialization_errors() {
+        let error = payload_env_from_json_result(Err(ForgeAddressError::MalformedPayload(
+            "synthetic failure".to_string(),
+        )))
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ForgeAddressError::MalformedPayload(detail) if detail == "synthetic failure"
+        ));
     }
-    env
 }

@@ -283,8 +283,8 @@ work-unit already exists, `run` behaves as `--work-unit <id>` on it. Otherwise
 the methodology's acquisition surface (the sole unscoped producer of the
 `work-unit` artifact) runs first — under `--dry-run` it is projected as the
 `current, entry` step with the acquired work-unit's `take` projected after it;
-live, it executes (the runtime delivers the reference and `RUNA_ENTRY_TICKET`,
-never the ticket's content), and the cascade then continues scoped on the
+live, it executes (the runtime delivers the structured reference and
+`RUNA_FORGE_ADDRESSES`, never the ticket's content), and the cascade then continues scoped on the
 materialized work-unit. The cold-start dry-run JSON envelope is version `3` and
 adds a top-level `entry` object (`reference`, `ticket_number`,
 `acquisition_protocol`, `resolved_work_unit`).
@@ -390,9 +390,9 @@ resolves them from the local filesystem, so adapters do not depend on child
 process cwd to launch `runa-mcp`. Transcript environment variables are forwarded
 into the MCP config when transcript capture is enabled, which lets the MCP
 server append tool events under the same deployment/work-unit/run transcript
-path as the CLI execution events. Configured forge identity is forwarded the same way through
-`RUNA_FORGE_*` entries so tooling inside the agent session can
-use the project-local identity without user-global shell state.
+path as the CLI execution events. Configured forge identity is forwarded the
+same way through `RUNA_FORGE_ADDRESSES` so tooling inside the agent session can
+use the project-local address set without user-global shell state.
 
 **Environment variables:**
 

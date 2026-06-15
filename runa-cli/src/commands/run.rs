@@ -253,7 +253,8 @@ fn build_run_json_plan(
     scope: libagent::EvaluationScope<'_>,
 ) -> Result<Vec<RunPlanJson>, RunError> {
     let preview_command = preview_runa_mcp_command();
-    let runtime_env = crate::commands::step::resolved_runtime_env(working_dir, &loaded.config);
+    let runtime_env = crate::commands::step::resolved_runtime_env(working_dir, &loaded.config)
+        .map_err(RunError::from)?;
     let concrete_entries: std::collections::HashMap<_, _> = build_plan_entries(
         execution_state.planned_entries.clone(),
         &preview_command,
@@ -631,7 +632,8 @@ fn run_with_scope(
         .to_string_lossy()
         .into_owned();
     let interrupts = InterruptState::install()?;
-    let runtime_env = crate::commands::step::resolved_runtime_env(working_dir, &loaded.config);
+    let runtime_env = crate::commands::step::resolved_runtime_env(working_dir, &loaded.config)
+        .map_err(RunError::from)?;
     let mut exhausted = HashSet::new();
     let mut failed = HashSet::new();
     let mut executed_any = prior_execution;
@@ -747,7 +749,8 @@ fn run_ticket_dry_run(
         .map_err(CommandError::from)
         .map_err(StepError::from)
         .map_err(RunError::from)?;
-    let runtime_env = entry::entry_runtime_env(working_dir, &loaded.config, ticket_ref);
+    let runtime_env = entry::entry_runtime_env(working_dir, &loaded.config, ticket_ref)
+        .map_err(RunError::from)?;
     let preview_command = preview_runa_mcp_command();
 
     let entry_planned =
@@ -906,7 +909,8 @@ fn acquire_ticket(
         .map_err(RunError::from)?
         .to_string_lossy()
         .into_owned();
-    let runtime_env = entry::entry_runtime_env(working_dir, &loaded.config, ticket_ref);
+    let runtime_env = entry::entry_runtime_env(working_dir, &loaded.config, ticket_ref)
+        .map_err(RunError::from)?;
 
     let post_scan = match execute_and_reconcile(
         working_dir,

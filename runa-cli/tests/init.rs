@@ -126,6 +126,54 @@ fn init_is_idempotent() {
 }
 
 #[test]
+fn init_custom_config_resolves_to_created_portable_project_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path =
+        common::write_methodology(dir.path(), valid_manifest_toml(), SCHEMAS, PROTOCOLS);
+
+    let project_dir = dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let custom_config_path = dir.path().join("custom").join("config.toml");
+
+    let output = runa_bin()
+        .arg("--config")
+        .arg(&custom_config_path)
+        .arg("init")
+        .arg("--methodology")
+        .arg(&manifest_path)
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    std::fs::write(
+        project_dir.join(".runa/project.toml"),
+        r#"schema_version = 1
+
+[launch]
+command = ["agent-runtime"]
+"#,
+    )
+    .unwrap();
+
+    let config = libagent::project::read_config(&project_dir, Some(&custom_config_path)).unwrap();
+
+    assert_eq!(
+        config.project_config_path,
+        project_dir.join(".runa/project.toml")
+    );
+    assert_eq!(
+        config.agent.command,
+        Some(vec!["agent-runtime".to_string()])
+    );
+}
+
+#[test]
 fn init_rejects_removed_artifacts_dir_flag() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path =

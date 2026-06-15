@@ -389,4 +389,32 @@ mod tests {
                 if tracker_identity == "github@github.com/tracker/tesserine/runa#163"
         ));
     }
+
+    #[test]
+    fn exact_work_unit_id_rejects_explicit_identity_that_disagrees_with_handle_number() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = work_unit_store(&tmp);
+        let artifact = github_work_unit(
+            163,
+            "github@github.com/tracker/tesserine/runa",
+            "github@github.com/tracker/tesserine/runa#164",
+        );
+        let artifact_path = tmp.path().join("work-unit-163.json");
+        std::fs::write(&artifact_path, artifact.to_string()).unwrap();
+        store
+            .record_with_timestamp("work-unit", "work-unit-163", &artifact_path, &artifact, 1)
+            .unwrap();
+
+        let error =
+            validate_scoped_work_unit_with_project(&store, "work-unit-163", &github_project())
+                .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ScopedWorkUnitError::ForgeAddress(ForgeAddressError::MalformedPayload(detail))
+                if detail.contains("work_unit_identity")
+                    && detail.contains("github@github.com/tracker/tesserine/runa#164")
+                    && detail.contains("github@github.com/tracker/tesserine/runa#163")
+        ));
+    }
 }
