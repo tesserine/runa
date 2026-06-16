@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rmcp::Error as McpError;
+use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
 use rmcp::model::*;
 use rmcp::service::{RequestContext, RoleServer};
+use runa_connector_registry::{ConnectorCatalog, ConnectorToolBinding};
+use runa_forge_capability::validate_value as validate_forge_value;
 use serde_json::Value;
 use tracing::{info, warn};
 
@@ -17,6 +19,12 @@ use libagent::{
 
 const DRIVER_TOOL_NAMES: [&str; 3] = ["readiness", "next-protocol-context", "advance"];
 
+type ComposedSessionTools = (
+    Vec<Tool>,
+    HashMap<String, Value>,
+    HashMap<String, ConnectorToolBinding>,
+);
+
 pub struct RunaHandler {
     protocol: Option<ProtocolDeclaration>,
     work_unit: Option<String>,
@@ -25,6 +33,7 @@ pub struct RunaHandler {
     tools: Vec<Tool>,
     /// Maps artifact type name → full JSON Schema (with work_unit intact).
     tool_schemas: HashMap<String, Value>,
+    connector_catalog: ConnectorCatalog,
     session: Option<Mutex<SessionState>>,
 }
 
@@ -38,6 +47,7 @@ impl RunaHandler {
         work_unit: Option<String>,
         store: ArtifactStore,
         workspace_dir: PathBuf,
+        connector_catalog: ConnectorCatalog,
     ) -> Self {
         let (tools, tool_schemas) =
             output_tools_for_protocol(&protocol, work_unit.as_deref(), &store, false);
@@ -49,6 +59,7 @@ impl RunaHandler {
             workspace_dir,
             tools,
             tool_schemas,
+            connector_catalog,
             session: None,
         }
     }
@@ -57,6 +68,7 @@ impl RunaHandler {
         working_dir: PathBuf,
         config_override: Option<&Path>,
         work_unit: Option<String>,
+        connector_catalog: ConnectorCatalog,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let session = SessionState::open_with_validator(
             working_dir,
@@ -74,6 +86,7 @@ impl RunaHandler {
             workspace_dir: session.workspace_dir().to_path_buf(),
             tools: Vec::new(),
             tool_schemas: HashMap::new(),
+            connector_catalog,
             session: Some(Mutex::new(session)),
         })
     }
@@ -82,6 +95,7 @@ impl RunaHandler {
         working_dir: PathBuf,
         config_override: Option<&Path>,
         ticket: libagent::TicketRef,
+        connector_catalog: ConnectorCatalog,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let session = SessionState::open_entry(
             working_dir,
@@ -99,6 +113,7 @@ impl RunaHandler {
             workspace_dir: session.workspace_dir().to_path_buf(),
             tools: Vec::new(),
             tool_schemas: HashMap::new(),
+            connector_catalog,
             session: Some(Mutex::new(session)),
         })
     }
@@ -107,7 +122,7 @@ impl RunaHandler {
         &self,
         session: &Mutex<SessionState>,
         tool_name: &str,
-        request: CallToolRequestParam,
+        request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         match tool_name {
@@ -288,11 +303,13 @@ impl RunaHandler {
             _ => {}
         }
 
-        let mut session = session.lock().unwrap();
-        let current_step = session
-            .current_step()
-            .cloned()
-            .ok_or_else(|| McpError::invalid_params("session has no current step", None))?;
+        let current_step = {
+            let session = session.lock().unwrap();
+            session
+                .current_step()
+                .cloned()
+                .ok_or_else(|| McpError::invalid_params("session has no current step", None))?
+        };
         let protocol_name = current_step.protocol.clone();
         append_tool_event(
             "tool_call",
@@ -306,8 +323,20 @@ impl RunaHandler {
             None,
         )?;
 
-        let (_, schemas) = session_tools_and_schemas(&session)
-            .map_err(|error| McpError::internal_error(error, None))?;
+        let (_, schemas, connector_bindings) = {
+            let session = session.lock().unwrap();
+            session_tools_and_schemas(&session, &self.connector_catalog)
+        }
+        .map_err(|error| McpError::internal_error(error, None))?;
+        if let Some(binding) = connector_bindings.get(tool_name) {
+            return call_connector_tool(
+                binding,
+                request,
+                Some((&protocol_name, current_step.work_unit.as_deref())),
+            );
+        }
+
+        let mut session = session.lock().unwrap();
         let full_schema = schemas
             .get(tool_name)
             .ok_or_else(|| McpError::invalid_params(format!("unknown tool: {tool_name}"), None))?;
@@ -572,7 +601,8 @@ fn validate_session_output_types(
 
 fn session_tools_and_schemas(
     session: &SessionState,
-) -> Result<(Vec<Tool>, HashMap<String, Value>), String> {
+    connector_catalog: &ConnectorCatalog,
+) -> Result<ComposedSessionTools, String> {
     let mut tools = driver_tools();
     let mut schemas = HashMap::new();
     if session.current_step().is_some() {
@@ -590,7 +620,102 @@ fn session_tools_and_schemas(
         tools.append(&mut output_tools);
         schemas = output_schemas;
     }
-    Ok((tools, schemas))
+    let connector_bindings = compose_connector_tools(&mut tools, connector_catalog)?;
+    Ok((tools, schemas, connector_bindings))
+}
+
+fn compose_connector_tools(
+    tools: &mut Vec<Tool>,
+    connector_catalog: &ConnectorCatalog,
+) -> Result<HashMap<String, ConnectorToolBinding>, String> {
+    let reserved = tools
+        .iter()
+        .map(|tool| (tool.name.to_string(), owner_label_for_tool(tool)))
+        .collect::<Vec<_>>();
+    let bindings = connector_catalog
+        .compose(reserved)
+        .map_err(|error| error.to_string())?;
+    let mut by_name = HashMap::new();
+    for binding in bindings {
+        let tool = Tool::new(
+            binding.exposed_name.clone(),
+            binding.tool.description.clone(),
+            Arc::new(binding.tool.input_schema.clone()),
+        )
+        .with_raw_output_schema(Arc::new(binding.tool.output_schema.clone()));
+        tools.push(tool);
+        by_name.insert(binding.exposed_name.clone(), binding);
+    }
+    Ok(by_name)
+}
+
+fn owner_label_for_tool(tool: &Tool) -> String {
+    if DRIVER_TOOL_NAMES.contains(&tool.name.as_ref()) {
+        "session-driver".to_string()
+    } else {
+        "artifact-output:current".to_string()
+    }
+}
+
+fn call_connector_tool(
+    binding: &ConnectorToolBinding,
+    request: CallToolRequestParams,
+    transcript_context: Option<(&str, Option<&str>)>,
+) -> Result<CallToolResult, McpError> {
+    let data = match request.arguments {
+        Some(args) => Value::Object(args),
+        None => Value::Object(serde_json::Map::new()),
+    };
+    if let Err(error) = validate_forge_value(&binding.tool.input_schema, &data) {
+        if let Some((protocol, work_unit)) = transcript_context {
+            append_tool_event(
+                "tool_result",
+                protocol,
+                work_unit,
+                &binding.exposed_name,
+                None,
+                Some(&error),
+            )?;
+        }
+        return Ok(CallToolResult::error(vec![Content::text(error)]));
+    }
+    let result = match binding.connector.call(binding.operation, data) {
+        Ok(result) => result,
+        Err(error) => {
+            let message = error.to_string();
+            if let Some((protocol, work_unit)) = transcript_context {
+                append_tool_event(
+                    "tool_result",
+                    protocol,
+                    work_unit,
+                    &binding.exposed_name,
+                    None,
+                    Some(&message),
+                )?;
+            }
+            return Ok(CallToolResult::error(vec![Content::text(message)]));
+        }
+    };
+    if let Err(error) = validate_forge_value(&binding.tool.output_schema, &result) {
+        return Err(McpError::internal_error(
+            format!(
+                "connector returned invalid output for {}: {error}",
+                binding.exposed_name
+            ),
+            None,
+        ));
+    }
+    if let Some((protocol, work_unit)) = transcript_context {
+        append_tool_event(
+            "tool_result",
+            protocol,
+            work_unit,
+            &binding.exposed_name,
+            None,
+            Some("connector operation completed"),
+        )?;
+    }
+    Ok(CallToolResult::structured(result))
 }
 
 /// Check whether a JSON Schema uses composition keywords that prevent
@@ -776,40 +901,31 @@ impl ServerHandler for RunaHandler {
         } else {
             ServerCapabilities::builder().enable_tools().build()
         };
-        ServerInfo {
-            protocol_version: ProtocolVersion::default(),
-            capabilities,
-            server_info: Implementation {
-                name: "runa-mcp".into(),
-                version: libagent::version().into(),
-            },
-            instructions: Some(instructions),
-        }
+        ServerInfo::new(capabilities)
+            .with_server_info(Implementation::new("runa-mcp", libagent::version()))
+            .with_instructions(instructions)
     }
 
     async fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         if let Some(session) = &self.session {
             let session = session.lock().unwrap();
-            let (tools, _) = session_tools_and_schemas(&session)
+            let (tools, _, _) = session_tools_and_schemas(&session, &self.connector_catalog)
                 .map_err(|error| McpError::internal_error(error, None))?;
-            return Ok(ListToolsResult {
-                next_cursor: None,
-                tools,
-            });
+            return Ok(ListToolsResult::with_all_items(tools));
         }
-        Ok(ListToolsResult {
-            next_cursor: None,
-            tools: self.tools.clone(),
-        })
+        let mut tools = self.tools.clone();
+        compose_connector_tools(&mut tools, &self.connector_catalog)
+            .map_err(|error| McpError::internal_error(error, None))?;
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
         &self,
-        request: CallToolRequestParam,
+        request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let tool_name = request.name.to_string();
@@ -833,6 +949,17 @@ impl ServerHandler for RunaHandler {
                 .map(|arguments| Value::Object(arguments.clone())),
             None,
         )?;
+
+        let mut fixed_tools = self.tools.clone();
+        let connector_bindings = compose_connector_tools(&mut fixed_tools, &self.connector_catalog)
+            .map_err(|error| McpError::internal_error(error, None))?;
+        if let Some(binding) = connector_bindings.get(&tool_name) {
+            return call_connector_tool(
+                binding,
+                request,
+                Some((&protocol.name, self.work_unit.as_deref())),
+            );
+        }
 
         // Look up the full schema for this artifact type.
         let full_schema = self
@@ -1090,6 +1217,7 @@ mod tests {
             Some("wu-1".into()),
             store,
             tmp.path().join("workspace"),
+            ConnectorCatalog::empty(),
         );
 
         // Only output types become tools, not requires.
@@ -1152,7 +1280,13 @@ mod tests {
             instructions: None,
         };
 
-        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
+        let handler = RunaHandler::new(
+            protocol,
+            None,
+            store,
+            tmp.path().join("workspace"),
+            ConnectorCatalog::empty(),
+        );
         let tool_names = handler
             .tools
             .iter()
@@ -1187,7 +1321,13 @@ mod tests {
             instructions: None,
         };
 
-        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
+        let handler = RunaHandler::new(
+            protocol,
+            None,
+            store,
+            tmp.path().join("workspace"),
+            ConnectorCatalog::empty(),
+        );
         let info = handler.get_info();
 
         assert_eq!(
@@ -1240,7 +1380,13 @@ mod tests {
             instructions: None,
         };
 
-        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
+        let handler = RunaHandler::new(
+            protocol,
+            None,
+            store,
+            tmp.path().join("workspace"),
+            ConnectorCatalog::empty(),
+        );
 
         // Non-object may_produce schema silently excluded; object produces included.
         assert_eq!(handler.tools.len(), 1);
@@ -1296,6 +1442,7 @@ mod tests {
             Some("wu-1".into()),
             store,
             tmp.path().join("workspace"),
+            ConnectorCatalog::empty(),
         );
 
         // implementation included; composed may_produce silently excluded.
@@ -1341,7 +1488,13 @@ mod tests {
             instructions: None,
         };
 
-        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
+        let handler = RunaHandler::new(
+            protocol,
+            None,
+            store,
+            tmp.path().join("workspace"),
+            ConnectorCatalog::empty(),
+        );
 
         // All output types use composition → all excluded.
         assert!(handler.tools.is_empty());
@@ -1583,6 +1736,7 @@ mod tests {
             None, // unscoped
             store,
             tmp.path().join("workspace"),
+            ConnectorCatalog::empty(),
         );
 
         // Only "output" should be a tool; "scoped_output" filtered out.

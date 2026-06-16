@@ -1,5 +1,13 @@
 [workspace]
-members = ["runa-cli", "libagent", "runa-mcp"]
+members = [
+    "runa-cli",
+    "libagent",
+    "runa-mcp",
+    "runa-forge-capability",
+    "runa-connector-github",
+    "runa-connector-sourcehut",
+    "runa-connector-registry",
+]
 resolver = "3"
 
 [workspace.package]
@@ -9,6 +17,10 @@ license = "MIT"
 
 [workspace.dependencies]
 libagent = { path = "libagent" }
+runa-forge-capability = { path = "runa-forge-capability" }
+runa-connector-github = { path = "runa-connector-github" }
+runa-connector-sourcehut = { path = "runa-connector-sourcehut" }
+runa-connector-registry = { path = "runa-connector-registry" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -16,9 +28,10 @@ tempfile = "3"
 jsonschema = { version = "0.45", default-features = false }
 toml = "0.8"
 sha2 = "0.10"
-rmcp = { version = "0.2", features = ["transport-io", "server"] }
+rmcp = { version = "1.7.0", features = ["transport-io", "server"] }
 tokio = { version = "1", features = ["rt", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 ctrlc = "3.4"
 libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

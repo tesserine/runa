@@ -20,6 +20,15 @@ Semantic Versioning.
 
 ### Added
 
+- MCP forge connector composition: `[connectors.forge]` can add GitHub or
+  SourceHut forge-operation tools to the `runa-mcp` surface alongside driver
+  and artifact tools. The connectors implement the commons forge capability
+  v1.0.0 operations with vendored schema provenance pinned to
+  `tesserine/commons@f58ee912b226a8db31902630205bc5ee50b5ee34`, expose MCP
+  input and output schemas, enforce loud collision diagnostics with explicit
+  aliases, keep provider coordinate grammar inside connector crates, and include
+  workspace dependency/leakage guards plus deployment-gated provider cold-start
+  checks in `cargo test --workspace`.
 - README ecosystem links corrected: commons described as the
   convention/ADR authority with principles at their canonical home
   `pentaxis93/principles` (#181), and the agentd/groundwork links moved to

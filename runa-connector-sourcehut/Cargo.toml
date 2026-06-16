@@ -1,0 +1,13 @@
+[package]
+name = "runa-connector-sourcehut"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+reqwest.workspace = true
+runa-forge-capability.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true

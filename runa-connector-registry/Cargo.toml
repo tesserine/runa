@@ -1,0 +1,13 @@
+[package]
+name = "runa-connector-registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+runa-connector-github.workspace = true
+runa-connector-sourcehut.workspace = true
+runa-forge-capability.workspace = true
+serde_json.workspace = true
+toml.workspace = true

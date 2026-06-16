@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::ClientHandler;
-use rmcp::model::{CallToolRequestParam, CallToolResult};
+use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::ServiceExt;
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use tokio::process::Command;
@@ -275,6 +275,18 @@ fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
     .unwrap();
 }
 
+fn append_github_connector_config(project_dir: &Path, repository: &str) {
+    let config_path = project_dir.join(".runa/config.toml");
+    let existing = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        config_path,
+        format!(
+            "{existing}\n[connectors.forge]\nprovider = \"github\"\nrepository = \"{repository}\"\n"
+        ),
+    )
+    .unwrap();
+}
+
 fn append_transcript_config(project_dir: &Path, transcript_dir: &Path) {
     let config_path = project_dir.join(".runa/config.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
@@ -327,11 +339,15 @@ fn tool_result_text(result: &CallToolResult) -> String {
         .clone()
 }
 
-fn session_call(name: &str) -> CallToolRequestParam {
-    CallToolRequestParam {
-        name: name.to_string().into(),
-        arguments: Some(serde_json::Map::new()),
-    }
+fn session_call(name: &str) -> CallToolRequestParams {
+    CallToolRequestParams::new(name.to_string()).with_arguments(serde_json::Map::new())
+}
+
+fn call_with_args(
+    name: impl Into<std::borrow::Cow<'static, str>>,
+    arguments: serde_json::Value,
+) -> CallToolRequestParams {
+    CallToolRequestParams::new(name).with_arguments(arguments.as_object().cloned().unwrap())
 }
 
 fn assert_no_execution_record_for(project_dir: &Path, protocol: &str) {
@@ -429,6 +445,80 @@ async fn session_mode_advertises_driver_verbs_and_current_output_tools() {
         tool_names,
         vec!["readiness", "next-protocol-context", "advance", "claim"]
     );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn session_mode_composes_driver_artifact_and_connector_tools_with_schemas() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_work_unit_manifest_toml(),
+        &scoped_work_unit_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    append_github_connector_config(&project_dir, "tesserine/runa");
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-166.json"),
+        github_work_unit_json(166),
+    )
+    .unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--session")
+                        .arg("--work-unit")
+                        .arg("work-unit-166")
+                        .env_remove("RUNA_FORGE_TYPE")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
+                        .env("RUNA_FORGE_OWNER", "tesserine")
+                        .env("RUNA_FORGE_NAME", "runa")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let tools = service.list_all_tools().await.unwrap();
+    let tool_names = tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        tool_names,
+        vec![
+            "readiness",
+            "next-protocol-context",
+            "advance",
+            "claim",
+            "read-ticket",
+            "create-ticket",
+            "claim-work-unit",
+            "record-progress",
+            "deliver-change-proposal",
+            "reflect-disposition",
+            "apply-approved-change",
+            "close-out",
+        ]
+    );
+
+    let read_ticket = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "read-ticket")
+        .expect("read-ticket connector tool should be advertised");
+    assert!(read_ticket.output_schema.is_some());
 
     service.cancel().await.unwrap();
 }
@@ -577,15 +667,13 @@ async fn session_record_read_advance_records_execution_for_producing_step() {
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -676,15 +764,13 @@ async fn session_advance_records_context_time_input_provenance() {
     .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
     service.call_tool(session_call("advance")).await.unwrap();
@@ -761,15 +847,13 @@ async fn session_advance_reopens_current_step_when_context_input_changes() {
     )
     .unwrap();
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -851,15 +935,13 @@ async fn session_advance_reopens_current_step_when_readiness_consumes_context_in
     .unwrap();
     service.call_tool(session_call("readiness")).await.unwrap();
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -915,15 +997,13 @@ async fn session_advance_emits_tool_list_changed_when_current_step_changes() {
     .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -976,15 +1056,13 @@ async fn session_advance_reconciles_deleted_output_before_recording_execution() 
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
     fs::remove_file(workspace.join("claim/claim-1.json")).unwrap();
@@ -1059,15 +1137,13 @@ async fn session_advance_rejects_deleted_required_input_before_downstream_select
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
     fs::remove_file(workspace.join("work-unit/work-unit-166.json")).unwrap();
@@ -1340,15 +1416,13 @@ async fn session_advance_error_preserves_current_step_when_next_step_is_unservab
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -1422,15 +1496,13 @@ async fn session_advance_persistence_error_preserves_current_step_and_no_record(
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
     let execution_record_path = project_dir.join(".runa/store/execution-records.json");
@@ -1849,15 +1921,13 @@ async fn scoped_protocol_writes_artifact_with_injected_work_unit() {
     assert_eq!(tools[0].name.as_ref(), "implementation");
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "implementation".into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "implementation",
+            serde_json::json!({
                 "instance_id": "impl-1",
                 "title": "ship it"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -1894,15 +1964,13 @@ async fn tool_calls_append_transcript_events_when_enabled() {
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "implementation".into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "implementation",
+            serde_json::json!({
                 "instance_id": "impl-1",
                 "title": "ship it"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -1944,15 +2012,13 @@ async fn tool_calls_append_transcript_events_from_config_when_environment_is_uns
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "implementation".into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "implementation",
+            serde_json::json!({
                 "instance_id": "impl-1",
                 "title": "ship it"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -2016,15 +2082,13 @@ async fn session_driver_calls_append_transcript_events_when_enabled() {
         .await
         .unwrap();
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
     service.call_tool(session_call("advance")).await.unwrap();
@@ -2159,15 +2223,13 @@ trigger = { type = "on_change", name = "implementation" }
     assert_eq!(tools[0].name.as_ref(), "implementation");
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "implementation".into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "implementation",
+            serde_json::json!({
                 "instance_id": "impl-1",
                 "title": "ship it"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -2234,15 +2296,13 @@ trigger = { type = "on_change", name = "implementation" }
     assert!(!tool_properties.contains_key("work_unit"));
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "implementation".into(),
-            arguments: serde_json::json!({
+        .call_tool(call_with_args(
+            "implementation",
+            serde_json::json!({
                 "instance_id": "impl-1",
                 "title": "ship it"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 

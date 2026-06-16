@@ -1744,6 +1744,7 @@ cat >/dev/null
                 name: Some("runa".to_string()),
                 tracker_id: None,
             },
+            connectors: toml::Table::new(),
         };
 
         let env = resolved_runtime_env(temp.path(), &config);

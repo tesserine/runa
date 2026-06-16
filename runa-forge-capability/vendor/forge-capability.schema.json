@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/tesserine/commons/f58ee912b226a8db31902630205bc5ee50b5ee34/schemas/forge-capability/v1/forge-capability.schema.json",
+  "type": "object",
+  "required": ["capability", "version", "handle_schema", "tools"],
+  "additionalProperties": false,
+  "properties": {
+    "capability": { "const": "forge" },
+    "version": { "const": "1.0.0" },
+    "handle_schema": { "const": "#/$defs/handle" },
+    "tools": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/tool" }
+    }
+  },
+  "$defs": {
+    "tool": {
+      "type": "object",
+      "required": ["name", "input_schema", "output_schema"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "enum": [
+            "read-ticket",
+            "create-ticket",
+            "claim-work-unit",
+            "record-progress",
+            "deliver-change-proposal",
+            "reflect-disposition",
+            "apply-approved-change",
+            "close-out"
+          ]
+        },
+        "input_schema": { "type": "string", "pattern": "^#\\/\\$defs\\/.+-input$" },
+        "output_schema": { "type": "string", "pattern": "^#\\/\\$defs\\/.+$" }
+      }
+    },
+    "handle": {
+      "type": "object",
+      "required": ["id", "display"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "display": { "type": "string", "minLength": 1 }
+      }
+    },
+    "read-ticket-input": {
+      "type": "object",
+      "required": ["reference"],
+      "additionalProperties": false,
+      "properties": { "reference": { "type": "string", "minLength": 1 } }
+    },
+    "create-ticket-input": {
+      "type": "object",
+      "required": ["title", "body"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "body": { "type": "string" }
+      }
+    },
+    "claim-work-unit-input": {
+      "type": "object",
+      "required": ["handle"],
+      "additionalProperties": false,
+      "properties": { "handle": { "$ref": "#/$defs/handle" } }
+    },
+    "record-progress-input": {
+      "type": "object",
+      "required": ["handle", "body"],
+      "additionalProperties": false,
+      "properties": {
+        "handle": { "$ref": "#/$defs/handle" },
+        "body": { "type": "string" }
+      }
+    },
+    "deliver-change-proposal-input": {
+      "type": "object",
+      "required": ["work_unit", "branch", "commit", "base", "summary", "body", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "work_unit": { "$ref": "#/$defs/handle" },
+        "branch": { "type": "string", "minLength": 1 },
+        "commit": { "type": "string", "minLength": 1 },
+        "base": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "body": { "type": "string" },
+        "version": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "reflect-disposition-input": {
+      "type": "object",
+      "required": ["work_unit", "change", "disposition", "body"],
+      "additionalProperties": false,
+      "properties": {
+        "work_unit": { "$ref": "#/$defs/handle" },
+        "change": { "$ref": "#/$defs/handle" },
+        "disposition": { "type": "string", "minLength": 1 },
+        "body": { "type": "string" }
+      }
+    },
+    "apply-approved-change-input": {
+      "type": "object",
+      "required": ["work_unit", "change", "approved_version", "approved_commit", "base"],
+      "additionalProperties": false,
+      "properties": {
+        "work_unit": { "$ref": "#/$defs/handle" },
+        "change": { "$ref": "#/$defs/handle" },
+        "approved_version": { "type": "integer", "minimum": 1 },
+        "approved_commit": { "type": "string", "minLength": 1 },
+        "base": { "type": "string", "minLength": 1 }
+      }
+    },
+    "close-out-input": {
+      "type": "object",
+      "required": ["work_unit", "completion", "body"],
+      "additionalProperties": false,
+      "properties": {
+        "work_unit": { "$ref": "#/$defs/handle" },
+        "completion": { "type": "string", "minLength": 1 },
+        "body": { "type": "string" }
+      }
+    },
+    "ticket-snapshot": {
+      "type": "object",
+      "required": ["handle", "title", "body", "state"],
+      "additionalProperties": false,
+      "properties": {
+        "handle": { "$ref": "#/$defs/handle" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "state": { "type": "string" },
+        "url": { "type": "string" }
+      }
+    },
+    "work-unit-effect": {
+      "type": "object",
+      "required": ["handle", "receipt"],
+      "additionalProperties": false,
+      "properties": {
+        "handle": { "$ref": "#/$defs/handle" },
+        "receipt": { "type": "string", "minLength": 1 }
+      }
+    },
+    "change-proposal": {
+      "type": "object",
+      "required": ["work_unit", "change", "version", "commit", "receipt"],
+      "additionalProperties": false,
+      "properties": {
+        "work_unit": { "$ref": "#/$defs/handle" },
+        "change": { "$ref": "#/$defs/handle" },
+        "version": { "type": "integer", "minimum": 1 },
+        "commit": { "type": "string", "minLength": 1 },
+        "receipt": { "type": "string", "minLength": 1 }
+      }
+    },
+    "disposition-effect": {
+      "type": "object",
+      "required": ["work_unit", "change", "disposition", "receipt"],
+      "additionalProperties": false,
+      "properties": {
+        "work_unit": { "$ref": "#/$defs/handle" },
+        "change": { "$ref": "#/$defs/handle" },
+        "disposition": { "type": "string", "minLength": 1 },
+        "receipt": { "type": "string", "minLength": 1 }
+      }
+    },
+    "apply-result": {
+      "type": "object",
+      "required": ["work_unit", "change", "applied_commit", "receipt"],
+      "additionalProperties": false,
+      "properties": {
+        "work_unit": { "$ref": "#/$defs/handle" },
+        "change": { "$ref": "#/$defs/handle" },
+        "applied_commit": { "type": "string", "minLength": 1 },
+        "receipt": { "type": "string", "minLength": 1 }
+      }
+    },
+    "close-out-effect": {
+      "type": "object",
+      "required": ["work_unit", "completion", "receipt"],
+      "additionalProperties": false,
+      "properties": {
+        "work_unit": { "$ref": "#/$defs/handle" },
+        "completion": { "type": "string", "minLength": 1 },
+        "receipt": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

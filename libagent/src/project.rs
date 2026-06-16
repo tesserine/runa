@@ -89,7 +89,15 @@ impl ForgeConfig {
 }
 
 /// On-disk format for `.runa/config.toml` — operator configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+fn connectors_is_empty(connectors: &toml::Table) -> bool {
+    connectors.is_empty()
+}
+
+/// Raw connector deployment configuration.
+///
+/// Provider grammar and credential-source interpretation belong to connector
+/// crates. The engine carries this table opaquely.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     pub methodology_path: String,
     #[serde(default, skip_serializing_if = "LoggingConfig::is_default")]
@@ -100,6 +108,8 @@ pub struct Config {
     pub transcript: TranscriptConfig,
     #[serde(default, skip_serializing_if = "ForgeConfig::is_default")]
     pub forge: ForgeConfig,
+    #[serde(default, skip_serializing_if = "connectors_is_empty")]
+    pub connectors: toml::Table,
 }
 
 /// On-disk format for `.runa/state.toml` — initialization metadata managed by runa.
@@ -343,6 +353,7 @@ trigger = { type = "on_change", name = "constraints" }
             agent: AgentConfig::default(),
             transcript: TranscriptConfig::default(),
             forge: ForgeConfig::default(),
+            connectors: toml::Table::new(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -406,6 +417,7 @@ trigger = { type = "on_change", name = "constraints" }
             agent: AgentConfig::default(),
             transcript: TranscriptConfig::default(),
             forge: ForgeConfig::default(),
+            connectors: toml::Table::new(),
         };
         fs::write(&external_config_path, toml::to_string(&config).unwrap()).unwrap();
 
@@ -489,6 +501,7 @@ artifacts_dir = "custom-artifacts"
             agent: AgentConfig::default(),
             transcript: TranscriptConfig::default(),
             forge: ForgeConfig::default(),
+            connectors: toml::Table::new(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -679,6 +692,7 @@ tracker_id = "4"
                 name: Some("runa".to_string()),
                 tracker_id: Some("4".to_string()),
             },
+            connectors: toml::Table::new(),
         };
 
         let serialized = toml::to_string(&config).unwrap();

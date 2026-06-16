@@ -11,6 +11,8 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 libagent.workspace = true
+runa-connector-registry.workspace = true
+runa-forge-capability.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rmcp.workspace = true

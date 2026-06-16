@@ -65,6 +65,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut loaded = project::load(&working_dir, config_ref)?;
+    let connector_catalog = runa_connector_registry::load_from_config(&loaded.config.connectors)?;
     apply_transcript_settings(&working_dir, &loaded.config);
     libagent::scan(&loaded.workspace_dir, &mut loaded.store)?;
     if let Some(work_unit) = cli.work_unit.as_deref() {
@@ -76,9 +77,19 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Some(ticket) => {
                 let identity = libagent::resolve_forge_identity(&loaded.config.forge);
                 let ticket_ref = libagent::resolve_ticket_reference(ticket, &identity)?;
-                RunaHandler::new_session_entry(working_dir.clone(), config_ref, ticket_ref)?
+                RunaHandler::new_session_entry(
+                    working_dir.clone(),
+                    config_ref,
+                    ticket_ref,
+                    connector_catalog.clone(),
+                )?
             }
-            None => RunaHandler::new_session(working_dir.clone(), config_ref, cli.work_unit)?,
+            None => RunaHandler::new_session(
+                working_dir.clone(),
+                config_ref,
+                cli.work_unit,
+                connector_catalog.clone(),
+            )?,
         };
         let (stdin, stdout) = io::stdio();
         let service = handler.serve((stdin, stdout)).await.inspect_err(|e| {
@@ -136,6 +147,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         cli.work_unit.clone(),
         loaded.store,
         loaded.workspace_dir.clone(),
+        connector_catalog,
     );
 
     let (stdin, stdout) = io::stdio();
