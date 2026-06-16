@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -167,14 +168,93 @@ pub fn schema_for_ref(schema_ref: &str) -> Result<Map<String, Value>, String> {
         .strip_prefix("#/$defs/")
         .ok_or_else(|| format!("unsupported schema ref: {schema_ref}"))?;
     let schema = capability_schema();
-    let value = schema
+    let defs = schema
         .get("$defs")
-        .and_then(|defs| defs.get(name))
+        .and_then(Value::as_object)
+        .ok_or_else(|| "capability schema has no object $defs".to_string())?;
+    let value = defs
+        .get(name)
         .ok_or_else(|| format!("schema ref not found: {schema_ref}"))?
         .clone();
     match value {
-        Value::Object(map) => Ok(map),
+        Value::Object(mut map) => {
+            attach_referenced_defs(&mut map, defs)?;
+            Ok(map)
+        }
         _ => Err(format!("schema ref is not an object: {schema_ref}")),
+    }
+}
+
+fn attach_referenced_defs(
+    schema: &mut Map<String, Value>,
+    defs: &Map<String, Value>,
+) -> Result<(), String> {
+    let referenced_defs = transitive_referenced_defs(&Value::Object(schema.clone()), defs)?;
+    if referenced_defs.is_empty() {
+        return Ok(());
+    }
+
+    let mut self_contained_defs = match schema.remove("$defs") {
+        Some(Value::Object(existing)) => existing,
+        Some(_) => return Err("schema $defs is not an object".to_string()),
+        None => Map::new(),
+    };
+    for name in referenced_defs {
+        let value = defs
+            .get(&name)
+            .ok_or_else(|| format!("schema ref not found: #/$defs/{name}"))?;
+        self_contained_defs.insert(name, value.clone());
+    }
+    schema.insert("$defs".to_string(), Value::Object(self_contained_defs));
+    Ok(())
+}
+
+fn transitive_referenced_defs(
+    value: &Value,
+    defs: &Map<String, Value>,
+) -> Result<BTreeSet<String>, String> {
+    let mut seen = BTreeSet::new();
+    let mut pending = local_def_refs(value);
+    while let Some(name) = pending.pop_first() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let def = defs
+            .get(&name)
+            .ok_or_else(|| format!("schema ref not found: #/$defs/{name}"))?;
+        pending.extend(
+            local_def_refs(def)
+                .into_iter()
+                .filter(|name| !seen.contains(name)),
+        );
+    }
+    Ok(seen)
+}
+
+fn local_def_refs(value: &Value) -> BTreeSet<String> {
+    let mut refs = BTreeSet::new();
+    collect_local_def_refs(value, &mut refs);
+    refs
+}
+
+fn collect_local_def_refs(value: &Value, refs: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(schema_ref) = map.get("$ref").and_then(Value::as_str)
+                && let Some(name) = schema_ref.strip_prefix("#/$defs/")
+            {
+                refs.insert(name.to_string());
+            }
+            for value in map.values() {
+                collect_local_def_refs(value, refs);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_local_def_refs(value, refs);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -236,6 +316,106 @@ mod tests {
                     .unwrap()
                     .contains_key("type")
             );
+        }
+    }
+
+    #[test]
+    fn every_exposed_tool_schema_compiles_and_validates_representative_data() {
+        for operation in ForgeOperation::ALL {
+            let input_schema = schema_for_ref(operation.input_ref()).unwrap();
+            validate_value(&input_schema, &representative_input(operation)).unwrap();
+
+            let output_schema = schema_for_ref(operation.output_ref()).unwrap();
+            validate_value(&output_schema, &representative_output(operation)).unwrap();
+        }
+    }
+
+    fn handle(id: &str) -> Value {
+        json!({
+            "id": id,
+            "display": id,
+        })
+    }
+
+    fn representative_input(operation: ForgeOperation) -> Value {
+        match operation {
+            ForgeOperation::ReadTicket => json!({ "reference": "runa#203" }),
+            ForgeOperation::CreateTicket => json!({
+                "title": "Self-contained forge schemas",
+                "body": "Schema extraction preserves refs.",
+            }),
+            ForgeOperation::ClaimWorkUnit => json!({ "handle": handle("runa#203") }),
+            ForgeOperation::RecordProgress => json!({
+                "handle": handle("runa#203"),
+                "body": "Fix in progress.",
+            }),
+            ForgeOperation::DeliverChangeProposal => json!({
+                "work_unit": handle("runa#203"),
+                "branch": "fix/forge-schemas",
+                "commit": "b7e84e40",
+                "base": "main",
+                "summary": "Preserve referenced defs",
+                "body": "Schemas validate with local refs.",
+                "version": 1,
+            }),
+            ForgeOperation::ReflectDisposition => json!({
+                "work_unit": handle("runa#203"),
+                "change": handle("pr#204"),
+                "disposition": "needs-revision",
+                "body": "Preserve referenced defs.",
+            }),
+            ForgeOperation::ApplyApprovedChange => json!({
+                "work_unit": handle("runa#203"),
+                "change": handle("pr#204"),
+                "approved_version": 1,
+                "approved_commit": "b7e84e40",
+                "base": "main",
+            }),
+            ForgeOperation::CloseOut => json!({
+                "work_unit": handle("runa#203"),
+                "completion": "fixed",
+                "body": "Schema validation covered.",
+            }),
+        }
+    }
+
+    fn representative_output(operation: ForgeOperation) -> Value {
+        match operation {
+            ForgeOperation::ReadTicket | ForgeOperation::CreateTicket => json!({
+                "handle": handle("runa#203"),
+                "title": "Self-contained forge schemas",
+                "body": "Schema extraction preserves refs.",
+                "state": "open",
+                "url": "https://example.invalid/runa/203",
+            }),
+            ForgeOperation::ClaimWorkUnit | ForgeOperation::RecordProgress => json!({
+                "handle": handle("runa#203"),
+                "receipt": "ok",
+            }),
+            ForgeOperation::DeliverChangeProposal => json!({
+                "work_unit": handle("runa#203"),
+                "change": handle("pr#204"),
+                "version": 1,
+                "commit": "b7e84e40",
+                "receipt": "ok",
+            }),
+            ForgeOperation::ReflectDisposition => json!({
+                "work_unit": handle("runa#203"),
+                "change": handle("pr#204"),
+                "disposition": "needs-revision",
+                "receipt": "ok",
+            }),
+            ForgeOperation::ApplyApprovedChange => json!({
+                "work_unit": handle("runa#203"),
+                "change": handle("pr#204"),
+                "applied_commit": "b7e84e40",
+                "receipt": "ok",
+            }),
+            ForgeOperation::CloseOut => json!({
+                "work_unit": handle("runa#203"),
+                "completion": "fixed",
+                "receipt": "ok",
+            }),
         }
     }
 }
