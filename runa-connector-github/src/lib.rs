@@ -57,14 +57,45 @@ impl GitHubConnector {
 
     fn ticket_number_from_reference(&self, reference: &str) -> Result<u64, ForgeError> {
         let trimmed = reference.trim();
+        if trimmed.is_empty() {
+            return Err(ForgeError::new("ticket reference is empty"));
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("https://github.com/") {
+            let (repository, tail) = rest
+                .split_once("/issues/")
+                .ok_or_else(|| ForgeError::new("ticket reference is not a github issue URL"))?;
+            self.validate_repository_reference(repository)?;
+            return parse_number(tail, "ticket reference");
+        }
+
+        let trimmed = trimmed.strip_prefix("github:").unwrap_or(trimmed);
         if let Some(number) = trimmed.strip_prefix('#') {
             return parse_number(number, "ticket reference");
         }
-        trimmed
-            .rsplit(['/', ':'])
-            .next()
-            .ok_or_else(|| ForgeError::new("ticket reference is empty"))
-            .and_then(|part| parse_number(part, "ticket reference"))
+
+        if let Some((repository, number)) = trimmed.split_once('#') {
+            self.validate_repository_reference(repository)?;
+            return parse_number(number, "ticket reference");
+        }
+
+        parse_number(trimmed, "ticket reference")
+    }
+
+    fn validate_repository_reference(&self, repository: &str) -> Result<(), ForgeError> {
+        let (owner, name) = repository
+            .split_once('/')
+            .ok_or_else(|| ForgeError::new("ticket reference repository is invalid"))?;
+        if owner.is_empty() || name.is_empty() {
+            return Err(ForgeError::new("ticket reference repository is invalid"));
+        }
+        if repository != self.config.repository {
+            return Err(ForgeError::new(format!(
+                "ticket reference names github:{repository}, but connector is configured for github:{}",
+                self.config.repository
+            )));
+        }
+        Ok(())
     }
 
     fn ticket_number_from_handle(&self, handle: &Value) -> Result<u64, ForgeError> {
@@ -291,9 +322,14 @@ fn handle_id(handle: &Value) -> Result<&str, ForgeError> {
 }
 
 fn parse_number(value: &str, label: &str) -> Result<u64, ForgeError> {
-    value
+    let value = value.trim();
+    let number: u64 = value
         .parse()
-        .map_err(|_| ForgeError::new(format!("{label} is not a number")))
+        .map_err(|_| ForgeError::new(format!("{label} is not a number")))?;
+    if number == 0 {
+        return Err(ForgeError::new(format!("{label} must be positive")));
+    }
+    Ok(number)
 }
 
 fn resolve_token(config: Option<&CredentialConfig>) -> Result<Option<String>, ForgeError> {
@@ -320,4 +356,34 @@ fn resolve_token(config: Option<&CredentialConfig>) -> Result<Option<String>, Fo
         ));
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn connector() -> GitHubConnector {
+        GitHubConnector::new(GitHubConfig {
+            repository: "tesserine/runa".to_string(),
+            assignee: None,
+            credentials: None,
+        })
+    }
+
+    #[test]
+    fn parses_canonical_github_ticket_reference_forms() {
+        let connector = connector();
+        for reference in [
+            "github:tesserine/runa#188",
+            "tesserine/runa#188",
+            "#188",
+            "188",
+            "https://github.com/tesserine/runa/issues/188",
+        ] {
+            assert_eq!(
+                connector.ticket_number_from_reference(reference).unwrap(),
+                188
+            );
+        }
+    }
 }

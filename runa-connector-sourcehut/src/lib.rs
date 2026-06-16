@@ -70,14 +70,34 @@ impl SourceHutConnector {
 
     fn ticket_number_from_reference(&self, reference: &str) -> Result<u64, ForgeError> {
         let trimmed = reference.trim();
+        if trimmed.is_empty() {
+            return Err(ForgeError::new("ticket reference is empty"));
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("sourcehut:") {
+            let (tracker_id, number) = rest.split_once('#').ok_or_else(|| {
+                ForgeError::new("ticket reference is not a sourcehut ticket reference")
+            })?;
+            self.validate_tracker_reference(tracker_id)?;
+            return parse_number(number, "ticket reference");
+        }
+
         if let Some(number) = trimmed.strip_prefix('#') {
             return parse_number(number, "ticket reference");
         }
-        trimmed
-            .rsplit(['/', ':'])
-            .next()
-            .ok_or_else(|| ForgeError::new("ticket reference is empty"))
-            .and_then(|part| parse_number(part, "ticket reference"))
+
+        parse_number(trimmed, "ticket reference")
+    }
+
+    fn validate_tracker_reference(&self, tracker_id: &str) -> Result<(), ForgeError> {
+        let tracker_id_number = parse_number(tracker_id, "sourcehut tracker id")?;
+        if tracker_id_number != self.config.tracker_id {
+            return Err(ForgeError::new(format!(
+                "ticket reference names sourcehut:{tracker_id}, but connector is configured for sourcehut:{}",
+                self.config.tracker_id
+            )));
+        }
+        Ok(())
     }
 
     fn ticket_number_from_handle(&self, handle: &Value) -> Result<u64, ForgeError> {
@@ -127,10 +147,19 @@ impl SourceHutConnector {
             "#,
             json!({ "trackerId": self.config.tracker_id, "number": number }),
         )?;
+        self.ticket_snapshot_from_data(number, data)
+    }
+
+    fn ticket_snapshot_from_data(&self, number: u64, data: Value) -> Result<Value, ForgeError> {
         let ticket = data
             .pointer("/tracker/ticket")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
+            .filter(|value| !value.is_null())
+            .ok_or_else(|| {
+                ForgeError::new(format!(
+                    "sourcehut ticket not found: sourcehut:{}#{number}",
+                    self.config.tracker_id
+                ))
+            })?;
         Ok(json!({
             "handle": self.ticket_handle(number),
             "title": ticket.get("subject").and_then(Value::as_str).unwrap_or_default(),
@@ -301,9 +330,14 @@ fn handle_id(handle: &Value) -> Result<&str, ForgeError> {
 }
 
 fn parse_number(value: &str, label: &str) -> Result<u64, ForgeError> {
-    value
+    let value = value.trim();
+    let number: u64 = value
         .parse()
-        .map_err(|_| ForgeError::new(format!("{label} is not a number")))
+        .map_err(|_| ForgeError::new(format!("{label} is not a number")))?;
+    if number == 0 {
+        return Err(ForgeError::new(format!("{label} must be positive")));
+    }
+    Ok(number)
 }
 
 fn resolve_token(config: Option<&CredentialConfig>) -> Result<String, ForgeError> {
@@ -331,4 +365,48 @@ fn resolve_token(config: Option<&CredentialConfig>) -> Result<String, ForgeError
     Err(ForgeError::new(
         "sourcehut connector credential source must declare env or command",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn connector() -> SourceHutConnector {
+        SourceHutConnector::new(SourceHutConfig {
+            endpoint: "sr.ht".to_string(),
+            owner: "tesserine".to_string(),
+            name: "runa".to_string(),
+            tracker_id: 4,
+            assignee_user_id: None,
+            credentials: Some(CredentialConfig {
+                env: Some("TOKEN".to_string()),
+                command: None,
+            }),
+        })
+    }
+
+    #[test]
+    fn parses_canonical_sourcehut_ticket_reference_forms() {
+        let connector = connector();
+        for reference in ["sourcehut:4#9", "#9", "9"] {
+            assert_eq!(
+                connector.ticket_number_from_reference(reference).unwrap(),
+                9
+            );
+        }
+    }
+
+    #[test]
+    fn missing_sourcehut_ticket_is_rejected() {
+        let connector = connector();
+        let error = connector
+            .ticket_snapshot_from_data(9, json!({ "tracker": { "ticket": null } }))
+            .unwrap_err();
+        assert!(error.to_string().contains("sourcehut ticket not found"));
+
+        let error = connector
+            .ticket_snapshot_from_data(9, json!({ "tracker": null }))
+            .unwrap_err();
+        assert!(error.to_string().contains("sourcehut ticket not found"));
+    }
 }
