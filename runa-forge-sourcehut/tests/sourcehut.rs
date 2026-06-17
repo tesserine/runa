@@ -305,6 +305,36 @@ fn every_operation_rejects_provider_error_payloads_without_success_receipts() {
 }
 
 #[test]
+fn every_operation_rejects_null_or_absent_required_provider_results() {
+    for response in [
+        json!({
+            "data": {
+                "tracker": {
+                    "ticket": null
+                },
+                "submitTicket": null,
+                "updateTicketStatus": null,
+                "submitComment": null
+            }
+        }),
+        json!({ "data": {} }),
+    ] {
+        let transport = SourcehutRecordingTransport::with_repeating_response(response);
+        let connector =
+            SourcehutConnector::new(config("https://todo.test/query"), transport.clone());
+
+        for operation in Operation::ALL {
+            let result = connector.call(operation, input_for_operation(operation));
+
+            assert!(
+                result.is_err(),
+                "{operation} should reject absent/null required provider result, got {result:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn production_http_transport_rejects_graphql_errors_under_http_200() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

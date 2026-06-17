@@ -138,7 +138,7 @@ fn sourcehut_graphql_coordinates_follow_resolved_env_identity() {
         ("RUNA_FORGE_TRACKER_ID", "9"),
     ]);
     let (api_base, request_capture, server) = http_json_server(
-        r#"{"data":{"ticket":{"id":203,"subject":"Override","description":"body","status":"open"}}}"#,
+        r#"{"data":{"tracker":{"ticket":{"id":203,"subject":"Override","description":"body","status":"open"}}}}"#,
     );
 
     let runtime = runtime_from_config(&ForgeConfig {

@@ -493,12 +493,13 @@ fn write_session_advance_receipt(payload: &libagent::AdvanceOutcome) -> std::io:
 fn json_tool_result_with_content(
     payload: &impl serde::Serialize,
 ) -> Result<(CallToolResult, String), McpError> {
-    let json = serde_json::to_string_pretty(payload)
+    let structured_content = serde_json::to_value(payload)
         .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-    Ok((
-        CallToolResult::success(vec![Content::text(json.clone())]),
-        json,
-    ))
+    let json = serde_json::to_string_pretty(&structured_content)
+        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+    let mut result = CallToolResult::success(vec![Content::text(json.clone())]);
+    result.structured_content = Some(structured_content);
+    Ok((result, json))
 }
 
 async fn complete_session_transition<T: serde::Serialize>(
@@ -1207,6 +1208,27 @@ mod tests {
         assert!(validate_instance_id("path\\traversal").is_err());
         assert!(validate_instance_id("..").is_err());
         assert!(validate_instance_id("").is_err());
+    }
+
+    #[test]
+    fn json_tool_result_with_content_returns_structured_content_for_schema_aware_clients() {
+        let payload = json!({
+            "handle": {
+                "id": "github:tesserine/runa:issue:203",
+                "display": "tesserine/runa#203"
+            },
+            "title": "Structured forge",
+            "body": "Schema-aware client payload",
+            "state": "open"
+        });
+
+        let (result, content) = json_tool_result_with_content(&payload).unwrap();
+
+        assert_eq!(result.structured_content.as_ref(), Some(&payload));
+        assert!(
+            content.contains("Structured forge"),
+            "transcript content should retain JSON text: {content}"
+        );
     }
 
     #[test]

@@ -241,9 +241,7 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
         )?;
         self.ticket_snapshot(
             number,
-            response
-                .pointer("/data/tracker/ticket")
-                .unwrap_or(&response),
+            required_provider_object(&response, "/data/tracker/ticket", "ticket")?,
         )
     }
 
@@ -256,10 +254,7 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
             "mutation submitTicket($trackerId: Int!, $input: SubmitTicketInput!) { submitTicket(trackerId: $trackerId, input: $input) { id subject body status } }",
             json!({ "trackerId": tracker_id, "input": { "subject": title, "body": body } }),
         )?;
-        let ticket = response
-            .pointer("/data/submitTicket")
-            .or_else(|| response.pointer("/data/tracker/ticket"))
-            .unwrap_or(&response);
+        let ticket = required_provider_object(&response, "/data/submitTicket", "submitTicket")?;
         let number = ticket.get("id").and_then(Value::as_u64).unwrap_or(0);
         self.ticket_snapshot(number, ticket)
     }
@@ -272,7 +267,9 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
             "mutation claimWorkUnit($trackerId: Int!, $ticketId: Int!, $input: UpdateStatusInput!) { updateTicketStatus(trackerId: $trackerId, ticketId: $ticketId, input: $input) { id } }",
             json!({ "trackerId": tracker_id, "ticketId": number, "input": { "status": "IN_PROGRESS" } }),
         )?;
-        Ok(json!({ "handle": self.ticket_handle(number), "receipt": receipt(response, "claimed") }))
+        let result =
+            required_provider_object(&response, "/data/updateTicketStatus", "updateTicketStatus")?;
+        Ok(json!({ "handle": self.ticket_handle(number), "receipt": receipt(result, "claimed") }))
     }
 
     fn record_progress(&self, input: Value) -> Result<Value, ForgeError> {
@@ -284,9 +281,8 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
             "mutation submitComment($trackerId: Int!, $ticketId: Int!, $input: SubmitCommentInput!) { submitComment(trackerId: $trackerId, ticketId: $ticketId, input: $input) { id } }",
             json!({ "trackerId": tracker_id, "ticketId": number, "input": { "text": body } }),
         )?;
-        Ok(
-            json!({ "handle": self.ticket_handle(number), "receipt": receipt(response, "progress") }),
-        )
+        let result = required_provider_object(&response, "/data/submitComment", "submitComment")?;
+        Ok(json!({ "handle": self.ticket_handle(number), "receipt": receipt(result, "progress") }))
     }
 
     fn deliver_change_proposal(&self, input: Value) -> Result<Value, ForgeError> {
@@ -328,10 +324,11 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
             "mutation submitComment($trackerId: Int!, $ticketId: Int!, $input: SubmitCommentInput!) { submitComment(trackerId: $trackerId, ticketId: $ticketId, input: $input) { id } }",
             json!({ "trackerId": tracker_id, "ticketId": number, "input": { "text": body } }),
         )?;
+        let result = required_provider_object(&response, "/data/submitComment", "submitComment")?;
         Ok(json!({
             "work_unit": work_unit,
             "change": input.get("change").cloned().unwrap_or(Value::Null),
-            "receipt": receipt(response, "disposition")
+            "receipt": receipt(result, "disposition")
         }))
     }
 
@@ -382,7 +379,8 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
                 }
             }),
         )?;
-        Ok(json!({ "handle": self.ticket_handle(number), "receipt": receipt(response, "closed") }))
+        let result = required_provider_object(&response, "/data/submitComment", "submitComment")?;
+        Ok(json!({ "handle": self.ticket_handle(number), "receipt": receipt(result, "closed") }))
     }
 
     fn ticket_snapshot(&self, number: u64, ticket: &Value) -> Result<Value, ForgeError> {
@@ -535,6 +533,17 @@ fn reject_provider_error_payload(value: &Value) -> Result<(), ForgeError> {
     )))
 }
 
+fn required_provider_object<'a>(
+    value: &'a Value,
+    pointer: &str,
+    name: &str,
+) -> Result<&'a Value, ForgeError> {
+    value
+        .pointer(pointer)
+        .filter(|candidate| candidate.is_object())
+        .ok_or_else(|| ForgeError::ProviderResponse(format!("missing {name} result")))
+}
+
 fn execute_git(config: &SourcehutConfig, request: ProviderRequest) -> Result<Value, ForgeError> {
     let remote = config.git_remote.trim();
     if remote.is_empty() {
@@ -604,11 +613,11 @@ fn execute_git(config: &SourcehutConfig, request: ProviderRequest) -> Result<Val
     }))
 }
 
-fn receipt(response: Value, fallback: &str) -> String {
+fn receipt(response: &Value, fallback: &str) -> String {
     response
         .pointer("/data")
         .and_then(first_id)
-        .or_else(|| first_id(&response))
+        .or_else(|| first_id(response))
         .unwrap_or_else(|| fallback.to_string())
 }
 
