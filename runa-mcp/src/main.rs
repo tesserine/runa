@@ -5,6 +5,7 @@ use libagent::configure_tracing;
 use libagent::project;
 use rmcp::service::ServiceExt;
 use rmcp::transport::io;
+use runa_forge_connectors::ConfiguredForgeConnectors;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process;
@@ -65,6 +66,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut loaded = project::load(&working_dir, config_ref)?;
+    let forge_connectors =
+        ConfiguredForgeConnectors::from_config(&loaded.config.effective_forge_connectors())?;
     apply_transcript_settings(&working_dir, &loaded.config);
     libagent::scan(&loaded.workspace_dir, &mut loaded.store)?;
     if let Some(work_unit) = cli.work_unit.as_deref() {
@@ -76,9 +79,19 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Some(ticket) => {
                 let identity = libagent::resolve_forge_identity(&loaded.config.forge);
                 let ticket_ref = libagent::resolve_ticket_reference(ticket, &identity)?;
-                RunaHandler::new_session_entry(working_dir.clone(), config_ref, ticket_ref)?
+                RunaHandler::new_session_entry(
+                    working_dir.clone(),
+                    config_ref,
+                    ticket_ref,
+                    forge_connectors,
+                )?
             }
-            None => RunaHandler::new_session(working_dir.clone(), config_ref, cli.work_unit)?,
+            None => RunaHandler::new_session(
+                working_dir.clone(),
+                config_ref,
+                cli.work_unit,
+                forge_connectors,
+            )?,
         };
         let (stdin, stdout) = io::stdio();
         let service = handler.serve((stdin, stdout)).await.inspect_err(|e| {
@@ -131,11 +144,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         "serving protocol"
     );
 
-    let handler = RunaHandler::new(
+    let handler = RunaHandler::new_with_forge(
         protocol.clone(),
         cli.work_unit.clone(),
         loaded.store,
         loaded.workspace_dir.clone(),
+        forge_connectors,
     );
 
     let (stdin, stdout) = io::stdio();

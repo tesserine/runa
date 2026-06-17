@@ -6,7 +6,13 @@ use std::process::Command;
 use std::time::Duration;
 
 fn runa_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_runa"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_runa"));
+    command
+        .env_remove("RUNA_FORGE_TYPE")
+        .env_remove("RUNA_FORGE_OWNER")
+        .env_remove("RUNA_FORGE_NAME")
+        .env_remove("RUNA_FORGE_TRACKER_ID");
+    command
 }
 
 fn runa_bin_path() -> &'static Path {

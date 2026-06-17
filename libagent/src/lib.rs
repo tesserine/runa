@@ -55,8 +55,8 @@ pub use model::{
     UnscopedOutputRequiresWorkUnitError, validate_output_scope,
 };
 pub use project::{
-    Config, ForgeConfig, LoadedProject, LogFormat, LoggingConfig, ProjectError, State,
-    TranscriptConfig,
+    Config, ForgeConfig, ForgeConnectorConfig, ForgeConnectorsConfig, LoadedProject, LogFormat,
+    LoggingConfig, ProjectError, State, TranscriptConfig,
 };
 pub use projection::{
     ProjectionCandidate, ProjectionClass, project_cascade, project_entry_cascade,

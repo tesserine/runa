@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{ArtifactStore, DependencyGraph, GraphError, Manifest, ManifestError, StoreError};
+pub use runa_forge_contract::{ForgeConnectorConfig, ForgeConnectorsConfig};
 
 pub const RUNA_DIR: &str = ".runa";
 pub const CONFIG_FILENAME: &str = "config.toml";
@@ -100,6 +101,14 @@ pub struct Config {
     pub transcript: TranscriptConfig,
     #[serde(default, skip_serializing_if = "ForgeConfig::is_default")]
     pub forge: ForgeConfig,
+    #[serde(default, skip_serializing_if = "ForgeConnectorsConfig::is_default")]
+    pub connectors: ForgeConnectorsConfig,
+}
+
+impl Config {
+    pub fn effective_forge_connectors(&self) -> ForgeConnectorsConfig {
+        self.connectors.clone()
+    }
 }
 
 /// On-disk format for `.runa/state.toml` — initialization metadata managed by runa.
@@ -343,6 +352,7 @@ trigger = { type = "on_change", name = "constraints" }
             agent: AgentConfig::default(),
             transcript: TranscriptConfig::default(),
             forge: ForgeConfig::default(),
+            connectors: ForgeConnectorsConfig::default(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -406,6 +416,7 @@ trigger = { type = "on_change", name = "constraints" }
             agent: AgentConfig::default(),
             transcript: TranscriptConfig::default(),
             forge: ForgeConfig::default(),
+            connectors: ForgeConnectorsConfig::default(),
         };
         fs::write(&external_config_path, toml::to_string(&config).unwrap()).unwrap();
 
@@ -489,6 +500,7 @@ artifacts_dir = "custom-artifacts"
             agent: AgentConfig::default(),
             transcript: TranscriptConfig::default(),
             forge: ForgeConfig::default(),
+            connectors: ForgeConnectorsConfig::default(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -679,6 +691,7 @@ tracker_id = "4"
                 name: Some("runa".to_string()),
                 tracker_id: Some("4".to_string()),
             },
+            connectors: ForgeConnectorsConfig::default(),
         };
 
         let serialized = toml::to_string(&config).unwrap();
