@@ -86,6 +86,8 @@ pub struct ForgeConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_remote: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub credential_env: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub credential_command: Vec<String>,
@@ -664,6 +666,7 @@ name = "weforge"
 tracker_id = "4"
 api_base = "https://todo.example/query"
 git_remote = "ssh://git@git.example/runa"
+assignee = "pentaxis93"
 credential_env = "WEFORGE_OPERATOR_PAT"
 credential_command = ["secret-tool", "lookup", "token"]
 "#,
@@ -684,6 +687,7 @@ credential_command = ["secret-tool", "lookup", "token"]
             config.forge.git_remote.as_deref(),
             Some("ssh://git@git.example/runa")
         );
+        assert_eq!(config.forge.assignee.as_deref(), Some("pentaxis93"));
         assert_eq!(
             config.forge.credential_env.as_deref(),
             Some("WEFORGE_OPERATOR_PAT")
@@ -711,6 +715,7 @@ credential_command = ["secret-tool", "lookup", "token"]
                 tracker_id: Some("4".to_string()),
                 api_base: None,
                 git_remote: None,
+                assignee: Some("pentaxis93".to_string()),
                 credential_env: None,
                 credential_command: Vec::new(),
                 tool_aliases: BTreeMap::new(),

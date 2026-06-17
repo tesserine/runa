@@ -8,6 +8,7 @@ pub struct GithubConfig {
     pub owner: String,
     pub repo: String,
     pub api_base: String,
+    pub assignee: Option<String>,
     pub credential_env: Option<String>,
     pub credential_command: Option<Vec<String>>,
 }
@@ -243,13 +244,20 @@ impl<T: GithubTransport> GithubConnector<T> {
 
     fn claim_work_unit(&self, input: Value) -> Result<Value, ForgeError> {
         let number = self.issue_number(input.get("handle"))?;
+        let assignee = self
+            .config
+            .assignee
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ForgeError::InvalidInput("github assignee is required".into()))?;
         let response = self.send(
             "POST",
             format!(
                 "/repos/{}/{}/issues/{number}/assignees",
                 self.config.owner, self.config.repo
             ),
-            Some(json!({})),
+            Some(json!({ "assignees": [assignee] })),
         )?;
         Ok(json!({ "handle": self.issue_handle(number), "receipt": receipt(response, "claimed") }))
     }
@@ -277,7 +285,7 @@ impl<T: GithubTransport> GithubConnector<T> {
         let base = required_string(&input, "base")?;
         let summary = required_string(&input, "summary")?;
         let body = required_string(&input, "body")?;
-        let commit = required_string(&input, "commit")?;
+        let _commit = required_string(&input, "commit")?;
         let version = required_u64(&input, "version")?;
         let response = self.send(
             "POST",
@@ -285,10 +293,11 @@ impl<T: GithubTransport> GithubConnector<T> {
             Some(json!({ "title": summary, "head": branch, "base": base, "body": body })),
         )?;
         let number = response.get("number").and_then(Value::as_u64).unwrap_or(0);
+        let delivered_commit = response_string(&response, &["/head/sha", "/head/ref", "/sha"])?;
         Ok(json!({
             "handle": self.pull_handle(number, version),
             "work_unit": work_unit,
-            "commit": commit,
+            "commit": delivered_commit,
             "version": version
         }))
     }
@@ -330,10 +339,11 @@ impl<T: GithubTransport> GithubConnector<T> {
             ),
             Some(json!({ "sha": approved_commit })),
         )?;
+        let applied_commit = response_string(&response, &["/sha", "/merge_commit_sha"])?;
         Ok(json!({
             "work_unit": work_unit,
             "change": input.get("change").cloned().unwrap_or(Value::Null),
-            "applied_commit": approved_commit,
+            "applied_commit": applied_commit,
             "receipt": receipt(response, "applied")
         }))
     }
@@ -466,6 +476,19 @@ fn parse_number(value: &str) -> Result<u64, ForgeError> {
         .ok()
         .filter(|number| *number > 0)
         .ok_or_else(|| ForgeError::InvalidInput(format!("invalid ticket number '{value}'")))
+}
+
+fn response_string<'a>(response: &'a Value, pointers: &[&str]) -> Result<&'a str, ForgeError> {
+    pointers
+        .iter()
+        .find_map(|pointer| response.pointer(pointer).and_then(Value::as_str))
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ForgeError::ProviderResponse(format!(
+                "missing provider response value at {}",
+                pointers.join(" or ")
+            ))
+        })
 }
 
 fn receipt(response: Value, fallback: &str) -> String {

@@ -66,6 +66,7 @@ pub fn runtime_from_config(config: &ForgeConfig) -> Result<Option<ForgeRuntime>,
                         .api_base
                         .clone()
                         .unwrap_or_else(|| "https://api.github.com".to_string()),
+                    assignee: config.assignee.clone(),
                     credential_env: config.credential_env.clone(),
                     credential_command: non_empty_command(config),
                 },

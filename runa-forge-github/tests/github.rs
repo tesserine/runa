@@ -12,6 +12,7 @@ fn config(api_base: &str) -> GithubConfig {
         owner: "tesserine".to_string(),
         repo: "runa".to_string(),
         api_base: api_base.to_string(),
+        assignee: Some("pentaxis93".to_string()),
         credential_env: None,
         credential_command: None,
     }
@@ -148,6 +149,25 @@ fn every_operation_constructs_the_expected_provider_request() {
 }
 
 #[test]
+fn claim_work_unit_sends_assignee_payload() {
+    let transport = GithubRecordingTransport::with_repeating_response(json!({
+        "url": "https://api.github.test/repos/tesserine/runa/issues/203"
+    }));
+    let connector = GithubConnector::new(config("https://api.github.test"), transport.clone());
+
+    connector
+        .call(Operation::ClaimWorkUnit, json!({"handle": handle(203)}))
+        .unwrap();
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].body,
+        Some(json!({ "assignees": ["pentaxis93"] }))
+    );
+}
+
+#[test]
 fn production_http_transport_executes_and_parses_read_ticket() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -174,6 +194,131 @@ fn production_http_transport_executes_and_parses_read_ticket() {
 
     assert_eq!(output["title"], "Harness title");
     assert_eq!(output["handle"]["id"], "github:tesserine/runa:issue:203");
+    server.join().unwrap();
+}
+
+#[test]
+fn production_http_transport_executes_and_parses_every_operation() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let expected = [
+        (
+            "GET",
+            "/repos/tesserine/runa/issues/203",
+            r#"{"number":203,"title":"Harness read","body":"Harness body","state":"open"}"#,
+        ),
+        (
+            "POST",
+            "/repos/tesserine/runa/issues",
+            r#"{"number":204,"title":"Harness create","body":"Created body","state":"open"}"#,
+        ),
+        (
+            "POST",
+            "/repos/tesserine/runa/issues/203/assignees",
+            r#"{"url":"https://api.github.test/claim/203"}"#,
+        ),
+        (
+            "POST",
+            "/repos/tesserine/runa/issues/203/comments",
+            r#"{"html_url":"https://github.test/progress/1"}"#,
+        ),
+        (
+            "POST",
+            "/repos/tesserine/runa/pulls",
+            r#"{"number":12,"head":{"sha":"harness-pr-head"}}"#,
+        ),
+        (
+            "POST",
+            "/repos/tesserine/runa/issues/12/comments",
+            r#"{"html_url":"https://github.test/disposition/1"}"#,
+        ),
+        (
+            "PUT",
+            "/repos/tesserine/runa/pulls/12/merge",
+            r#"{"sha":"merged-sha"}"#,
+        ),
+        (
+            "PATCH",
+            "/repos/tesserine/runa/issues/203",
+            r#"{"html_url":"https://github.test/closed/203"}"#,
+        ),
+    ];
+    let server = thread::spawn(move || {
+        for (method, path, body) in expected {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let size = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..size]);
+            assert!(
+                request.starts_with(&format!("{method} {path} ")),
+                "unexpected request: {request}"
+            );
+            if path.ends_with("/assignees") {
+                assert!(request.contains(r#""assignees":["pentaxis93"]"#));
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+
+    let connector = GithubConnector::new(config(&format!("http://{address}")), GithubHttpTransport);
+    let read = connector
+        .call(Operation::ReadTicket, json!({ "reference": "203" }))
+        .unwrap();
+    let created = connector
+        .call(
+            Operation::CreateTicket,
+            json!({"title": "title", "body": "body"}),
+        )
+        .unwrap();
+    let claimed = connector
+        .call(Operation::ClaimWorkUnit, json!({"handle": handle(203)}))
+        .unwrap();
+    let progress = connector
+        .call(
+            Operation::RecordProgress,
+            json!({"handle": handle(203), "body": "progress"}),
+        )
+        .unwrap();
+    let delivered = connector
+        .call(
+            Operation::DeliverChangeProposal,
+            json!({"work_unit": handle(203), "branch": "issue-203", "commit": "input-commit", "base": "main", "summary": "summary", "body": "body", "version": 1}),
+        )
+        .unwrap();
+    let disposition = connector
+        .call(
+            Operation::ReflectDisposition,
+            json!({"work_unit": handle(203), "change": {"id": "github:tesserine/runa:pull:12:version:1", "display": "tesserine/runa#12"}, "disposition": {"kind": "approved", "against_version": 1, "reviewer": "reviewer", "reviewed_at": "2026-06-17T00:00:00Z", "findings": []}, "body": "approved"}),
+        )
+        .unwrap();
+    let applied = connector
+        .call(
+            Operation::ApplyApprovedChange,
+            json!({"work_unit": handle(203), "change": {"id": "github:tesserine/runa:pull:12:version:1", "display": "tesserine/runa#12"}, "approved_version": 1, "approved_commit": "input-approved", "base": "main"}),
+        )
+        .unwrap();
+    let closed = connector
+        .call(
+            Operation::CloseOut,
+            json!({"work_unit": handle(203), "completion": {"criterion_summary": "done", "gaps": [], "change_reference": "abc123", "documentation_status": "updated"}, "body": "done"}),
+        )
+        .unwrap();
+
+    assert_eq!(read["title"], "Harness read");
+    assert_eq!(created["handle"]["id"], "github:tesserine/runa:issue:204");
+    assert_eq!(created["title"], "Harness create");
+    assert_eq!(claimed["receipt"], "https://api.github.test/claim/203");
+    assert_eq!(progress["receipt"], "https://github.test/progress/1");
+    assert_eq!(delivered["commit"], "harness-pr-head");
+    assert_eq!(disposition["receipt"], "https://github.test/disposition/1");
+    assert_eq!(applied["applied_commit"], "merged-sha");
+    assert_eq!(closed["receipt"], "https://github.test/closed/203");
     server.join().unwrap();
 }
 

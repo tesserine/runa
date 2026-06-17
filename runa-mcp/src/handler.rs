@@ -126,12 +126,57 @@ impl RunaHandler {
         if !runtime.tools.contains_key(tool_name) {
             return None;
         }
-        Some(match runtime.call_tool(tool_name, input) {
-            Ok(payload) => json_tool_result_with_content(&payload).map(|(result, _)| result),
-            Err(error) => Ok(CallToolResult::error(vec![Content::text(
-                error.to_string(),
-            )])),
-        })
+        let (protocol, work_unit) = self.transcript_context();
+        if let Err(error) = append_tool_event_with_context(
+            "tool_call",
+            protocol.as_deref(),
+            work_unit.as_deref(),
+            tool_name,
+            Some(input.clone()),
+            None,
+        ) {
+            return Some(Err(error));
+        }
+        Some((|| match runtime.call_tool(tool_name, input) {
+            Ok(payload) => {
+                let (result, content) = json_tool_result_with_content(&payload)?;
+                append_tool_event_with_context(
+                    "tool_result",
+                    protocol.as_deref(),
+                    work_unit.as_deref(),
+                    tool_name,
+                    None,
+                    Some(&content),
+                )?;
+                Ok(result)
+            }
+            Err(error) => {
+                let message = error.to_string();
+                append_tool_event_with_context(
+                    "tool_result",
+                    protocol.as_deref(),
+                    work_unit.as_deref(),
+                    tool_name,
+                    None,
+                    Some(&message),
+                )?;
+                Ok(CallToolResult::error(vec![Content::text(message)]))
+            }
+        })())
+    }
+
+    fn transcript_context(&self) -> (Option<String>, Option<String>) {
+        if let Some(session) = &self.session {
+            let current_step = session.lock().unwrap().current_step().cloned();
+            return (
+                current_step.as_ref().map(|step| step.protocol.clone()),
+                current_step.and_then(|step| step.work_unit),
+            );
+        }
+        (
+            self.protocol.as_ref().map(|protocol| protocol.name.clone()),
+            self.work_unit.clone(),
+        )
     }
 
     async fn call_session_tool(

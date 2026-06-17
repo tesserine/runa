@@ -224,6 +224,9 @@ Set `[agent].command` to `./adapters/agent-codex.sh` or
 `./adapters/agent-claude-code.sh`; the adapter translates `RUNA_MCP_CONFIG` for
 the selected runtime.
 
+GitHub forge claiming requires `[forge].assignee` so `claim-work-unit` can set
+a real issue assignee instead of reporting a synthetic claim.
+
 ## Build
 
 Rust 2024 edition. Runa targets Linux.

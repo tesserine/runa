@@ -1,6 +1,7 @@
 use runa_forge_contract::{ForgeConnector, ForgeError, Handle, Operation};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +115,9 @@ impl SourcehutTransport for SourcehutHttpTransport {
         config: &SourcehutConfig,
         request: ProviderRequest,
     ) -> Result<Value, ForgeError> {
+        if request.kind == "GIT" {
+            return execute_git(config, request);
+        }
         if request.kind != "GRAPHQL" {
             return Err(ForgeError::Unsupported(format!(
                 "production HTTP transport cannot execute {}",
@@ -283,14 +287,19 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
         let branch = required_string(&input, "branch")?;
         let commit = required_string(&input, "commit")?;
         let version = required_u64(&input, "version")?;
-        let _ = self.git(
+        let destination_ref = git_ref(branch);
+        let response = self.git(
             "deliverChangeProposal",
-            json!({ "remote": self.config.git_remote, "branch": branch, "commit": commit }),
+            json!({
+                "source": commit,
+                "destination": destination_ref,
+            }),
         )?;
+        let produced_ref = git_result_ref(&response)?;
         Ok(json!({
             "handle": self.change_handle(branch, version),
             "work_unit": work_unit,
-            "commit": commit,
+            "commit": produced_ref,
             "version": version
         }))
     }
@@ -321,15 +330,22 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
         self.ticket_number(Some(work_unit))?;
         let change = self.change_id(input.get("change"))?;
         let approved_commit = required_string(&input, "approved_commit")?;
-        let _ = self.git(
+        let base = required_string(&input, "base")?;
+        let destination_ref = git_ref(base);
+        let response = self.git(
             "applyApprovedChange",
-            json!({ "remote": self.config.git_remote, "change": change, "commit": approved_commit }),
+            json!({
+                "change": change,
+                "source": approved_commit,
+                "destination": destination_ref,
+            }),
         )?;
+        let produced_ref = git_result_ref(&response)?;
         Ok(json!({
             "work_unit": work_unit,
             "change": input.get("change").cloned().unwrap_or(Value::Null),
-            "applied_commit": approved_commit,
-            "receipt": "applied"
+            "applied_commit": produced_ref,
+            "receipt": produced_ref
         }))
     }
 
@@ -449,11 +465,113 @@ fn parse_number(value: &str) -> Result<u64, ForgeError> {
         .ok_or_else(|| ForgeError::InvalidInput(format!("invalid ticket number '{value}'")))
 }
 
+fn git_ref(value: &str) -> String {
+    if value.starts_with("refs/") {
+        value.to_string()
+    } else {
+        format!("refs/heads/{value}")
+    }
+}
+
+fn git_result_ref(value: &Value) -> Result<&str, ForgeError> {
+    value
+        .get("ref")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ForgeError::ProviderResponse("missing git result ref".into()))
+}
+
+fn execute_git(config: &SourcehutConfig, request: ProviderRequest) -> Result<Value, ForgeError> {
+    let remote = config.git_remote.trim();
+    if remote.is_empty() {
+        return Err(ForgeError::InvalidInput(
+            "sourcehut git_remote is required".into(),
+        ));
+    }
+    let body = request
+        .body
+        .ok_or_else(|| ForgeError::InvalidInput("git request body is required".into()))?;
+    let source = body
+        .get("source")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ForgeError::InvalidInput("git source is required".into()))?;
+    let destination = body
+        .get("destination")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ForgeError::InvalidInput("git destination is required".into()))?;
+
+    let push = Command::new("git")
+        .args([
+            "push",
+            "--porcelain",
+            remote,
+            &format!("{source}:{destination}"),
+        ])
+        .output()
+        .map_err(|error| ForgeError::Transport(format!("git push failed: {error}")))?;
+    if !push.status.success() {
+        return Err(ForgeError::Transport(format!(
+            "git push exited with status {}\n{}",
+            push.status,
+            String::from_utf8_lossy(&push.stderr)
+        )));
+    }
+
+    let ls_remote = Command::new("git")
+        .args(["ls-remote", remote, destination])
+        .output()
+        .map_err(|error| ForgeError::Transport(format!("git ls-remote failed: {error}")))?;
+    if !ls_remote.status.success() {
+        return Err(ForgeError::Transport(format!(
+            "git ls-remote exited with status {}\n{}",
+            ls_remote.status,
+            String::from_utf8_lossy(&ls_remote.stderr)
+        )));
+    }
+    let stdout = String::from_utf8(ls_remote.stdout).map_err(|_| {
+        ForgeError::ProviderResponse("git ls-remote produced non-UTF-8 output".into())
+    })?;
+    let Some((commit, produced_ref)) = stdout
+        .lines()
+        .find_map(|line| line.split_once('\t'))
+        .filter(|(_, produced_ref)| *produced_ref == destination)
+    else {
+        return Err(ForgeError::ProviderResponse(format!(
+            "git push did not produce ref {destination}"
+        )));
+    };
+
+    Ok(json!({
+        "commit": commit,
+        "ref": produced_ref,
+        "push": String::from_utf8_lossy(&push.stdout).to_string()
+    }))
+}
+
 fn receipt(response: Value, fallback: &str) -> String {
     response
-        .pointer("/data/id")
-        .or_else(|| response.get("id"))
-        .and_then(Value::as_u64)
-        .map(|id| id.to_string())
+        .pointer("/data")
+        .and_then(first_id)
+        .or_else(|| first_id(&response))
         .unwrap_or_else(|| fallback.to_string())
+}
+
+fn first_id(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            if let Some(id) = map.get("id") {
+                if let Some(id) = id.as_str().filter(|id| !id.is_empty()) {
+                    return Some(id.to_string());
+                }
+                if let Some(id) = id.as_u64() {
+                    return Some(id.to_string());
+                }
+            }
+            map.values().find_map(first_id)
+        }
+        Value::Array(values) => values.iter().find_map(first_id),
+        _ => None,
+    }
 }

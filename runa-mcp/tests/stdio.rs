@@ -1985,6 +1985,59 @@ async fn tool_calls_append_transcript_events_from_config_when_environment_is_uns
 }
 
 #[tokio::test]
+async fn forge_tool_calls_append_transcript_events_when_enabled() {
+    let dir = setup_project();
+    let project_dir = dir.path().join("project");
+    let transcript_dir = dir.path().join("transcript");
+    append_github_forge_config(&project_dir, "tesserine", "runa");
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("implement")
+                        .arg("--work-unit")
+                        .arg("wu-1")
+                        .env("RUNA_TRANSCRIPT_DIR", &transcript_dir)
+                        .env_remove("RUNA_FORGE_TYPE")
+                        .env_remove("RUNA_FORGE_OWNER")
+                        .env_remove("RUNA_FORGE_NAME")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    service
+        .call_tool(tool_call(
+            "read-ticket",
+            serde_json::json!({ "reference": "tesserine/groundwork#203" }),
+        ))
+        .await
+        .unwrap();
+
+    let events = if transcript_dir.exists() {
+        read_transcript_events(&transcript_dir)
+    } else {
+        String::new()
+    };
+    assert!(
+        events.contains(r#""kind":"tool_call","protocol":"implement","work_unit":"wu-1","tool_name":"read-ticket""#),
+        "missing forge tool_call transcript event: {events}"
+    );
+    assert!(
+        events.contains(r#""kind":"tool_result","protocol":"implement","work_unit":"wu-1","tool_name":"read-ticket""#),
+        "missing forge tool_result transcript event: {events}"
+    );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn session_driver_calls_append_transcript_events_when_enabled() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = write_methodology(
