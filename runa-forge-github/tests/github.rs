@@ -80,72 +80,64 @@ fn every_operation_constructs_the_expected_provider_request() {
         "body": "body",
         "state": "open",
         "html_url": "https://github.com/tesserine/runa/pull/12",
+        "base": { "ref": "main" },
         "sha": "abc123",
         "merged": true
     }));
     let connector = GithubConnector::new(config("https://api.github.test"), transport.clone());
 
     let cases = [
-        (
-            Operation::ReadTicket,
-            json!({"reference": "203"}),
-            "GET",
-            "/repos/tesserine/runa/issues/203",
-        ),
+        (Operation::ReadTicket, json!({"reference": "203"})),
         (
             Operation::CreateTicket,
             json!({"title": "title", "body": "body"}),
-            "POST",
-            "/repos/tesserine/runa/issues",
         ),
-        (
-            Operation::ClaimWorkUnit,
-            json!({"handle": handle(203)}),
-            "POST",
-            "/repos/tesserine/runa/issues/203/assignees",
-        ),
+        (Operation::ClaimWorkUnit, json!({"handle": handle(203)})),
         (
             Operation::RecordProgress,
             json!({"handle": handle(203), "body": "progress"}),
-            "POST",
-            "/repos/tesserine/runa/issues/203/comments",
         ),
         (
             Operation::DeliverChangeProposal,
             json!({"work_unit": handle(203), "branch": "issue-203", "commit": "abc123", "base": "main", "summary": "summary", "body": "body", "version": 1}),
-            "POST",
-            "/repos/tesserine/runa/pulls",
         ),
         (
             Operation::ReflectDisposition,
             json!({"work_unit": handle(203), "change": {"id": "github:tesserine/runa:pull:12:version:1", "display": "tesserine/runa#12"}, "disposition": {"kind": "approved", "against_version": 1, "reviewer": "reviewer", "reviewed_at": "2026-06-17T00:00:00Z", "findings": []}, "body": "approved"}),
-            "POST",
-            "/repos/tesserine/runa/issues/12/comments",
         ),
         (
             Operation::ApplyApprovedChange,
             json!({"work_unit": handle(203), "change": {"id": "github:tesserine/runa:pull:12:version:1", "display": "tesserine/runa#12"}, "approved_version": 1, "approved_commit": "abc123", "base": "main"}),
-            "PUT",
-            "/repos/tesserine/runa/pulls/12/merge",
         ),
         (
             Operation::CloseOut,
             json!({"work_unit": handle(203), "completion": {"criterion_summary": "done", "gaps": [], "change_reference": "abc123", "documentation_status": "updated"}, "body": "done"}),
-            "PATCH",
-            "/repos/tesserine/runa/issues/203",
         ),
     ];
 
-    for (operation, input, _, _) in &cases {
+    for (operation, input) in &cases {
         connector.call(*operation, input.clone()).unwrap();
     }
 
+    let expected_requests = [
+        ("GET", "/repos/tesserine/runa/issues/203"),
+        ("POST", "/repos/tesserine/runa/issues"),
+        ("POST", "/repos/tesserine/runa/issues/203/assignees"),
+        ("POST", "/repos/tesserine/runa/issues/203/comments"),
+        ("POST", "/repos/tesserine/runa/pulls"),
+        ("POST", "/repos/tesserine/runa/issues/12/comments"),
+        ("GET", "/repos/tesserine/runa/pulls/12"),
+        ("PUT", "/repos/tesserine/runa/pulls/12/merge"),
+        ("POST", "/repos/tesserine/runa/issues/203/comments"),
+        ("PATCH", "/repos/tesserine/runa/issues/203"),
+    ];
     let requests = transport.requests();
-    assert_eq!(requests.len(), cases.len());
-    for (request, (_, _, method, path)) in requests.iter().zip(cases) {
+    assert_eq!(requests.len(), expected_requests.len());
+    for (request, (method, path)) in requests.iter().zip(expected_requests) {
         assert_eq!(request.method, method);
         assert_eq!(request.path, path);
     }
+    assert_eq!(requests[9].body, Some(json!({ "state": "closed" })));
 }
 
 #[test]
@@ -165,6 +157,76 @@ fn claim_work_unit_sends_assignee_payload() {
         requests[0].body,
         Some(json!({ "assignees": ["pentaxis93"] }))
     );
+}
+
+#[test]
+fn close_out_posts_note_then_closes_issue_without_overwriting_body() {
+    let transport = GithubRecordingTransport::with_repeating_response(json!({
+        "html_url": "https://github.test/closed/203"
+    }));
+    let connector = GithubConnector::new(config("https://api.github.test"), transport.clone());
+
+    connector
+        .call(
+            Operation::CloseOut,
+            json!({
+                "work_unit": handle(203),
+                "completion": {
+                    "criterion_summary": "done",
+                    "gaps": [],
+                    "change_reference": "abc123",
+                    "documentation_status": "updated"
+                },
+                "body": "closing note"
+            }),
+        )
+        .unwrap();
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(
+        requests[0].path,
+        "/repos/tesserine/runa/issues/203/comments"
+    );
+    assert_eq!(requests[0].body, Some(json!({ "body": "closing note" })));
+    assert_eq!(requests[1].method, "PATCH");
+    assert_eq!(requests[1].path, "/repos/tesserine/runa/issues/203");
+    assert_eq!(requests[1].body, Some(json!({ "state": "closed" })));
+}
+
+#[test]
+fn apply_approved_change_rejects_base_mismatch_before_merge() {
+    let transport = GithubRecordingTransport::with_response(json!({
+        "base": { "ref": "develop" },
+        "head": { "sha": "abc123" }
+    }));
+    let connector = GithubConnector::new(config("https://api.github.test"), transport.clone());
+
+    let error = connector
+        .call(
+            Operation::ApplyApprovedChange,
+            json!({
+                "work_unit": handle(203),
+                "change": {
+                    "id": "github:tesserine/runa:pull:12:version:1",
+                    "display": "tesserine/runa#12"
+                },
+                "approved_version": 1,
+                "approved_commit": "abc123",
+                "base": "main"
+            }),
+        )
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("base") && error.to_string().contains("main"),
+        "base mismatch should be reported: {error}"
+    );
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].path, "/repos/tesserine/runa/pulls/12");
 }
 
 #[test]
@@ -233,9 +295,19 @@ fn production_http_transport_executes_and_parses_every_operation() {
             r#"{"html_url":"https://github.test/disposition/1"}"#,
         ),
         (
+            "GET",
+            "/repos/tesserine/runa/pulls/12",
+            r#"{"base":{"ref":"main"},"head":{"sha":"input-approved"}}"#,
+        ),
+        (
             "PUT",
             "/repos/tesserine/runa/pulls/12/merge",
             r#"{"sha":"merged-sha"}"#,
+        ),
+        (
+            "POST",
+            "/repos/tesserine/runa/issues/203/comments",
+            r#"{"html_url":"https://github.test/close-comment/1"}"#,
         ),
         (
             "PATCH",
@@ -319,6 +391,77 @@ fn production_http_transport_executes_and_parses_every_operation() {
     assert_eq!(disposition["receipt"], "https://github.test/disposition/1");
     assert_eq!(applied["applied_commit"], "merged-sha");
     assert_eq!(closed["receipt"], "https://github.test/closed/203");
+    server.join().unwrap();
+}
+
+#[test]
+fn production_http_close_out_preserves_issue_body_and_records_note() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let mut issue_body = "Original problem statement\n\nAcceptance criteria".to_string();
+        let mut comments = Vec::new();
+
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let size = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..size]);
+        assert!(request.starts_with("POST /repos/tesserine/runa/issues/203/comments "));
+        comments.push("closing note".to_string());
+        let body = r#"{"html_url":"https://github.test/comments/1"}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let size = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..size]);
+        assert!(request.starts_with("PATCH /repos/tesserine/runa/issues/203 "));
+        let patch: serde_json::Value =
+            serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(patch, json!({ "state": "closed" }));
+        if let Some(new_body) = patch.get("body").and_then(serde_json::Value::as_str) {
+            issue_body = new_body.to_string();
+        }
+        let body = r#"{"html_url":"https://github.test/closed/203"}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+
+        assert_eq!(comments, vec!["closing note"]);
+        assert_eq!(
+            issue_body,
+            "Original problem statement\n\nAcceptance criteria"
+        );
+    });
+
+    let connector = GithubConnector::new(config(&format!("http://{address}")), GithubHttpTransport);
+    let output = connector
+        .call(
+            Operation::CloseOut,
+            json!({
+                "work_unit": handle(203),
+                "completion": {
+                    "criterion_summary": "done",
+                    "gaps": [],
+                    "change_reference": "abc123",
+                    "documentation_status": "updated"
+                },
+                "body": "closing note"
+            }),
+        )
+        .unwrap();
+
+    assert_eq!(output["receipt"], "https://github.test/closed/203");
     server.join().unwrap();
 }
 

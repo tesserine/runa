@@ -1708,6 +1708,7 @@ dependencies = [
 name = "runa-forge-compose"
 version = "0.2.0-rc.1"
 dependencies = [
+ "jsonschema",
  "libagent",
  "runa-forge-contract",
  "runa-forge-github",

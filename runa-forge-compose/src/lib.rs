@@ -17,9 +17,32 @@ impl ForgeRuntime {
             .tools
             .get(exposed_name)
             .ok_or_else(|| RuntimeError::UnknownTool(exposed_name.to_string()))?;
+        validate_tool_input(tool, &input)?;
         self.connector
             .call(tool.operation, input)
             .map_err(RuntimeError::Forge)
+    }
+}
+
+fn validate_tool_input(tool: &ComposedTool, input: &Value) -> Result<(), RuntimeError> {
+    let validator = jsonschema::validator_for(&tool.input_schema).map_err(|error| {
+        RuntimeError::InvalidInput(format!(
+            "{} input schema is invalid: {error}",
+            tool.exposed_name
+        ))
+    })?;
+    let violations = validator
+        .iter_errors(input)
+        .map(|error| format!("{}: {}", error.instance_path(), error))
+        .collect::<Vec<_>>();
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(RuntimeError::InvalidInput(format!(
+            "{} input does not match advertised schema:\n{}",
+            tool.exposed_name,
+            violations.join("\n")
+        )))
     }
 }
 
@@ -27,6 +50,7 @@ impl ForgeRuntime {
 pub enum RuntimeError {
     UnknownTool(String),
     Composition(String),
+    InvalidInput(String),
     Forge(ForgeError),
 }
 
@@ -35,6 +59,7 @@ impl fmt::Display for RuntimeError {
         match self {
             RuntimeError::UnknownTool(tool) => write!(f, "unknown forge tool '{tool}'"),
             RuntimeError::Composition(message) => write!(f, "{message}"),
+            RuntimeError::InvalidInput(message) => write!(f, "invalid input: {message}"),
             RuntimeError::Forge(error) => write!(f, "{error}"),
         }
     }
@@ -203,4 +228,138 @@ fn replace_repo_path(path: &str, owner: &str, name: &str) -> String {
 
 pub fn operation_for_tool(runtime: &ForgeRuntime, exposed_name: &str) -> Option<Operation> {
     runtime.tools.get(exposed_name).map(|tool| tool.operation)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runa_forge_contract::ForgeConnector;
+    use serde_json::{Value, json};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct RecordingConnector {
+        calls: Arc<Mutex<Vec<Operation>>>,
+    }
+
+    impl ForgeConnector for RecordingConnector {
+        fn set_name(&self) -> &str {
+            "test"
+        }
+
+        fn call(&self, operation: Operation, _input: Value) -> Result<Value, ForgeError> {
+            self.calls.lock().unwrap().push(operation);
+            Ok(json!({ "ok": true }))
+        }
+    }
+
+    #[test]
+    fn runtime_rejects_missing_required_input_for_every_operation_before_connector_dispatch() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let runtime = runtime_for_connector(
+            Box::new(RecordingConnector {
+                calls: Arc::clone(&calls),
+            }),
+            HashMap::new(),
+        )
+        .unwrap()
+        .expect("test connector should compose");
+
+        for operation in Operation::ALL {
+            let tool_name = operation.canonical_name();
+            let required = runtime.tools[tool_name]
+                .input_schema
+                .get("required")
+                .and_then(Value::as_array)
+                .expect("operation schema should list required fields")
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .expect("required field should be a string")
+                        .to_string()
+                })
+                .collect::<Vec<_>>();
+
+            for missing_field in required {
+                calls.lock().unwrap().clear();
+                let mut input = valid_input(operation);
+                input
+                    .as_object_mut()
+                    .expect("test input should be an object")
+                    .remove(&missing_field);
+
+                let error = runtime
+                    .call_tool(tool_name, input)
+                    .expect_err("missing required input should be rejected");
+
+                assert!(
+                    error.to_string().contains(&missing_field),
+                    "{tool_name} error should name missing field {missing_field}: {error}"
+                );
+                assert!(
+                    calls.lock().unwrap().is_empty(),
+                    "{tool_name} dispatched to connector despite missing {missing_field}"
+                );
+            }
+        }
+    }
+
+    fn valid_input(operation: Operation) -> Value {
+        let work_unit = json!({
+            "id": "test:scope:issue:203",
+            "display": "scope#203"
+        });
+        let change = json!({
+            "id": "test:scope:change:12:version:1",
+            "display": "change#12"
+        });
+        let disposition = json!({
+            "kind": "approved",
+            "against_version": 1,
+            "reviewer": "reviewer",
+            "reviewed_at": "2026-06-17T00:00:00Z",
+            "findings": []
+        });
+        let completion = json!({
+            "criterion_summary": "done",
+            "gaps": [],
+            "change_reference": "abc123",
+            "documentation_status": "updated"
+        });
+
+        match operation {
+            Operation::ReadTicket => json!({ "reference": "203" }),
+            Operation::CreateTicket => json!({ "title": "title", "body": "body" }),
+            Operation::ClaimWorkUnit => json!({ "handle": work_unit }),
+            Operation::RecordProgress => json!({ "handle": work_unit, "body": "progress" }),
+            Operation::DeliverChangeProposal => json!({
+                "work_unit": work_unit,
+                "branch": "issue-203",
+                "commit": "abc123",
+                "base": "main",
+                "summary": "summary",
+                "body": "body",
+                "version": 1
+            }),
+            Operation::ReflectDisposition => json!({
+                "work_unit": work_unit,
+                "change": change,
+                "disposition": disposition,
+                "body": "approved"
+            }),
+            Operation::ApplyApprovedChange => json!({
+                "work_unit": work_unit,
+                "change": change,
+                "approved_version": 1,
+                "approved_commit": "abc123",
+                "base": "main"
+            }),
+            Operation::CloseOut => json!({
+                "work_unit": work_unit,
+                "completion": completion,
+                "body": "done"
+            }),
+        }
+    }
 }

@@ -331,6 +331,21 @@ impl<T: GithubTransport> GithubConnector<T> {
         self.issue_number(Some(work_unit))?;
         let pull = self.pull_number(input.get("change"))?;
         let approved_commit = required_string(&input, "approved_commit")?;
+        let base = required_string(&input, "base")?;
+        let pull_snapshot = self.send(
+            "GET",
+            format!(
+                "/repos/{}/{}/pulls/{pull}",
+                self.config.owner, self.config.repo
+            ),
+            None,
+        )?;
+        let actual_base = response_string(&pull_snapshot, &["/base/ref"])?;
+        if actual_base != base {
+            return Err(ForgeError::InvalidInput(format!(
+                "change base '{actual_base}' does not match requested base '{base}'"
+            )));
+        }
         let response = self.send(
             "PUT",
             format!(
@@ -354,13 +369,21 @@ impl<T: GithubTransport> GithubConnector<T> {
             .ok_or_else(|| ForgeError::InvalidInput("work_unit is required".into()))?;
         let number = self.issue_number(Some(work_unit))?;
         let body = required_string(&input, "body")?;
+        self.send(
+            "POST",
+            format!(
+                "/repos/{}/{}/issues/{number}/comments",
+                self.config.owner, self.config.repo
+            ),
+            Some(json!({ "body": body })),
+        )?;
         let response = self.send(
             "PATCH",
             format!(
                 "/repos/{}/{}/issues/{number}",
                 self.config.owner, self.config.repo
             ),
-            Some(json!({ "state": "closed", "body": body })),
+            Some(json!({ "state": "closed" })),
         )?;
         Ok(json!({ "handle": self.issue_handle(number), "receipt": receipt(response, "closed") }))
     }

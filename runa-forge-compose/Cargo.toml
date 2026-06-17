@@ -9,6 +9,7 @@ libagent.workspace = true
 runa-forge-contract.workspace = true
 runa-forge-github.workspace = true
 runa-forge-sourcehut.workspace = true
+jsonschema.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

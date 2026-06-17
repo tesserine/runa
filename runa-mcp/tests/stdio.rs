@@ -1967,6 +1967,63 @@ async fn mcp_forge_connector_uses_resolved_override_identity() {
 }
 
 #[tokio::test]
+async fn mcp_rejects_forge_input_missing_advertised_required_field_before_dispatch() {
+    let dir = setup_project();
+    let project_dir = dir.path().join("project");
+    append_github_forge_config_with_api(&project_dir, "tesserine", "runa", "http://127.0.0.1:9");
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("implement")
+                        .arg("--work-unit")
+                        .arg("wu-1")
+                        .env_remove("RUNA_FORGE_TYPE")
+                        .env_remove("RUNA_FORGE_OWNER")
+                        .env_remove("RUNA_FORGE_NAME")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let result = service
+        .call_tool(tool_call(
+            "apply-approved-change",
+            serde_json::json!({
+                "work_unit": {
+                    "id": "github:tesserine/runa:issue:203",
+                    "display": "tesserine/runa#203"
+                },
+                "change": {
+                    "id": "github:tesserine/runa:pull:12:version:1",
+                    "display": "tesserine/runa#12"
+                },
+                "approved_commit": "abc123",
+                "base": "main"
+            }),
+        ))
+        .await
+        .unwrap();
+    let text = tool_result_text(&result);
+    assert!(
+        text.contains("approved_version") && text.contains("advertised schema"),
+        "missing required field should be rejected by the MCP surface schema guard: {text}"
+    );
+    assert!(
+        !text.contains("transport error"),
+        "schema rejection must happen before provider transport dispatch: {text}"
+    );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn mcp_rejects_exact_tracker_backed_work_unit_with_number_disagreement() {
     let dir = tempfile::tempdir().unwrap();
     let manifest_path = write_methodology(
