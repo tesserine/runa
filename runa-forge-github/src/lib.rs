@@ -3,6 +3,8 @@ use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+const GITHUB_USER_AGENT: &str = concat!("runa-forge-github/", env!("CARGO_PKG_VERSION"));
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GithubConfig {
     pub owner: String,
@@ -112,7 +114,10 @@ pub struct GithubHttpTransport;
 impl GithubTransport for GithubHttpTransport {
     fn send(&self, config: &GithubConfig, request: ProviderRequest) -> Result<Value, ForgeError> {
         let url = format!("{}{}", config.api_base.trim_end_matches('/'), request.path);
-        let client = reqwest::blocking::Client::new();
+        let client = reqwest::blocking::Client::builder()
+            .user_agent(GITHUB_USER_AGENT)
+            .build()
+            .map_err(|error| ForgeError::Transport(error.to_string()))?;
         let builder = match request.method.as_str() {
             "GET" => client.get(&url),
             "POST" => client.post(&url),
@@ -285,7 +290,7 @@ impl<T: GithubTransport> GithubConnector<T> {
         let base = required_string(&input, "base")?;
         let summary = required_string(&input, "summary")?;
         let body = required_string(&input, "body")?;
-        let _commit = required_string(&input, "commit")?;
+        let commit = required_string(&input, "commit")?;
         let version = required_u64(&input, "version")?;
         let response = self.send(
             "POST",
@@ -293,7 +298,12 @@ impl<T: GithubTransport> GithubConnector<T> {
             Some(json!({ "title": summary, "head": branch, "base": base, "body": body })),
         )?;
         let number = response.get("number").and_then(Value::as_u64).unwrap_or(0);
-        let delivered_commit = response_string(&response, &["/head/sha", "/head/ref", "/sha"])?;
+        let delivered_commit = response_string(&response, &["/head/sha"])?;
+        if delivered_commit != commit {
+            return Err(ForgeError::InvalidInput(format!(
+                "created PR head SHA '{delivered_commit}' does not match requested commit '{commit}'"
+            )));
+        }
         Ok(json!({
             "handle": self.pull_handle(number, version),
             "work_unit": work_unit,

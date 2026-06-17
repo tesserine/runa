@@ -61,6 +61,8 @@ fn github_error_server() -> (String, thread::JoinHandle<()>) {
         let mut request = [0_u8; 4096];
         let size = stream.read(&mut request).unwrap();
         assert!(size > 0, "expected an HTTP request");
+        let request = String::from_utf8_lossy(&request[..size]);
+        assert_github_user_agent(&request);
         let body = r#"{"message":"provider rejected request"}"#;
         write!(
             stream,
@@ -71,6 +73,14 @@ fn github_error_server() -> (String, thread::JoinHandle<()>) {
         .unwrap();
     });
     (format!("http://{address}"), server)
+}
+
+fn assert_github_user_agent(request: &str) {
+    let request = request.to_ascii_lowercase();
+    assert!(
+        request.contains("\r\nuser-agent: runa-forge-github/"),
+        "missing runa GitHub User-Agent header: {request}"
+    );
 }
 
 #[test]
@@ -129,6 +139,7 @@ fn every_operation_constructs_the_expected_provider_request() {
         "state": "open",
         "html_url": "https://github.com/tesserine/runa/pull/12",
         "base": { "ref": "main" },
+        "head": { "sha": "abc123" },
         "sha": "abc123",
         "merged": true
     }));
@@ -278,6 +289,40 @@ fn apply_approved_change_rejects_base_mismatch_before_merge() {
 }
 
 #[test]
+fn deliver_change_proposal_rejects_created_pr_head_sha_mismatch() {
+    let transport = GithubRecordingTransport::with_response(json!({
+        "number": 12,
+        "head": { "sha": "different-commit" }
+    }));
+    let connector = GithubConnector::new(config("https://api.github.test"), transport.clone());
+
+    let error = connector
+        .call(
+            Operation::DeliverChangeProposal,
+            json!({
+                "work_unit": handle(203),
+                "branch": "issue-203",
+                "commit": "requested-commit",
+                "base": "main",
+                "summary": "summary",
+                "body": "body",
+                "version": 1
+            }),
+        )
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("requested-commit")
+            && error.to_string().contains("different-commit"),
+        "head SHA mismatch should report requested and actual commits: {error}"
+    );
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/repos/tesserine/runa/pulls");
+}
+
+#[test]
 fn every_operation_rejects_http_error_status_without_success_receipts() {
     for operation in Operation::ALL {
         let (api_base, server) = github_error_server();
@@ -307,6 +352,7 @@ fn production_http_transport_executes_and_parses_read_ticket() {
         let size = stream.read(&mut request).unwrap();
         let request = String::from_utf8_lossy(&request[..size]);
         assert!(request.starts_with("GET /repos/tesserine/runa/issues/203 "));
+        assert_github_user_agent(&request);
         let body = r#"{"number":203,"title":"Harness title","body":"Harness body","state":"open"}"#;
         write!(
             stream,
@@ -355,7 +401,7 @@ fn production_http_transport_executes_and_parses_every_operation() {
         (
             "POST",
             "/repos/tesserine/runa/pulls",
-            r#"{"number":12,"head":{"sha":"harness-pr-head"}}"#,
+            r#"{"number":12,"head":{"sha":"input-commit"}}"#,
         ),
         (
             "POST",
@@ -393,6 +439,7 @@ fn production_http_transport_executes_and_parses_every_operation() {
                 request.starts_with(&format!("{method} {path} ")),
                 "unexpected request: {request}"
             );
+            assert_github_user_agent(&request);
             if path.ends_with("/assignees") {
                 assert!(request.contains(r#""assignees":["pentaxis93"]"#));
             }
@@ -455,7 +502,7 @@ fn production_http_transport_executes_and_parses_every_operation() {
     assert_eq!(created["title"], "Harness create");
     assert_eq!(claimed["receipt"], "https://api.github.test/claim/203");
     assert_eq!(progress["receipt"], "https://github.test/progress/1");
-    assert_eq!(delivered["commit"], "harness-pr-head");
+    assert_eq!(delivered["commit"], "input-commit");
     assert_eq!(disposition["receipt"], "https://github.test/disposition/1");
     assert_eq!(applied["applied_commit"], "merged-sha");
     assert_eq!(closed["receipt"], "https://github.test/closed/203");
@@ -475,6 +522,7 @@ fn production_http_close_out_preserves_issue_body_and_records_note() {
         let size = stream.read(&mut request).unwrap();
         let request = String::from_utf8_lossy(&request[..size]);
         assert!(request.starts_with("POST /repos/tesserine/runa/issues/203/comments "));
+        assert_github_user_agent(&request);
         comments.push("closing note".to_string());
         let body = r#"{"html_url":"https://github.test/comments/1"}"#;
         write!(
@@ -490,6 +538,7 @@ fn production_http_close_out_preserves_issue_body_and_records_note() {
         let size = stream.read(&mut request).unwrap();
         let request = String::from_utf8_lossy(&request[..size]);
         assert!(request.starts_with("PATCH /repos/tesserine/runa/issues/203 "));
+        assert_github_user_agent(&request);
         let patch: serde_json::Value =
             serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!(patch, json!({ "state": "closed" }));
