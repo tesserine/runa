@@ -20,6 +20,10 @@ Semantic Versioning.
 
 ### Added
 
+- Forge-capability v1.1.0 connector surface for `runa-mcp`: configured GitHub
+  and SourceHut connectors advertise the eight forge operations as structured
+  MCP tools, support role-qualified aliases, and accept canonical ticket
+  reference forms through connector-only deployment config.
 - README ecosystem links corrected: commons described as the
   convention/ADR authority with principles at their canonical home
   `pentaxis93/principles` (#181), and the agentd/groundwork links moved to
@@ -77,6 +81,8 @@ Semantic Versioning.
 
 ### Changed
 
+- `runa-mcp` now builds on `rmcp` 1.7 while preserving the existing
+  driver/output artifact tool surface.
 - Durable transcript capture settings and scoped forge identity can now live in
   `.runa/config.toml`, with `RUNA_TRANSCRIPT_*` and `RUNA_FORGE_*`
   environment variables retained as per-invocation overrides. Resolved forge

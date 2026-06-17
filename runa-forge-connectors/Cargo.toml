@@ -1,0 +1,13 @@
+[package]
+name = "runa-forge-connectors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+libagent.workspace = true
+runa-forge.workspace = true
+runa-forge-github.workspace = true
+runa-forge-sourcehut.workspace = true
+serde_json.workspace = true

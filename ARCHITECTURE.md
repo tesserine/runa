@@ -163,13 +163,13 @@ output-tool surface.
 
 ### `handler.rs`
 
-`ServerHandler` implementation. `RunaHandler` derives one MCP tool per output artifact type (`produces` + required output choice members + viable `may_produce`), with tool input schemas derived from artifact type JSON Schemas (with `work_unit` stripped). `validate_protocol_scope` rejects scoped protocols without `--work-unit` and unscoped protocols with one. `validate_output_types` remains a defense-in-depth guard for required output schemas unsupported by MCP tool generation, while sharing the same unscoped-output `work_unit` predicate used by manifest parsing. In fixed-protocol mode, `call_tool` validates artifacts before writing, then writes to the workspace and records in the store. In session mode, the handler also exposes `readiness`, `next-protocol-context`, and `advance`; output tools always derive from the current step, and any declared output type for that step that collides with a reserved driver name is refused before the step is entered.
+`ServerHandler` implementation. `RunaHandler` derives one MCP tool per output artifact type (`produces` + required output choice members + viable `may_produce`), with tool input schemas derived from artifact type JSON Schemas (with `work_unit` stripped). Configured forge connectors contribute the forge-capability v1.1.0 operation tools to the same composed MCP registry, where role-qualified aliases resolve exposed names and collisions are refused. `validate_protocol_scope` rejects scoped protocols without `--work-unit` and unscoped protocols with one. `validate_output_types` remains a defense-in-depth guard for required output schemas unsupported by MCP tool generation, while sharing the same unscoped-output `work_unit` predicate used by manifest parsing. In fixed-protocol mode, `call_tool` validates artifacts before writing, then writes to the workspace and records in the store. In session mode, the handler also exposes `readiness`, `next-protocol-context`, and `advance`; output tools always derive from the current step, and any declared output type for that step that collides with a reserved driver name is refused before the step is entered.
 
 ## `.runa/` Directory Layout
 
 ```
 .runa/
-  config.toml                   # Created by `runa init`: methodology_path, optional logging, agent.command, transcript, forge defaults
+  config.toml                   # Created by `runa init`: methodology_path, optional logging, agent.command, transcript, forge and connector defaults
   state.toml                    # Created by `runa init`: initialized_at, runa_version
   workspace/                    # Artifact workspace (non-configurable)
     {type_name}/

@@ -28,7 +28,7 @@ use std::fmt;
 
 use serde_json::Value;
 
-use crate::project::ForgeConfig;
+use crate::project::{Config, ForgeConfig};
 use crate::store::{ArtifactStore, ValidationStatus};
 
 pub const RUNA_FORGE_TYPE: &str = "RUNA_FORGE_TYPE";
@@ -223,6 +223,47 @@ pub fn resolve_forge_identity(config: &ForgeConfig) -> ResolvedForgeIdentity {
         owner: resolve_atom(RUNA_FORGE_OWNER, config.owner.as_deref()),
         name: resolve_atom(RUNA_FORGE_NAME, config.name.as_deref()),
         tracker_id: resolve_atom(RUNA_FORGE_TRACKER_ID, config.tracker_id.as_deref()),
+    }
+}
+
+pub fn resolve_project_forge_identity(config: &Config) -> ResolvedForgeIdentity {
+    if forge_config_has_identity(&config.forge) {
+        return resolve_forge_identity(&config.forge);
+    }
+    let fallback = connector_forge_config(config);
+    resolve_forge_identity(&fallback)
+}
+
+fn forge_config_has_identity(config: &ForgeConfig) -> bool {
+    config.forge_type.is_some()
+        || config.owner.is_some()
+        || config.name.is_some()
+        || config.tracker_id.is_some()
+}
+
+fn connector_forge_config(config: &Config) -> ForgeConfig {
+    match config.connectors.forge.provider.as_deref() {
+        Some("github") => {
+            let github = config.connectors.forge.github.as_ref();
+            ForgeConfig {
+                forge_type: Some("github".to_string()),
+                owner: github.and_then(|github| github.owner.clone()),
+                name: github.and_then(|github| github.name.clone()),
+                tracker_id: None,
+            }
+        }
+        Some("sourcehut") => {
+            let sourcehut = config.connectors.forge.sourcehut.as_ref();
+            ForgeConfig {
+                forge_type: Some("sourcehut".to_string()),
+                owner: sourcehut.and_then(|sourcehut| sourcehut.owner.clone()),
+                name: sourcehut.and_then(|sourcehut| sourcehut.name.clone()),
+                tracker_id: sourcehut
+                    .and_then(|sourcehut| sourcehut.tracker_id)
+                    .map(|tracker_id| tracker_id.to_string()),
+            }
+        }
+        _ => config.forge.clone(),
     }
 }
 

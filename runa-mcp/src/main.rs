@@ -68,13 +68,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     apply_transcript_settings(&working_dir, &loaded.config);
     libagent::scan(&loaded.workspace_dir, &mut loaded.store)?;
     if let Some(work_unit) = cli.work_unit.as_deref() {
-        let identity = libagent::resolve_forge_identity(&loaded.config.forge);
+        let identity = libagent::resolve_project_forge_identity(&loaded.config);
         libagent::validate_scoped_work_unit_with_identity(&loaded.store, work_unit, &identity)?;
     }
     if cli.session {
         let handler = match cli.ticket.as_deref() {
             Some(ticket) => {
-                let identity = libagent::resolve_forge_identity(&loaded.config.forge);
+                let identity = libagent::resolve_project_forge_identity(&loaded.config);
                 let ticket_ref = libagent::resolve_ticket_reference(ticket, &identity)?;
                 RunaHandler::new_session_entry(working_dir.clone(), config_ref, ticket_ref)?
             }
@@ -131,12 +131,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         "serving protocol"
     );
 
-    let handler = RunaHandler::new(
+    let handler = RunaHandler::new_with_config(
         protocol.clone(),
         cli.work_unit.clone(),
         loaded.store,
         loaded.workspace_dir.clone(),
-    );
+        &loaded.config,
+    )?;
 
     let (stdin, stdout) = io::stdio();
     let service = handler.serve((stdin, stdout)).await.inspect_err(|e| {

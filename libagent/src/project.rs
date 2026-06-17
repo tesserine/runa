@@ -4,6 +4,7 @@
 //! manifest, builds the dependency graph, and initializes the artifact store.
 //! See [`load`] for the main entry point.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -88,6 +89,92 @@ impl ForgeConfig {
     }
 }
 
+/// Credential lookup for connector-backed integrations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ConnectorCredentialConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+}
+
+/// GitHub forge connector configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GithubForgeConnectorConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_remote: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential: Option<ConnectorCredentialConfig>,
+}
+
+/// SourceHut forge connector configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SourcehutForgeConnectorConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracker_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee_user_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential: Option<ConnectorCredentialConfig>,
+}
+
+/// Forge connector selection and provider-specific configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ForgeConnectorsConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<GithubForgeConnectorConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sourcehut: Option<SourcehutForgeConnectorConfig>,
+}
+
+impl ForgeConnectorsConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// Optional connector configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ConnectorsConfig {
+    #[serde(default, skip_serializing_if = "ForgeConnectorsConfig::is_default")]
+    pub forge: ForgeConnectorsConfig,
+}
+
+impl ConnectorsConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// MCP server-specific configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct McpConfig {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tool_aliases: HashMap<String, String>,
+}
+
+impl McpConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 /// On-disk format for `.runa/config.toml` — operator configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
@@ -100,6 +187,10 @@ pub struct Config {
     pub transcript: TranscriptConfig,
     #[serde(default, skip_serializing_if = "ForgeConfig::is_default")]
     pub forge: ForgeConfig,
+    #[serde(default, skip_serializing_if = "ConnectorsConfig::is_default")]
+    pub connectors: ConnectorsConfig,
+    #[serde(default, skip_serializing_if = "McpConfig::is_default")]
+    pub mcp: McpConfig,
 }
 
 /// On-disk format for `.runa/state.toml` — initialization metadata managed by runa.
@@ -343,6 +434,8 @@ trigger = { type = "on_change", name = "constraints" }
             agent: AgentConfig::default(),
             transcript: TranscriptConfig::default(),
             forge: ForgeConfig::default(),
+            connectors: ConnectorsConfig::default(),
+            mcp: McpConfig::default(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -406,6 +499,8 @@ trigger = { type = "on_change", name = "constraints" }
             agent: AgentConfig::default(),
             transcript: TranscriptConfig::default(),
             forge: ForgeConfig::default(),
+            connectors: ConnectorsConfig::default(),
+            mcp: McpConfig::default(),
         };
         fs::write(&external_config_path, toml::to_string(&config).unwrap()).unwrap();
 
@@ -489,6 +584,8 @@ artifacts_dir = "custom-artifacts"
             agent: AgentConfig::default(),
             transcript: TranscriptConfig::default(),
             forge: ForgeConfig::default(),
+            connectors: ConnectorsConfig::default(),
+            mcp: McpConfig::default(),
         };
         fs::write(
             runa_dir.join("config.toml"),
@@ -518,6 +615,62 @@ artifacts_dir = "custom-artifacts"
 
         let resolved = resolve_config(&working, Some(&override_path)).unwrap();
         assert_eq!(resolved, override_path);
+    }
+
+    #[test]
+    fn read_config_accepts_forge_connector_blocks_and_mcp_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let runa_dir = dir.path().join(".runa");
+        fs::create_dir_all(&runa_dir).unwrap();
+        fs::write(
+            runa_dir.join("config.toml"),
+            r#"
+methodology_path = "/tmp/methodology/manifest.toml"
+
+[connectors.forge]
+provider = "github"
+
+[connectors.forge.github]
+owner = "tesserine"
+name = "runa"
+api_base_url = "https://api.github.com"
+web_base_url = "https://github.com"
+git_remote = "origin"
+credential = { env = "GITHUB_TOKEN" }
+
+[connectors.forge.sourcehut]
+owner = "operator"
+name = "weforge"
+tracker_id = 4
+endpoint = "weforge.build"
+credential = { env = "WEFORGE_OPERATOR_PAT" }
+
+[mcp.tool_aliases]
+"forge/read-ticket" = "forge-read-ticket"
+"#,
+        )
+        .unwrap();
+
+        let config = read_config(dir.path(), None).unwrap();
+        assert_eq!(config.connectors.forge.provider.as_deref(), Some("github"));
+        let github = config.connectors.forge.github.as_ref().unwrap();
+        assert_eq!(github.owner.as_deref(), Some("tesserine"));
+        assert_eq!(github.name.as_deref(), Some("runa"));
+        assert_eq!(
+            github.credential.as_ref().unwrap().env.as_deref(),
+            Some("GITHUB_TOKEN")
+        );
+        let sourcehut = config.connectors.forge.sourcehut.as_ref().unwrap();
+        assert_eq!(sourcehut.tracker_id, Some(4));
+        assert_eq!(sourcehut.endpoint.as_deref(), Some("weforge.build"));
+        assert_eq!(
+            config
+                .mcp
+                .tool_aliases
+                .get("forge/read-ticket")
+                .map(String::as_str),
+            Some("forge-read-ticket")
+        );
     }
 
     #[test]
@@ -679,6 +832,8 @@ tracker_id = "4"
                 name: Some("runa".to_string()),
                 tracker_id: Some("4".to_string()),
             },
+            connectors: ConnectorsConfig::default(),
+            mcp: McpConfig::default(),
         };
 
         let serialized = toml::to_string(&config).unwrap();

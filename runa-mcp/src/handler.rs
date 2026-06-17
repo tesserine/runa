@@ -6,6 +6,8 @@ use rmcp::Error as McpError;
 use rmcp::ServerHandler;
 use rmcp::model::*;
 use rmcp::service::{RequestContext, RoleServer};
+use runa_forge::{ForgeConnector, Operation};
+use runa_toolset::{ToolRegistry, ToolSet, compose_tool_sets};
 use serde_json::Value;
 use tracing::{info, warn};
 
@@ -23,8 +25,11 @@ pub struct RunaHandler {
     state: Option<Mutex<HandlerState>>,
     workspace_dir: PathBuf,
     tools: Vec<Tool>,
+    tool_registry: ToolRegistry,
     /// Maps artifact type name → full JSON Schema (with work_unit intact).
     tool_schemas: HashMap<String, Value>,
+    tool_aliases: HashMap<String, String>,
+    forge_connector: Option<Arc<dyn ForgeConnector>>,
     session: Option<Mutex<SessionState>>,
 }
 
@@ -33,6 +38,7 @@ struct HandlerState {
 }
 
 impl RunaHandler {
+    #[cfg(test)]
     pub fn new(
         protocol: ProtocolDeclaration,
         work_unit: Option<String>,
@@ -41,14 +47,69 @@ impl RunaHandler {
     ) -> Self {
         let (tools, tool_schemas) =
             output_tools_for_protocol(&protocol, work_unit.as_deref(), &store, false);
+        Self::new_with_parts(
+            protocol,
+            work_unit,
+            store,
+            workspace_dir,
+            tools,
+            tool_schemas,
+            HashMap::new(),
+            None,
+        )
+    }
+
+    pub fn new_with_config(
+        protocol: ProtocolDeclaration,
+        work_unit: Option<String>,
+        store: ArtifactStore,
+        workspace_dir: PathBuf,
+        config: &libagent::project::Config,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let (tools, tool_schemas) =
+            output_tools_for_protocol(&protocol, work_unit.as_deref(), &store, false);
+        let forge_connector =
+            runa_forge_connectors::configured_forge_connector(config)?.map(Arc::from);
+        Ok(Self::new_with_parts(
+            protocol,
+            work_unit,
+            store,
+            workspace_dir,
+            tools,
+            tool_schemas,
+            config.mcp.tool_aliases.clone(),
+            forge_connector,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_parts(
+        protocol: ProtocolDeclaration,
+        work_unit: Option<String>,
+        store: ArtifactStore,
+        workspace_dir: PathBuf,
+        output_tools: Vec<Tool>,
+        tool_schemas: HashMap<String, Value>,
+        tool_aliases: HashMap<String, String>,
+        forge_connector: Option<Arc<dyn ForgeConnector>>,
+    ) -> Self {
+        let tool_registry = compose_handler_tools(
+            output_tools.clone(),
+            forge_connector.as_deref(),
+            &tool_aliases,
+        )
+        .unwrap_or_else(|error| panic!("fixed protocol tool composition failed: {error}"));
 
         Self {
             protocol: Some(protocol),
             work_unit,
             state: Some(Mutex::new(HandlerState { store })),
             workspace_dir,
-            tools,
+            tools: tool_registry.tools().to_vec(),
+            tool_registry,
             tool_schemas,
+            tool_aliases,
+            forge_connector,
             session: None,
         }
     }
@@ -64,6 +125,10 @@ impl RunaHandler {
             work_unit,
             validate_session_step_output_types,
         )?;
+        let forge_connector =
+            runa_forge_connectors::configured_forge_connector(&session.loaded.config)?
+                .map(Arc::from);
+        let tool_aliases = session.loaded.config.mcp.tool_aliases.clone();
 
         Ok(Self {
             protocol: None,
@@ -73,7 +138,14 @@ impl RunaHandler {
             state: None,
             workspace_dir: session.workspace_dir().to_path_buf(),
             tools: Vec::new(),
+            tool_registry: compose_handler_tools(
+                Vec::new(),
+                forge_connector.as_deref(),
+                &tool_aliases,
+            )?,
             tool_schemas: HashMap::new(),
+            tool_aliases,
+            forge_connector,
             session: Some(Mutex::new(session)),
         })
     }
@@ -89,6 +161,10 @@ impl RunaHandler {
             ticket,
             validate_session_step_output_types,
         )?;
+        let forge_connector =
+            runa_forge_connectors::configured_forge_connector(&session.loaded.config)?
+                .map(Arc::from);
+        let tool_aliases = session.loaded.config.mcp.tool_aliases.clone();
 
         Ok(Self {
             protocol: None,
@@ -98,7 +174,14 @@ impl RunaHandler {
             state: None,
             workspace_dir: session.workspace_dir().to_path_buf(),
             tools: Vec::new(),
+            tool_registry: compose_handler_tools(
+                Vec::new(),
+                forge_connector.as_deref(),
+                &tool_aliases,
+            )?,
             tool_schemas: HashMap::new(),
+            tool_aliases,
+            forge_connector,
             session: Some(Mutex::new(session)),
         })
     }
@@ -306,10 +389,22 @@ impl RunaHandler {
             None,
         )?;
 
-        let (_, schemas) = session_tools_and_schemas(&session)
-            .map_err(|error| McpError::internal_error(error, None))?;
+        let (registry, schemas) = session_surface(
+            &session,
+            self.forge_connector.as_deref(),
+            &self.tool_aliases,
+        )
+        .map_err(|error| McpError::internal_error(error, None))?;
+        let source = registry
+            .resolve(tool_name)
+            .ok_or_else(|| McpError::invalid_params(format!("unknown tool: {tool_name}"), None))?
+            .clone();
+        if source.role == "forge" {
+            return call_forge_tool(self.forge_connector.as_deref(), &source.local_name, request);
+        }
+        let artifact_type = source.local_name;
         let full_schema = schemas
-            .get(tool_name)
+            .get(&artifact_type)
             .ok_or_else(|| McpError::invalid_params(format!("unknown tool: {tool_name}"), None))?;
         let mut data = match request.arguments {
             Some(args) => Value::Object(args),
@@ -320,7 +415,7 @@ impl RunaHandler {
         validate_instance_id(&instance_id).map_err(|e| McpError::invalid_params(e, None))?;
 
         let at = ArtifactType {
-            name: tool_name.to_string(),
+            name: artifact_type.clone(),
             schema: full_schema.clone(),
         };
         if at.schema_mentions_work_unit()
@@ -343,7 +438,7 @@ impl RunaHandler {
             return Ok(CallToolResult::error(vec![Content::text(msg)]));
         }
 
-        let type_dir = session.workspace_dir().join(tool_name);
+        let type_dir = session.workspace_dir().join(&artifact_type);
         std::fs::create_dir_all(&type_dir).map_err(|e| {
             McpError::internal_error(format!("failed to create directory: {e}"), None)
         })?;
@@ -355,10 +450,10 @@ impl RunaHandler {
         })?;
         session
             .store_mut()
-            .record(tool_name, &instance_id, &artifact_path, &data)
+            .record(&artifact_type, &instance_id, &artifact_path, &data)
             .map_err(|e| McpError::internal_error(format!("store error: {e}"), None))?;
 
-        let message = format!("Produced {tool_name}/{instance_id}.json");
+        let message = format!("Produced {artifact_type}/{instance_id}.json");
         append_tool_event(
             "tool_result",
             &protocol_name,
@@ -593,6 +688,84 @@ fn session_tools_and_schemas(
     Ok((tools, schemas))
 }
 
+fn session_surface(
+    session: &SessionState,
+    forge_connector: Option<&dyn ForgeConnector>,
+    aliases: &HashMap<String, String>,
+) -> Result<(ToolRegistry, HashMap<String, Value>), String> {
+    let (tools, schemas) = session_tools_and_schemas(session)?;
+    let registry = compose_handler_tools(tools, forge_connector, aliases)
+        .map_err(|error| error.to_string())?;
+    Ok((registry, schemas))
+}
+
+fn compose_handler_tools(
+    artifact_tools: Vec<Tool>,
+    forge_connector: Option<&dyn ForgeConnector>,
+    aliases: &HashMap<String, String>,
+) -> Result<ToolRegistry, runa_toolset::ComposeError> {
+    let mut tool_sets = vec![ToolSet::new("artifact", artifact_tools)];
+    if let Some(connector) = forge_connector {
+        tool_sets.push(ToolSet::new("forge", forge_tools(connector)));
+    }
+    compose_tool_sets(tool_sets, aliases)
+}
+
+fn forge_tools(connector: &dyn ForgeConnector) -> Vec<Tool> {
+    connector
+        .descriptor()
+        .tools
+        .into_iter()
+        .map(|descriptor| {
+            Tool::new(
+                descriptor.operation.name(),
+                format!("Execute forge operation '{}'", descriptor.operation.name()),
+                Arc::new(schema_object(runa_forge::input_schema(
+                    descriptor.operation,
+                ))),
+            )
+            .with_raw_output_schema(Arc::new(schema_object(
+                runa_forge::output_schema(descriptor.operation),
+            )))
+        })
+        .collect()
+}
+
+fn schema_object(schema: Value) -> serde_json::Map<String, Value> {
+    match schema {
+        Value::Object(map) => map,
+        _ => {
+            serde_json::Map::from_iter([("type".to_string(), Value::String("object".to_string()))])
+        }
+    }
+}
+
+fn call_forge_tool(
+    connector: Option<&dyn ForgeConnector>,
+    local_name: &str,
+    request: CallToolRequestParam,
+) -> Result<CallToolResult, McpError> {
+    let connector = connector
+        .ok_or_else(|| McpError::invalid_params(format!("unknown tool: {local_name}"), None))?;
+    let operation = operation_from_name(local_name).ok_or_else(|| {
+        McpError::invalid_params(format!("unknown forge tool: {local_name}"), None)
+    })?;
+    let input = Value::Object(request.arguments.unwrap_or_default());
+    match connector.dry_run(operation, input) {
+        Ok(output) => Ok(CallToolResult::structured(output)),
+        Err(error) => Ok(CallToolResult::structured_error(serde_json::json!({
+            "error": error.to_string()
+        }))),
+    }
+}
+
+fn operation_from_name(name: &str) -> Option<Operation> {
+    Operation::ALL
+        .iter()
+        .copied()
+        .find(|operation| operation.name() == name)
+}
+
 /// Check whether a JSON Schema uses composition keywords that prevent
 /// reliable work_unit stripping and tool generation.
 fn has_composition_keywords(schema: &Value) -> bool {
@@ -776,15 +949,9 @@ impl ServerHandler for RunaHandler {
         } else {
             ServerCapabilities::builder().enable_tools().build()
         };
-        ServerInfo {
-            protocol_version: ProtocolVersion::default(),
-            capabilities,
-            server_info: Implementation {
-                name: "runa-mcp".into(),
-                version: libagent::version().into(),
-            },
-            instructions: Some(instructions),
-        }
+        ServerInfo::new(capabilities)
+            .with_server_info(Implementation::from_build_env())
+            .with_instructions(instructions)
     }
 
     async fn list_tools(
@@ -794,14 +961,20 @@ impl ServerHandler for RunaHandler {
     ) -> Result<ListToolsResult, McpError> {
         if let Some(session) = &self.session {
             let session = session.lock().unwrap();
-            let (tools, _) = session_tools_and_schemas(&session)
-                .map_err(|error| McpError::internal_error(error, None))?;
+            let (registry, _) = session_surface(
+                &session,
+                self.forge_connector.as_deref(),
+                &self.tool_aliases,
+            )
+            .map_err(|error| McpError::internal_error(error, None))?;
             return Ok(ListToolsResult {
+                meta: None,
                 next_cursor: None,
-                tools,
+                tools: registry.tools().to_vec(),
             });
         }
         Ok(ListToolsResult {
+            meta: None,
             next_cursor: None,
             tools: self.tools.clone(),
         })
@@ -834,10 +1007,20 @@ impl ServerHandler for RunaHandler {
             None,
         )?;
 
+        let source = self
+            .tool_registry
+            .resolve(&tool_name)
+            .ok_or_else(|| McpError::invalid_params(format!("unknown tool: {tool_name}"), None))?
+            .clone();
+        if source.role == "forge" {
+            return call_forge_tool(self.forge_connector.as_deref(), &source.local_name, request);
+        }
+        let artifact_type = source.local_name;
+
         // Look up the full schema for this artifact type.
         let full_schema = self
             .tool_schemas
-            .get(&tool_name)
+            .get(&artifact_type)
             .ok_or_else(|| McpError::invalid_params(format!("unknown tool: {tool_name}"), None))?;
 
         // Build the artifact data from arguments, extracting instance_id first.
@@ -867,7 +1050,7 @@ impl ServerHandler for RunaHandler {
         validate_instance_id(&instance_id).map_err(|e| McpError::invalid_params(e, None))?;
 
         let at = ArtifactType {
-            name: tool_name.to_string(),
+            name: artifact_type.clone(),
             schema: full_schema.clone(),
         };
 
@@ -902,7 +1085,7 @@ impl ServerHandler for RunaHandler {
         }
 
         // Write artifact to workspace.
-        let type_dir = self.workspace_dir.join(&tool_name);
+        let type_dir = self.workspace_dir.join(&artifact_type);
         std::fs::create_dir_all(&type_dir).map_err(|e| {
             McpError::internal_error(format!("failed to create directory: {e}"), None)
         })?;
@@ -922,19 +1105,19 @@ impl ServerHandler for RunaHandler {
             .unwrap();
         state
             .store
-            .record(&tool_name, &instance_id, &artifact_path, &data)
+            .record(&artifact_type, &instance_id, &artifact_path, &data)
             .map_err(|e| McpError::internal_error(format!("store error: {e}"), None))?;
 
         info!(
             operation = "tool_call",
             outcome = "artifact_written",
-            artifact_type = %tool_name,
+            artifact_type = %artifact_type,
             instance_id = %instance_id,
             work_unit = ?self.work_unit,
             "artifact written to workspace"
         );
 
-        let message = format!("Produced {tool_name}/{instance_id}.json");
+        let message = format!("Produced {artifact_type}/{instance_id}.json");
         append_tool_event(
             "tool_result",
             &protocol.name,

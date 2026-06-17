@@ -1744,6 +1744,8 @@ cat >/dev/null
                 name: Some("runa".to_string()),
                 tracker_id: None,
             },
+            connectors: libagent::project::ConnectorsConfig::default(),
+            mcp: libagent::project::McpConfig::default(),
         };
 
         let env = resolved_runtime_env(temp.path(), &config);

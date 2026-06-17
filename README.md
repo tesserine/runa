@@ -208,9 +208,9 @@ See [CLI Reference](docs/cli-reference.md) for flags, exit codes, configuration,
 
 `runa init` creates `.runa/config.toml` with the methodology path. Operators
 may also set durable project defaults there for live agent command,
-transcript capture, and scoped forge identity. Environment variables such as
-`RUNA_TRANSCRIPT_DIR` and `RUNA_FORGE_*` remain per-invocation overrides;
-config is the project-local default.
+transcript capture, scoped forge identity, and forge connector MCP tools.
+Environment variables such as `RUNA_TRANSCRIPT_DIR` and `RUNA_FORGE_*` remain
+per-invocation overrides; config is the project-local default.
 
 Runa ships supported agent adapters for Codex and Claude Code in `adapters/`.
 Set `[agent].command` to `./adapters/agent-codex.sh` or

@@ -4,7 +4,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::project::{
-    CONFIG_FILENAME, Config, DEFAULT_WORKSPACE_DIR, RUNA_DIR, STATE_FILENAME, STORE_DIRNAME, State,
+    CONFIG_FILENAME, Config, ConnectorsConfig, DEFAULT_WORKSPACE_DIR, McpConfig, RUNA_DIR,
+    STATE_FILENAME, STORE_DIRNAME, State,
 };
 
 #[derive(Debug)]
@@ -120,6 +121,8 @@ pub fn run(
         agent: crate::project::AgentConfig::default(),
         transcript: crate::project::TranscriptConfig::default(),
         forge: crate::project::ForgeConfig::default(),
+        connectors: ConnectorsConfig::default(),
+        mcp: McpConfig::default(),
     };
     let config_toml = toml::to_string(&config).expect("Config serialization should not fail");
 
