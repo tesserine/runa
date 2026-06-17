@@ -131,11 +131,15 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         "serving protocol"
     );
 
+    let forge_runtime = runa_forge_compose::runtime_from_config(&loaded.config.forge)
+        .map_err(|error| format!("failed to compose forge connector tools: {error}"))?;
+
     let handler = RunaHandler::new(
         protocol.clone(),
         cli.work_unit.clone(),
         loaded.store,
         loaded.workspace_dir.clone(),
+        forge_runtime,
     );
 
     let (stdin, stdout) = io::stdio();

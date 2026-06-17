@@ -20,6 +20,11 @@ Semantic Versioning.
 
 ### Added
 
+- MCP forge connector surface: `[forge]` can now compose provider-backed tools
+  into `runa-mcp` for the canonical work-unit lifecycle. New connector crates
+  define the forge contract, compose configured tool sets, and implement GitHub
+  and SourceHut request construction with scoped-handle validation and
+  self-contained MCP input/output schemas.
 - README ecosystem links corrected: commons described as the
   convention/ADR authority with principles at their canonical home
   `pentaxis93/principles` (#181), and the agentd/groundwork links moved to

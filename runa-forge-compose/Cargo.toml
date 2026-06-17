@@ -1,0 +1,13 @@
+[package]
+name = "runa-forge-compose"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+libagent.workspace = true
+runa-forge-contract.workspace = true
+runa-forge-github.workspace = true
+runa-forge-sourcehut.workspace = true
+serde.workspace = true
+serde_json.workspace = true

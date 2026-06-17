@@ -498,6 +498,7 @@ mod tests {
             owner: Some("operator".to_string()),
             name: Some("weforge".to_string()),
             tracker_id: Some("4".to_string()),
+            ..ForgeConfig::default()
         };
 
         let environment = resolve_forge_environment(&config);
@@ -533,6 +534,7 @@ mod tests {
             owner: Some("config-owner".to_string()),
             name: Some("config-name".to_string()),
             tracker_id: Some("4".to_string()),
+            ..ForgeConfig::default()
         };
 
         let environment = resolve_forge_environment(&config);
@@ -568,6 +570,7 @@ mod tests {
             owner: Some("tesserine".to_string()),
             name: Some("runa".to_string()),
             tracker_id: None,
+            ..ForgeConfig::default()
         };
 
         let environment = resolve_forge_environment(&config);
@@ -797,6 +800,7 @@ mod tests {
             owner: Some("operator".to_string()),
             name: Some("weforge".to_string()),
             tracker_id: Some("4".to_string()),
+            ..ForgeConfig::default()
         });
 
         let result =

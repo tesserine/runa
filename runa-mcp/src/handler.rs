@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rmcp::Error as McpError;
+use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
 use rmcp::model::*;
 use rmcp::service::{RequestContext, RoleServer};
@@ -14,6 +14,7 @@ use libagent::validation::validate_artifact;
 use libagent::{
     ArtifactStore, ArtifactType, ProtocolDeclaration, SessionState, validate_output_scope,
 };
+use runa_forge_compose::ForgeRuntime;
 
 const DRIVER_TOOL_NAMES: [&str; 3] = ["readiness", "next-protocol-context", "advance"];
 
@@ -26,6 +27,7 @@ pub struct RunaHandler {
     /// Maps artifact type name → full JSON Schema (with work_unit intact).
     tool_schemas: HashMap<String, Value>,
     session: Option<Mutex<SessionState>>,
+    forge_runtime: Option<ForgeRuntime>,
 }
 
 struct HandlerState {
@@ -38,6 +40,7 @@ impl RunaHandler {
         work_unit: Option<String>,
         store: ArtifactStore,
         workspace_dir: PathBuf,
+        forge_runtime: Option<ForgeRuntime>,
     ) -> Self {
         let (tools, tool_schemas) =
             output_tools_for_protocol(&protocol, work_unit.as_deref(), &store, false);
@@ -50,6 +53,7 @@ impl RunaHandler {
             tools,
             tool_schemas,
             session: None,
+            forge_runtime,
         }
     }
 
@@ -59,11 +63,15 @@ impl RunaHandler {
         work_unit: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let session = SessionState::open_with_validator(
-            working_dir,
+            working_dir.clone(),
             config_override,
             work_unit,
             validate_session_step_output_types,
         )?;
+
+        let config = libagent::project::read_config(&working_dir, config_override)?;
+        let forge_runtime = runa_forge_compose::runtime_from_config(&config.forge)
+            .map_err(|error| format!("failed to compose forge connector tools: {error}"))?;
 
         Ok(Self {
             protocol: None,
@@ -75,6 +83,7 @@ impl RunaHandler {
             tools: Vec::new(),
             tool_schemas: HashMap::new(),
             session: Some(Mutex::new(session)),
+            forge_runtime,
         })
     }
 
@@ -84,11 +93,15 @@ impl RunaHandler {
         ticket: libagent::TicketRef,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let session = SessionState::open_entry(
-            working_dir,
+            working_dir.clone(),
             config_override,
             ticket,
             validate_session_step_output_types,
         )?;
+
+        let config = libagent::project::read_config(&working_dir, config_override)?;
+        let forge_runtime = runa_forge_compose::runtime_from_config(&config.forge)
+            .map_err(|error| format!("failed to compose forge connector tools: {error}"))?;
 
         Ok(Self {
             protocol: None,
@@ -100,6 +113,24 @@ impl RunaHandler {
             tools: Vec::new(),
             tool_schemas: HashMap::new(),
             session: Some(Mutex::new(session)),
+            forge_runtime,
+        })
+    }
+
+    fn call_forge_tool(
+        &self,
+        tool_name: &str,
+        input: Value,
+    ) -> Option<Result<CallToolResult, McpError>> {
+        let runtime = self.forge_runtime.as_ref()?;
+        if !runtime.tools.contains_key(tool_name) {
+            return None;
+        }
+        Some(match runtime.call_tool(tool_name, input) {
+            Ok(payload) => json_tool_result_with_content(&payload).map(|(result, _)| result),
+            Err(error) => Ok(CallToolResult::error(vec![Content::text(
+                error.to_string(),
+            )])),
         })
     }
 
@@ -107,7 +138,7 @@ impl RunaHandler {
         &self,
         session: &Mutex<SessionState>,
         tool_name: &str,
-        request: CallToolRequestParam,
+        request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         match tool_name {
@@ -539,6 +570,50 @@ fn driver_tools() -> Vec<Tool> {
     ]
 }
 
+fn forge_tools(runtime: Option<&ForgeRuntime>) -> Vec<Tool> {
+    let Some(runtime) = runtime else {
+        return Vec::new();
+    };
+    runtime
+        .tools
+        .values()
+        .map(|tool| {
+            Tool::new(
+                tool.exposed_name.clone(),
+                format!(
+                    "Execute forge operation {}",
+                    tool.operation.canonical_name()
+                ),
+                json_object_schema(&tool.input_schema),
+            )
+            .with_raw_output_schema(Arc::new(json_object_schema(&tool.output_schema)))
+        })
+        .collect()
+}
+
+fn append_forge_tools(tools: &mut Vec<Tool>, runtime: Option<&ForgeRuntime>) -> Result<(), String> {
+    let mut names = tools
+        .iter()
+        .map(|tool| tool.name.to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    for tool in forge_tools(runtime) {
+        let name = tool.name.to_string();
+        if !names.insert(name.clone()) {
+            return Err(format!(
+                "tool name collision while composing MCP surface: {name}"
+            ));
+        }
+        tools.push(tool);
+    }
+    Ok(())
+}
+
+fn json_object_schema(schema: &Value) -> serde_json::Map<String, Value> {
+    schema.as_object().cloned().unwrap_or_else(|| {
+        serde_json::Map::from_iter([("type".to_string(), Value::String("object".to_string()))])
+    })
+}
+
 fn validate_session_step_output_types(
     protocol: Option<&ProtocolDeclaration>,
     store: &ArtifactStore,
@@ -776,43 +851,47 @@ impl ServerHandler for RunaHandler {
         } else {
             ServerCapabilities::builder().enable_tools().build()
         };
-        ServerInfo {
-            protocol_version: ProtocolVersion::default(),
-            capabilities,
-            server_info: Implementation {
-                name: "runa-mcp".into(),
-                version: libagent::version().into(),
-            },
-            instructions: Some(instructions),
-        }
+        ServerInfo::new(capabilities)
+            .with_protocol_version(ProtocolVersion::default())
+            .with_server_info(Implementation::new("runa-mcp", libagent::version()))
+            .with_instructions(instructions)
     }
 
     async fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         if let Some(session) = &self.session {
             let session = session.lock().unwrap();
-            let (tools, _) = session_tools_and_schemas(&session)
+            let (mut tools, _) = session_tools_and_schemas(&session)
                 .map_err(|error| McpError::internal_error(error, None))?;
-            return Ok(ListToolsResult {
-                next_cursor: None,
-                tools,
-            });
+            append_forge_tools(&mut tools, self.forge_runtime.as_ref())
+                .map_err(|error| McpError::internal_error(error, None))?;
+            return Ok(ListToolsResult::with_all_items(tools));
         }
-        Ok(ListToolsResult {
-            next_cursor: None,
-            tools: self.tools.clone(),
-        })
+        let mut tools = self.tools.clone();
+        append_forge_tools(&mut tools, self.forge_runtime.as_ref())
+            .map_err(|error| McpError::internal_error(error, None))?;
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
         &self,
-        request: CallToolRequestParam,
+        request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let tool_name = request.name.to_string();
+        if let Some(result) = self.call_forge_tool(
+            &tool_name,
+            request
+                .arguments
+                .as_ref()
+                .map(|arguments| Value::Object(arguments.clone()))
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
+        ) {
+            return result;
+        }
         if let Some(session) = &self.session {
             return self
                 .call_session_tool(session, &tool_name, request, context)
@@ -1090,6 +1169,7 @@ mod tests {
             Some("wu-1".into()),
             store,
             tmp.path().join("workspace"),
+            None,
         );
 
         // Only output types become tools, not requires.
@@ -1152,7 +1232,7 @@ mod tests {
             instructions: None,
         };
 
-        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
+        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"), None);
         let tool_names = handler
             .tools
             .iter()
@@ -1187,7 +1267,7 @@ mod tests {
             instructions: None,
         };
 
-        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
+        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"), None);
         let info = handler.get_info();
 
         assert_eq!(
@@ -1240,7 +1320,7 @@ mod tests {
             instructions: None,
         };
 
-        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
+        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"), None);
 
         // Non-object may_produce schema silently excluded; object produces included.
         assert_eq!(handler.tools.len(), 1);
@@ -1296,6 +1376,7 @@ mod tests {
             Some("wu-1".into()),
             store,
             tmp.path().join("workspace"),
+            None,
         );
 
         // implementation included; composed may_produce silently excluded.
@@ -1341,7 +1422,7 @@ mod tests {
             instructions: None,
         };
 
-        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"));
+        let handler = RunaHandler::new(protocol, None, store, tmp.path().join("workspace"), None);
 
         // All output types use composition → all excluded.
         assert!(handler.tools.is_empty());
@@ -1583,6 +1664,7 @@ mod tests {
             None, // unscoped
             store,
             tmp.path().join("workspace"),
+            None,
         );
 
         // Only "output" should be a tool; "scoped_output" filtered out.

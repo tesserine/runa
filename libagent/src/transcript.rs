@@ -686,6 +686,7 @@ mod tests {
                 owner: Some("tesserine".to_string()),
                 name: Some("runa".to_string()),
                 tracker_id: None,
+                ..ForgeConfig::default()
             },
         );
 
