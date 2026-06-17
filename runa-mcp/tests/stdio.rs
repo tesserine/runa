@@ -62,6 +62,27 @@ trigger = { type = "on_change", name = "implementation" }
 "#
 }
 
+fn forge_collision_manifest_toml() -> &'static str {
+    r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "read-ticket"
+
+[[protocols]]
+name = "take"
+produces = ["read-ticket"]
+trigger = { type = "on_change", name = "read-ticket" }
+"#
+}
+
+fn forge_collision_schemas() -> Vec<(&'static str, &'static str)> {
+    vec![(
+        "read-ticket",
+        r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+    )]
+}
+
 fn methodology_schemas() -> Vec<(&'static str, &'static str)> {
     vec![
         (
@@ -368,6 +389,63 @@ fn canonical_forge_tool_names() -> Vec<&'static str> {
         "record-progress",
         "reflect-disposition",
     ]
+}
+
+#[tokio::test]
+async fn call_tool_rejects_forge_artifact_name_collision_before_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        forge_collision_manifest_toml(),
+        &forge_collision_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    append_github_forge_config(&project_dir, "tesserine", "runa");
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("take")
+                        .env_remove("RUNA_FORGE_TYPE")
+                        .env_remove("RUNA_FORGE_OWNER")
+                        .env_remove("RUNA_FORGE_NAME")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let result = service
+        .call_tool(tool_call(
+            "read-ticket",
+            serde_json::json!({
+                "instance_id": "artifact-1",
+                "title": "must not dispatch to forge"
+            }),
+        ))
+        .await
+        .unwrap();
+    let text = tool_result_text(&result);
+    assert!(
+        text.contains("tool name collision") && text.contains("read-ticket"),
+        "colliding tool name should be rejected before forge dispatch: {text}"
+    );
+    assert!(
+        !project_dir
+            .join(".runa/workspace/read-ticket/artifact-1.json")
+            .exists(),
+        "colliding call must not write an artifact"
+    );
+
+    service.cancel().await.unwrap();
 }
 
 fn assert_no_execution_record_for(project_dir: &Path, protocol: &str) {

@@ -231,26 +231,29 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
         let number = self.resolve_reference(reference)?;
         let response = self.graphql(
             "ticket",
-            "query ticket($id: Int!) { ticket(id: $id) { id subject description status } }",
+            "query ticket($tracker: ID!, $id: Int!) { tracker(rid: $tracker) { ticket(id: $id) { id subject body status } } }",
             json!({ "id": number, "tracker": self.config.tracker_id }),
         )?;
         self.ticket_snapshot(
             number,
-            response.pointer("/data/ticket").unwrap_or(&response),
+            response
+                .pointer("/data/tracker/ticket")
+                .unwrap_or(&response),
         )
     }
 
     fn create_ticket(&self, input: Value) -> Result<Value, ForgeError> {
         let title = required_string(&input, "title")?;
         let body = required_string(&input, "body")?;
+        let tracker_id = self.tracker_id_number()?;
         let response = self.graphql(
-            "createTicket",
-            "mutation createTicket($subject: String!, $description: String!) { createTicket(subject: $subject, description: $description) { id subject description status } }",
-            json!({ "subject": title, "description": body, "tracker": self.config.tracker_id }),
+            "submitTicket",
+            "mutation submitTicket($trackerId: Int!, $input: SubmitTicketInput!) { submitTicket(trackerId: $trackerId, input: $input) { id subject body status } }",
+            json!({ "trackerId": tracker_id, "input": { "subject": title, "body": body } }),
         )?;
         let ticket = response
-            .pointer("/data/createTicket")
-            .or_else(|| response.pointer("/data/ticket"))
+            .pointer("/data/submitTicket")
+            .or_else(|| response.pointer("/data/tracker/ticket"))
             .unwrap_or(&response);
         let number = ticket.get("id").and_then(Value::as_u64).unwrap_or(0);
         self.ticket_snapshot(number, ticket)
@@ -258,10 +261,11 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
 
     fn claim_work_unit(&self, input: Value) -> Result<Value, ForgeError> {
         let number = self.ticket_number(input.get("handle"))?;
+        let tracker_id = self.tracker_id_number()?;
         let response = self.graphql(
-            "claimWorkUnit",
-            "mutation claimWorkUnit($id: Int!) { updateTicket(id: $id) { id } }",
-            json!({ "id": number }),
+            "updateTicketStatus",
+            "mutation claimWorkUnit($trackerId: Int!, $ticketId: Int!, $input: UpdateStatusInput!) { updateTicketStatus(trackerId: $trackerId, ticketId: $ticketId, input: $input) { id } }",
+            json!({ "trackerId": tracker_id, "ticketId": number, "input": { "status": "IN_PROGRESS" } }),
         )?;
         Ok(json!({ "handle": self.ticket_handle(number), "receipt": receipt(response, "claimed") }))
     }
@@ -269,10 +273,11 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
     fn record_progress(&self, input: Value) -> Result<Value, ForgeError> {
         let number = self.ticket_number(input.get("handle"))?;
         let body = required_string(&input, "body")?;
+        let tracker_id = self.tracker_id_number()?;
         let response = self.graphql(
-            "recordProgress",
-            "mutation recordProgress($id: Int!, $body: String!) { createComment(id: $id, body: $body) { id } }",
-            json!({ "id": number, "body": body }),
+            "submitComment",
+            "mutation submitComment($trackerId: Int!, $ticketId: Int!, $input: SubmitCommentInput!) { submitComment(trackerId: $trackerId, ticketId: $ticketId, input: $input) { id } }",
+            json!({ "trackerId": tracker_id, "ticketId": number, "input": { "text": body } }),
         )?;
         Ok(
             json!({ "handle": self.ticket_handle(number), "receipt": receipt(response, "progress") }),
@@ -312,10 +317,11 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
         let number = self.ticket_number(Some(work_unit))?;
         self.change_id(input.get("change"))?;
         let body = required_string(&input, "body")?;
+        let tracker_id = self.tracker_id_number()?;
         let response = self.graphql(
-            "reflectDisposition",
-            "mutation reflectDisposition($id: Int!, $body: String!) { createComment(id: $id, body: $body) { id } }",
-            json!({ "id": number, "body": body }),
+            "submitComment",
+            "mutation submitComment($trackerId: Int!, $ticketId: Int!, $input: SubmitCommentInput!) { submitComment(trackerId: $trackerId, ticketId: $ticketId, input: $input) { id } }",
+            json!({ "trackerId": tracker_id, "ticketId": number, "input": { "text": body } }),
         )?;
         Ok(json!({
             "work_unit": work_unit,
@@ -357,10 +363,19 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
             .ok_or_else(|| ForgeError::InvalidInput("work_unit is required".into()))?;
         let number = self.ticket_number(Some(work_unit))?;
         let body = required_string(&input, "body")?;
+        let tracker_id = self.tracker_id_number()?;
         let response = self.graphql(
-            "closeOut",
-            "mutation closeOut($id: Int!, $body: String!) { closeTicket(id: $id, body: $body) { id } }",
-            json!({ "id": number, "body": body }),
+            "submitComment",
+            "mutation submitComment($trackerId: Int!, $ticketId: Int!, $input: SubmitCommentInput!) { submitComment(trackerId: $trackerId, ticketId: $ticketId, input: $input) { id } }",
+            json!({
+                "trackerId": tracker_id,
+                "ticketId": number,
+                "input": {
+                    "text": body,
+                    "status": "RESOLVED",
+                    "resolution": "IMPLEMENTED"
+                }
+            }),
         )?;
         Ok(json!({ "handle": self.ticket_handle(number), "receipt": receipt(response, "closed") }))
     }
@@ -377,9 +392,22 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
         Ok(json!({
             "handle": self.ticket_handle(number),
             "title": ticket.get("subject").and_then(Value::as_str).unwrap_or(""),
-            "body": ticket.get("description").cloned().unwrap_or(Value::Null),
+            "body": ticket
+                .get("body")
+                .or_else(|| ticket.get("description"))
+                .cloned()
+                .unwrap_or(Value::Null),
             "state": ticket.get("status").and_then(Value::as_str).unwrap_or("unknown")
         }))
+    }
+
+    fn tracker_id_number(&self) -> Result<u64, ForgeError> {
+        parse_number(&self.config.tracker_id).map_err(|_| {
+            ForgeError::InvalidInput(format!(
+                "sourcehut tracker_id '{}' must be a positive integer",
+                self.config.tracker_id
+            ))
+        })
     }
 
     fn resolve_reference(&self, reference: &str) -> Result<u64, ForgeError> {

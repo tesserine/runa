@@ -11,4 +11,5 @@ serde_json.workspace = true
 reqwest.workspace = true
 
 [dev-dependencies]
+apollo-compiler.workspace = true
 tempfile.workspace = true

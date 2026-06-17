@@ -173,6 +173,29 @@ impl RunaHandler {
         })())
     }
 
+    fn forge_tool_collision_message(&self, tool_name: &str) -> Result<Option<String>, McpError> {
+        let Some(runtime) = self.forge_runtime.as_ref() else {
+            return Ok(None);
+        };
+        if !runtime.tools.contains_key(tool_name) {
+            return Ok(None);
+        }
+
+        let collides = if let Some(session) = &self.session {
+            let session = session.lock().unwrap();
+            let (tools, _) = session_tools_and_schemas(&session)
+                .map_err(|error| McpError::internal_error(error, None))?;
+            tools.iter().any(|tool| tool.name.as_ref() == tool_name)
+        } else {
+            self.tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == tool_name)
+        };
+
+        Ok(collides
+            .then(|| format!("tool name collision while composing MCP surface: {tool_name}")))
+    }
+
     fn transcript_context(&self) -> (Option<String>, Option<String>) {
         if let Some(session) = &self.session {
             let current_step = session.lock().unwrap().current_step().cloned();
@@ -935,6 +958,9 @@ impl ServerHandler for RunaHandler {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let tool_name = request.name.to_string();
+        if let Some(message) = self.forge_tool_collision_message(&tool_name)? {
+            return Ok(CallToolResult::error(vec![Content::text(message)]));
+        }
         if let Some(result) = self.call_forge_tool(
             &tool_name,
             request

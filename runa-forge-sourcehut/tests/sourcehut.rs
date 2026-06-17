@@ -1,14 +1,17 @@
+use apollo_compiler::{ExecutableDocument, Schema};
 use runa_forge_contract::Operation;
 use runa_forge_sourcehut::{
     ProviderRequest, SourcehutConfig, SourcehutConnector, SourcehutHttpTransport,
     SourcehutRecordingTransport,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
 use std::process::Command;
 use std::thread;
+
+const SOURCEHUT_TODO_SCHEMA: &str = include_str!("fixtures/todo.sr.ht.schema.graphqls");
 
 fn config(api_base: &str) -> SourcehutConfig {
     SourcehutConfig {
@@ -60,15 +63,46 @@ fn local_git_fixture() -> (tempfile::TempDir, String) {
     (remote, commit)
 }
 
+fn validate_sourcehut_graphql(query: &str) {
+    let schema =
+        Schema::parse_and_validate(SOURCEHUT_TODO_SCHEMA, "todo.sr.ht.schema.graphqls").unwrap();
+    ExecutableDocument::parse_and_validate(&schema, query, "operation.graphql").unwrap();
+}
+
+fn graphql_request_from_http(request: &str) -> Value {
+    let body = request
+        .split("\r\n\r\n")
+        .nth(1)
+        .expect("HTTP request should include a body");
+    serde_json::from_str(body).unwrap_or_else(|error| {
+        panic!("request body should be GraphQL JSON: {error}\nrequest:\n{request}")
+    })
+}
+
+fn assert_graphql_request_validates(request: &str, expected_field: &str) {
+    let body = graphql_request_from_http(request);
+    let query = body
+        .get("query")
+        .and_then(Value::as_str)
+        .expect("GraphQL request should include a query string");
+    validate_sourcehut_graphql(query);
+    assert!(
+        query.contains(expected_field),
+        "query did not contain {expected_field}: {query}"
+    );
+}
+
 #[test]
 fn read_ticket_accepts_deployment_reference_forms_and_issues_scoped_handles() {
     let transport = SourcehutRecordingTransport::with_repeating_response(json!({
         "data": {
-            "ticket": {
-                "id": 203,
-                "subject": "Forge connectors",
-                "description": "body",
-                "status": "open"
+            "tracker": {
+                "ticket": {
+                    "id": 203,
+                    "subject": "Forge connectors",
+                    "body": "body",
+                    "status": "REPORTED"
+                }
             }
         }
     }));
@@ -116,18 +150,29 @@ fn foreign_scope_is_rejected_before_transport() {
 fn every_operation_constructs_the_expected_provider_request() {
     let transport = SourcehutRecordingTransport::with_repeating_response(json!({
         "data": {
-            "ticket": {
-                "id": 203,
-                "subject": "Forge connectors",
-                "description": "body",
-                "status": "open"
+            "tracker": {
+                "ticket": {
+                    "id": 203,
+                    "subject": "Forge connectors",
+                    "body": "body",
+                    "status": "REPORTED"
+                }
             },
-            "createTicket": {
+            "submitTicket": {
                 "id": 203,
                 "subject": "Forge connectors",
-                "description": "body",
-                "status": "open"
-            }
+                "body": "body",
+                "status": "REPORTED"
+            },
+            "updateTicketStatus": {
+                "id": "claim-203"
+            },
+            "submitComment": {
+                "id": "comment-203"
+            },
+            "closeOut": {
+                "id": "closed-203"
+            },
         },
         "commit": "abc123",
         "ref": "refs/heads/issue-203"
@@ -145,19 +190,19 @@ fn every_operation_constructs_the_expected_provider_request() {
             Operation::CreateTicket,
             json!({"title": "title", "body": "body"}),
             "GRAPHQL",
-            "createTicket",
+            "submitTicket",
         ),
         (
             Operation::ClaimWorkUnit,
             json!({"handle": handle(203)}),
             "GRAPHQL",
-            "claimWorkUnit",
+            "updateTicketStatus",
         ),
         (
             Operation::RecordProgress,
             json!({"handle": handle(203), "body": "progress"}),
             "GRAPHQL",
-            "recordProgress",
+            "submitComment",
         ),
         (
             Operation::DeliverChangeProposal,
@@ -169,7 +214,7 @@ fn every_operation_constructs_the_expected_provider_request() {
             Operation::ReflectDisposition,
             json!({"work_unit": handle(203), "change": {"id": "sourcehut:tracker:4:change:issue-203:version:1", "display": "issue-203"}, "disposition": {"kind": "approved", "against_version": 1, "reviewer": "reviewer", "reviewed_at": "2026-06-17T00:00:00Z", "findings": []}, "body": "approved"}),
             "GRAPHQL",
-            "reflectDisposition",
+            "submitComment",
         ),
         (
             Operation::ApplyApprovedChange,
@@ -181,7 +226,7 @@ fn every_operation_constructs_the_expected_provider_request() {
             Operation::CloseOut,
             json!({"work_unit": handle(203), "completion": {"criterion_summary": "done", "gaps": [], "change_reference": "abc123", "documentation_status": "updated"}, "body": "done"}),
             "GRAPHQL",
-            "closeOut",
+            "submitComment",
         ),
     ];
 
@@ -194,6 +239,37 @@ fn every_operation_constructs_the_expected_provider_request() {
     for (request, (_, _, kind, operation_name)) in requests.iter().zip(cases) {
         assert_eq!(request.kind, kind);
         assert_eq!(request.operation, operation_name);
+        if request.kind == "GRAPHQL" {
+            let body = request
+                .body
+                .as_ref()
+                .expect("GraphQL request should have body");
+            let query = body
+                .get("query")
+                .and_then(Value::as_str)
+                .expect("GraphQL request should include query string");
+            validate_sourcehut_graphql(query);
+            assert!(
+                query.contains(operation_name),
+                "query did not contain {operation_name}: {query}"
+            );
+        }
+    }
+}
+
+#[test]
+fn sourcehut_schema_rejects_nonexistent_top_level_ticket_operations() {
+    let schema =
+        Schema::parse_and_validate(SOURCEHUT_TODO_SCHEMA, "todo.sr.ht.schema.graphqls").unwrap();
+    for query in [
+        "query ticket($id: Int!) { ticket(id: $id) { id subject body status } }",
+        "mutation createTicket($subject: String!, $body: String!) { createTicket(subject: $subject, body: $body) { id subject body status } }",
+        "mutation closeTicket($id: Int!, $body: String!) { closeTicket(id: $id, body: $body) { id } }",
+    ] {
+        assert!(
+            ExecutableDocument::parse_and_validate(&schema, query, "operation.graphql").is_err(),
+            "query should fail against real SourceHut schema: {query}"
+        );
     }
 }
 
@@ -207,8 +283,8 @@ fn production_http_transport_executes_and_parses_read_ticket() {
         let size = stream.read(&mut request).unwrap();
         let request = String::from_utf8_lossy(&request[..size]);
         assert!(request.starts_with("POST /query "));
-        assert!(request.contains("ticket"));
-        let body = r#"{"data":{"ticket":{"id":203,"subject":"Harness title","description":"Harness body","status":"open"}}}"#;
+        assert_graphql_request_validates(&request, "tracker");
+        let body = r#"{"data":{"tracker":{"ticket":{"id":203,"subject":"Harness title","body":"Harness body","status":"REPORTED"}}}}"#;
         write!(
             stream,
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
@@ -237,28 +313,28 @@ fn production_http_transport_executes_and_parses_every_graphql_operation() {
     let address = listener.local_addr().unwrap();
     let expected = [
         (
-            "ticket",
-            r#"{"data":{"ticket":{"id":203,"subject":"Harness read","description":"Read body","status":"open"}}}"#,
+            "tracker",
+            r#"{"data":{"tracker":{"ticket":{"id":203,"subject":"Harness read","body":"Read body","status":"REPORTED"}}}}"#,
         ),
         (
-            "createTicket",
-            r#"{"data":{"createTicket":{"id":204,"subject":"Harness create","description":"Created body","status":"open"}}}"#,
+            "submitTicket",
+            r#"{"data":{"submitTicket":{"id":204,"subject":"Harness create","body":"Created body","status":"REPORTED"}}}"#,
         ),
         (
-            "claimWorkUnit",
-            r#"{"data":{"updateTicket":{"id":"claim-203"}}}"#,
+            "updateTicketStatus",
+            r#"{"data":{"updateTicketStatus":{"id":"claim-203"}}}"#,
         ),
         (
-            "recordProgress",
-            r#"{"data":{"createComment":{"id":"progress-1"}}}"#,
+            "submitComment",
+            r#"{"data":{"submitComment":{"id":"progress-1"}}}"#,
         ),
         (
-            "reflectDisposition",
-            r#"{"data":{"createComment":{"id":"disposition-1"}}}"#,
+            "submitComment",
+            r#"{"data":{"submitComment":{"id":"disposition-1"}}}"#,
         ),
         (
-            "closeOut",
-            r#"{"data":{"closeTicket":{"id":"closed-203"}}}"#,
+            "submitComment",
+            r#"{"data":{"submitComment":{"id":"closed-203"}}}"#,
         ),
     ];
     let server = thread::spawn(move || {
@@ -271,10 +347,7 @@ fn production_http_transport_executes_and_parses_every_graphql_operation() {
                 request.starts_with("POST /query "),
                 "unexpected request: {request}"
             );
-            assert!(
-                request.contains(operation_name),
-                "request did not contain {operation_name}: {request}"
-            );
+            assert_graphql_request_validates(&request, operation_name);
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
