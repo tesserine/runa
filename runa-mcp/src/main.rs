@@ -67,18 +67,27 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let mut loaded = project::load(&working_dir, config_ref)?;
     apply_transcript_settings(&working_dir, &loaded.config);
     libagent::scan(&loaded.workspace_dir, &mut loaded.store)?;
+    let identity = libagent::resolve_forge_identity(&loaded.config.forge);
     if let Some(work_unit) = cli.work_unit.as_deref() {
-        let identity = libagent::resolve_forge_identity(&loaded.config.forge);
         libagent::validate_scoped_work_unit_with_identity(&loaded.store, work_unit, &identity)?;
     }
     if cli.session {
         let handler = match cli.ticket.as_deref() {
             Some(ticket) => {
-                let identity = libagent::resolve_forge_identity(&loaded.config.forge);
                 let ticket_ref = libagent::resolve_ticket_reference(ticket, &identity)?;
-                RunaHandler::new_session_entry(working_dir.clone(), config_ref, ticket_ref)?
+                RunaHandler::new_session_entry(
+                    working_dir.clone(),
+                    config_ref,
+                    ticket_ref,
+                    identity.clone(),
+                )?
             }
-            None => RunaHandler::new_session(working_dir.clone(), config_ref, cli.work_unit)?,
+            None => RunaHandler::new_session(
+                working_dir.clone(),
+                config_ref,
+                cli.work_unit,
+                identity.clone(),
+            )?,
         };
         let (stdin, stdout) = io::stdio();
         let service = handler.serve((stdin, stdout)).await.inspect_err(|e| {
@@ -131,8 +140,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         "serving protocol"
     );
 
-    let forge_runtime = runa_forge_compose::runtime_from_config(&loaded.config.forge)
-        .map_err(|error| format!("failed to compose forge connector tools: {error}"))?;
+    let forge_runtime =
+        runa_forge_compose::runtime_from_config_with_identity(&loaded.config.forge, &identity)
+            .map_err(|error| format!("failed to compose forge connector tools: {error}"))?;
 
     let handler = RunaHandler::new(
         protocol.clone(),

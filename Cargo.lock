@@ -1550,6 +1550,7 @@ dependencies = [
  "runa-forge-sourcehut",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

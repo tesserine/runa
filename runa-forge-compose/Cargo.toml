@@ -11,3 +11,6 @@ runa-forge-github.workspace = true
 runa-forge-sourcehut.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

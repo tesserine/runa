@@ -61,17 +61,21 @@ impl RunaHandler {
         working_dir: PathBuf,
         config_override: Option<&Path>,
         work_unit: Option<String>,
+        identity: libagent::ResolvedForgeIdentity,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let session = SessionState::open_with_validator(
+        let session = SessionState::open_with_validator_and_identity(
             working_dir.clone(),
             config_override,
             work_unit,
+            identity.clone(),
             validate_session_step_output_types,
         )?;
 
-        let config = libagent::project::read_config(&working_dir, config_override)?;
-        let forge_runtime = runa_forge_compose::runtime_from_config(&config.forge)
-            .map_err(|error| format!("failed to compose forge connector tools: {error}"))?;
+        let forge_runtime = runa_forge_compose::runtime_from_config_with_identity(
+            &session.loaded.config.forge,
+            &identity,
+        )
+        .map_err(|error| format!("failed to compose forge connector tools: {error}"))?;
 
         Ok(Self {
             protocol: None,
@@ -91,17 +95,21 @@ impl RunaHandler {
         working_dir: PathBuf,
         config_override: Option<&Path>,
         ticket: libagent::TicketRef,
+        identity: libagent::ResolvedForgeIdentity,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let session = SessionState::open_entry(
+        let session = SessionState::open_entry_with_identity(
             working_dir.clone(),
             config_override,
             ticket,
+            identity.clone(),
             validate_session_step_output_types,
         )?;
 
-        let config = libagent::project::read_config(&working_dir, config_override)?;
-        let forge_runtime = runa_forge_compose::runtime_from_config(&config.forge)
-            .map_err(|error| format!("failed to compose forge connector tools: {error}"))?;
+        let forge_runtime = runa_forge_compose::runtime_from_config_with_identity(
+            &session.loaded.config.forge,
+            &identity,
+        )
+        .map_err(|error| format!("failed to compose forge connector tools: {error}"))?;
 
         Ok(Self {
             protocol: None,

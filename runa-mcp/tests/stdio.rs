@@ -275,6 +275,23 @@ fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
     .unwrap();
 }
 
+fn append_github_forge_config_with_api(
+    project_dir: &Path,
+    owner: &str,
+    name: &str,
+    api_base: &str,
+) {
+    let config_path = project_dir.join(".runa/config.toml");
+    let existing = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        config_path,
+        format!(
+            "{existing}\n[forge]\ntype = \"github\"\nowner = \"{owner}\"\nname = \"{name}\"\napi_base = \"{api_base}\"\n",
+        ),
+    )
+    .unwrap();
+}
+
 fn append_transcript_config(project_dir: &Path, transcript_dir: &Path) {
     let config_path = project_dir.join(".runa/config.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
@@ -1797,6 +1814,75 @@ async fn mcp_accepts_tracker_backed_work_unit_with_forge_identity_only_in_config
     assert!(
         read_ticket.output_schema.is_some(),
         "forge connector tools should advertise output schemas"
+    );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_forge_connector_uses_resolved_override_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_work_unit_manifest_toml(),
+        &scoped_work_unit_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    append_github_forge_config_with_api(
+        &project_dir,
+        "stale-owner",
+        "stale-repo",
+        "http://127.0.0.1:1",
+    );
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-163.json"),
+        r#"{"title":"Scope","description":"Enforce canonical scope","acceptance_criteria":["Reject aliases"],"handle":{"forge_tag":"github","url":"https://github.com/override-owner/override-repo/issues/163","number":163}}"#,
+    )
+    .unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("take")
+                        .arg("--work-unit")
+                        .arg("work-unit-163")
+                        .env("RUNA_FORGE_TYPE", "github")
+                        .env("RUNA_FORGE_OWNER", "override-owner")
+                        .env("RUNA_FORGE_NAME", "override-repo")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let tools = service.list_all_tools().await.unwrap();
+    assert!(
+        tools.iter().any(|tool| tool.name.as_ref() == "read-ticket"),
+        "forge connector tools should be advertised"
+    );
+
+    let result = service
+        .call_tool(tool_call(
+            "read-ticket",
+            serde_json::json!({ "reference": "stale-owner/stale-repo#203" }),
+        ))
+        .await
+        .unwrap();
+    let text = tool_result_text(&result);
+    assert!(
+        text.contains("foreign scope") && text.contains("override-owner/override-repo"),
+        "stale file-config identity should not be accepted: {text}"
     );
 
     service.cancel().await.unwrap();

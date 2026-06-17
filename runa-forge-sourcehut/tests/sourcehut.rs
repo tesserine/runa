@@ -129,6 +129,7 @@ fn every_operation_constructs_the_expected_provider_request() {
                 "status": "open"
             }
         },
+        "commit": "abc123",
         "ref": "refs/heads/issue-203"
     }));
     let connector = SourcehutConnector::new(config("https://todo.test/query"), transport.clone());
@@ -364,7 +365,7 @@ fn production_git_transport_delivers_change_proposal_to_remote_ref() {
         Path::new(env!("CARGO_MANIFEST_DIR")),
     );
     assert!(remote_commit.starts_with(&commit));
-    assert_eq!(output["commit"], "refs/heads/issue-203");
+    assert_eq!(output["commit"], commit);
 }
 
 #[test]
@@ -400,7 +401,7 @@ fn production_git_transport_applies_approved_change_to_base_ref() {
         Path::new(env!("CARGO_MANIFEST_DIR")),
     );
     assert!(remote_commit.starts_with(&commit));
-    assert_eq!(output["applied_commit"], "refs/heads/main");
+    assert_eq!(output["applied_commit"], commit);
     assert_eq!(output["receipt"], "refs/heads/main");
 }
 

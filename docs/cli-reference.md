@@ -57,12 +57,16 @@ also exposes the forge capability tool-set alongside artifact and session
 driver tools. The canonical operations are `read-ticket`, `create-ticket`,
 `claim-work-unit`, `record-progress`, `deliver-change-proposal`,
 `reflect-disposition`, `apply-approved-change`, and `close-out`. GitHub uses
-`owner` and `name`; SourceHut uses `tracker_id` and may also use `git_remote`.
-`api_base` overrides the provider API endpoint for harnesses or enterprise
-deployments. GitHub `claim-work-unit` uses `assignee` as the account to assign
-to the issue. `credential_env` and `credential_command` describe where the
-connector should obtain credentials; secret values are process-local inputs and
-are not serialized into MCP tool schemas, launch config, transcripts, or logs.
+`owner` and `name`; SourceHut uses `tracker_id` for ticket identity and uses
+resolved `owner`/`name` for git repo coordinates. SourceHut `git_remote`
+supplies the host/protocol path shape for git operations, but its repo
+coordinate follows the resolved forge identity after any `RUNA_FORGE_*`
+overrides. `api_base` overrides the provider API endpoint for harnesses or
+enterprise deployments. GitHub `claim-work-unit` uses `assignee` as the account
+to assign to the issue. `credential_env` and `credential_command` describe where
+the connector should obtain credentials; secret values are process-local inputs
+and are not serialized into MCP tool schemas, launch config, transcripts, or
+logs.
 `[forge.tool_aliases]` maps role-qualified connector tool names such as
 `"github:read-ticket"` to explicit exposed MCP names; otherwise name collisions
 across composed tool sets fail loudly.

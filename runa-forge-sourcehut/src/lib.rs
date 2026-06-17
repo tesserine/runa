@@ -295,11 +295,12 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
                 "destination": destination_ref,
             }),
         )?;
-        let produced_ref = git_result_ref(&response)?;
+        let _produced_ref = git_result_ref(&response)?;
+        let produced_commit = git_result_commit(&response)?;
         Ok(json!({
             "handle": self.change_handle(branch, version),
             "work_unit": work_unit,
-            "commit": produced_ref,
+            "commit": produced_commit,
             "version": version
         }))
     }
@@ -341,10 +342,11 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
             }),
         )?;
         let produced_ref = git_result_ref(&response)?;
+        let produced_commit = git_result_commit(&response)?;
         Ok(json!({
             "work_unit": work_unit,
             "change": input.get("change").cloned().unwrap_or(Value::Null),
-            "applied_commit": produced_ref,
+            "applied_commit": produced_commit,
             "receipt": produced_ref
         }))
     }
@@ -479,6 +481,14 @@ fn git_result_ref(value: &Value) -> Result<&str, ForgeError> {
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ForgeError::ProviderResponse("missing git result ref".into()))
+}
+
+fn git_result_commit(value: &Value) -> Result<&str, ForgeError> {
+    value
+        .get("commit")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ForgeError::ProviderResponse("missing git result commit".into()))
 }
 
 fn execute_git(config: &SourcehutConfig, request: ProviderRequest) -> Result<Value, ForgeError> {
