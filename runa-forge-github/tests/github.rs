@@ -2,7 +2,7 @@ use runa_forge_contract::Operation;
 use runa_forge_github::{
     GithubConfig, GithubConnector, GithubHttpTransport, GithubRecordingTransport, ProviderRequest,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
@@ -23,6 +23,54 @@ fn handle(number: u64) -> serde_json::Value {
         "id": format!("github:tesserine/runa:issue:{number}"),
         "display": format!("tesserine/runa#{number}")
     })
+}
+
+fn change() -> serde_json::Value {
+    json!({
+        "id": "github:tesserine/runa:pull:12:version:1",
+        "display": "tesserine/runa#12"
+    })
+}
+
+fn input_for_operation(operation: Operation) -> Value {
+    match operation {
+        Operation::ReadTicket => json!({"reference": "203"}),
+        Operation::CreateTicket => json!({"title": "title", "body": "body"}),
+        Operation::ClaimWorkUnit => json!({"handle": handle(203)}),
+        Operation::RecordProgress => json!({"handle": handle(203), "body": "progress"}),
+        Operation::DeliverChangeProposal => {
+            json!({"work_unit": handle(203), "branch": "issue-203", "commit": "abc123", "base": "main", "summary": "summary", "body": "body", "version": 1})
+        }
+        Operation::ReflectDisposition => {
+            json!({"work_unit": handle(203), "change": change(), "disposition": {"kind": "approved", "against_version": 1, "reviewer": "reviewer", "reviewed_at": "2026-06-17T00:00:00Z", "findings": []}, "body": "approved"})
+        }
+        Operation::ApplyApprovedChange => {
+            json!({"work_unit": handle(203), "change": change(), "approved_version": 1, "approved_commit": "abc123", "base": "main"})
+        }
+        Operation::CloseOut => {
+            json!({"work_unit": handle(203), "completion": {"criterion_summary": "done", "gaps": [], "change_reference": "abc123", "documentation_status": "updated"}, "body": "done"})
+        }
+    }
+}
+
+fn github_error_server() -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let size = stream.read(&mut request).unwrap();
+        assert!(size > 0, "expected an HTTP request");
+        let body = r#"{"message":"provider rejected request"}"#;
+        write!(
+            stream,
+            "HTTP/1.1 500 Internal Server Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    (format!("http://{address}"), server)
 }
 
 #[test]
@@ -227,6 +275,26 @@ fn apply_approved_change_rejects_base_mismatch_before_merge() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "GET");
     assert_eq!(requests[0].path, "/repos/tesserine/runa/pulls/12");
+}
+
+#[test]
+fn every_operation_rejects_http_error_status_without_success_receipts() {
+    for operation in Operation::ALL {
+        let (api_base, server) = github_error_server();
+        let connector = GithubConnector::new(config(&api_base), GithubHttpTransport);
+
+        let result = connector.call(operation, input_for_operation(operation));
+
+        assert!(
+            result.is_err(),
+            "{operation} should reject GitHub HTTP errors, got {result:?}"
+        );
+        assert!(
+            result.unwrap_err().to_string().contains("500"),
+            "{operation} error should report the HTTP status"
+        );
+        server.join().unwrap();
+    }
 }
 
 #[test]

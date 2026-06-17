@@ -134,14 +134,15 @@ impl SourcehutTransport for SourcehutHttpTransport {
             .send()
             .map_err(|error| ForgeError::Transport(error.to_string()))?;
         let status = response.status();
-        let value = response
-            .json::<Value>()
-            .map_err(|error| ForgeError::ProviderResponse(error.to_string()))?;
         if !status.is_success() {
             return Err(ForgeError::Transport(format!(
                 "SourceHut returned {status}"
             )));
         }
+        let value = response
+            .json::<Value>()
+            .map_err(|error| ForgeError::ProviderResponse(error.to_string()))?;
+        reject_provider_error_payload(&value)?;
         Ok(value)
     }
 }
@@ -182,7 +183,7 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
     }
 
     fn graphql(&self, operation: &str, query: &str, variables: Value) -> Result<Value, ForgeError> {
-        self.transport.send(
+        let response = self.transport.send(
             &self.config,
             ProviderRequest {
                 kind: "GRAPHQL".to_string(),
@@ -190,11 +191,13 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
                 path: "/query".to_string(),
                 body: Some(json!({ "query": query, "variables": variables })),
             },
-        )
+        )?;
+        reject_provider_error_payload(&response)?;
+        Ok(response)
     }
 
     fn git(&self, operation: &str, body: Value) -> Result<Value, ForgeError> {
-        self.transport.send(
+        let response = self.transport.send(
             &self.config,
             ProviderRequest {
                 kind: "GIT".to_string(),
@@ -202,7 +205,9 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
                 path: self.config.git_remote.clone(),
                 body: Some(body),
             },
-        )
+        )?;
+        reject_provider_error_payload(&response)?;
+        Ok(response)
     }
 }
 
@@ -517,6 +522,17 @@ fn git_result_commit(value: &Value) -> Result<&str, ForgeError> {
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ForgeError::ProviderResponse("missing git result commit".into()))
+}
+
+fn reject_provider_error_payload(value: &Value) -> Result<(), ForgeError> {
+    let Some(errors) = value.get("errors").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    Err(ForgeError::ProviderResponse(format!(
+        "SourceHut GraphQL provider response contained top-level errors array with {} entr{}",
+        errors.len(),
+        if errors.len() == 1 { "y" } else { "ies" }
+    )))
 }
 
 fn execute_git(config: &SourcehutConfig, request: ProviderRequest) -> Result<Value, ForgeError> {

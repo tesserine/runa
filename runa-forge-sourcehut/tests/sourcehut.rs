@@ -30,6 +30,34 @@ fn handle(number: u64) -> serde_json::Value {
     })
 }
 
+fn change() -> serde_json::Value {
+    json!({
+        "id": "sourcehut:tracker:4:change:issue-203:version:1",
+        "display": "issue-203"
+    })
+}
+
+fn input_for_operation(operation: Operation) -> serde_json::Value {
+    match operation {
+        Operation::ReadTicket => json!({"reference": "203"}),
+        Operation::CreateTicket => json!({"title": "title", "body": "body"}),
+        Operation::ClaimWorkUnit => json!({"handle": handle(203)}),
+        Operation::RecordProgress => json!({"handle": handle(203), "body": "progress"}),
+        Operation::DeliverChangeProposal => {
+            json!({"work_unit": handle(203), "branch": "issue-203", "commit": "abc123", "base": "main", "summary": "summary", "body": "body", "version": 1})
+        }
+        Operation::ReflectDisposition => {
+            json!({"work_unit": handle(203), "change": change(), "disposition": {"kind": "approved", "against_version": 1, "reviewer": "reviewer", "reviewed_at": "2026-06-17T00:00:00Z", "findings": []}, "body": "approved"})
+        }
+        Operation::ApplyApprovedChange => {
+            json!({"work_unit": handle(203), "change": change(), "approved_version": 1, "approved_commit": "abc123", "base": "main"})
+        }
+        Operation::CloseOut => {
+            json!({"work_unit": handle(203), "completion": {"criterion_summary": "done", "gaps": [], "change_reference": "abc123", "documentation_status": "updated"}, "body": "done"})
+        }
+    }
+}
+
 fn config_with_remote(api_base: &str, git_remote: String) -> SourcehutConfig {
     SourcehutConfig {
         git_remote,
@@ -255,6 +283,58 @@ fn every_operation_constructs_the_expected_provider_request() {
             );
         }
     }
+}
+
+#[test]
+fn every_operation_rejects_provider_error_payloads_without_success_receipts() {
+    let transport = SourcehutRecordingTransport::with_repeating_response(json!({
+        "errors": [{"message": "provider rejected mutation"}]
+    }));
+    let connector = SourcehutConnector::new(config("https://todo.test/query"), transport.clone());
+
+    for operation in Operation::ALL {
+        let result = connector.call(operation, input_for_operation(operation));
+
+        assert!(
+            result.is_err(),
+            "{operation} should reject SourceHut provider errors, got {result:?}"
+        );
+    }
+
+    assert_eq!(transport.requests().len(), Operation::ALL.len());
+}
+
+#[test]
+fn production_http_transport_rejects_graphql_errors_under_http_200() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let size = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..size]);
+        assert!(request.starts_with("POST /query "));
+        assert_graphql_request_validates(&request, "tracker");
+        let body = r#"{"errors":[{"message":"provider rejected mutation"}]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+
+    let connector = SourcehutConnector::new(
+        config(&format!("http://{address}/query")),
+        SourcehutHttpTransport,
+    );
+    let error = connector
+        .call(Operation::ReadTicket, json!({ "reference": "203" }))
+        .unwrap_err();
+
+    assert!(error.to_string().contains("GraphQL"));
+    server.join().unwrap();
 }
 
 #[test]
