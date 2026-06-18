@@ -217,6 +217,7 @@ enum SessionScope {
 pub struct SessionState {
     working_dir: PathBuf,
     pub loaded: crate::LoadedProject,
+    identity: crate::ResolvedForgeIdentity,
     scope: SessionScope,
     current_step: Option<CurrentStep>,
     exhausted: HashSet<crate::CandidateKey>,
@@ -279,9 +280,39 @@ impl SessionState {
     {
         let work_unit = work_unit.ok_or(SessionError::MissingWorkUnit)?;
         let loaded = crate::project::load(&working_dir, config_override)?;
+        let identity = crate::resolve_forge_identity(&loaded.config.forge);
+        Self::open_loaded_with_validator(working_dir, loaded, work_unit, identity, validate_step)
+    }
+
+    pub fn open_with_validator_and_identity<F>(
+        working_dir: PathBuf,
+        config_override: Option<&Path>,
+        work_unit: Option<String>,
+        identity: crate::ResolvedForgeIdentity,
+        validate_step: F,
+    ) -> Result<Self, SessionError>
+    where
+        F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
+    {
+        let work_unit = work_unit.ok_or(SessionError::MissingWorkUnit)?;
+        let loaded = crate::project::load(&working_dir, config_override)?;
+        Self::open_loaded_with_validator(working_dir, loaded, work_unit, identity, validate_step)
+    }
+
+    fn open_loaded_with_validator<F>(
+        working_dir: PathBuf,
+        loaded: crate::LoadedProject,
+        work_unit: String,
+        identity: crate::ResolvedForgeIdentity,
+        validate_step: F,
+    ) -> Result<Self, SessionError>
+    where
+        F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
+    {
         let mut session = Self {
             working_dir,
             loaded,
+            identity,
             scope: SessionScope::Bound(work_unit),
             current_step: None,
             exhausted: HashSet::new(),
@@ -312,10 +343,37 @@ impl SessionState {
     where
         F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
     {
-        let mut loaded = crate::project::load(&working_dir, config_override)?;
+        let loaded = crate::project::load(&working_dir, config_override)?;
+        let identity = crate::resolve_forge_identity(&loaded.config.forge);
+        Self::open_entry_loaded(working_dir, loaded, ticket, identity, validate_step)
+    }
+
+    pub fn open_entry_with_identity<F>(
+        working_dir: PathBuf,
+        config_override: Option<&Path>,
+        ticket: crate::TicketRef,
+        identity: crate::ResolvedForgeIdentity,
+        validate_step: F,
+    ) -> Result<Self, SessionError>
+    where
+        F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
+    {
+        let loaded = crate::project::load(&working_dir, config_override)?;
+        Self::open_entry_loaded(working_dir, loaded, ticket, identity, validate_step)
+    }
+
+    fn open_entry_loaded<F>(
+        working_dir: PathBuf,
+        mut loaded: crate::LoadedProject,
+        ticket: crate::TicketRef,
+        identity: crate::ResolvedForgeIdentity,
+        validate_step: F,
+    ) -> Result<Self, SessionError>
+    where
+        F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
+    {
         let scan_result = crate::scan(&loaded.workspace_dir, &mut loaded.store)?;
         let scan_findings = crate::collect_scan_findings(&scan_result, &loaded.workspace_dir);
-        let identity = crate::resolve_forge_identity(&loaded.config.forge);
 
         // Resolve the promise first. Re-entry (the work-unit already exists)
         // degrades to an ordinary bound session and needs no acquisition surface;
@@ -325,6 +383,7 @@ impl SessionState {
             let mut session = Self {
                 working_dir,
                 loaded,
+                identity,
                 scope: SessionScope::Bound(work_unit),
                 current_step: None,
                 exhausted: HashSet::new(),
@@ -344,6 +403,7 @@ impl SessionState {
         let mut session = Self {
             working_dir,
             loaded,
+            identity,
             scope: SessionScope::Promised { ticket },
             current_step: None,
             exhausted: HashSet::new(),
@@ -604,17 +664,16 @@ impl SessionState {
         require_current_ready: bool,
     ) -> Result<ReconciledScan, SessionError> {
         let scan_result = self.scan_workspace()?;
-        let identity = crate::resolve_forge_identity(&self.loaded.config.forge);
         match &self.scope {
             SessionScope::Bound(work_unit) => {
                 crate::validate_scoped_work_unit_with_identity(
                     &self.loaded.store,
                     work_unit,
-                    &identity,
+                    &self.identity,
                 )?;
             }
             SessionScope::Promised { .. } => {
-                crate::validate_tracker_consistency(&self.loaded.store, &identity)?;
+                crate::validate_tracker_consistency(&self.loaded.store, &self.identity)?;
             }
         }
         self.refresh_exhaustion_after_scan(&scan_result);
@@ -688,17 +747,16 @@ impl SessionState {
     /// work-unit ([`EntryError::Unresolved`]) or the recorded work-unit fails
     /// scoped-identity validation.
     fn bind_promise(&mut self) -> Result<(), SessionError> {
-        let identity = crate::resolve_forge_identity(&self.loaded.config.forge);
         let ticket = match &self.scope {
             SessionScope::Promised { ticket, .. } => ticket.clone(),
             SessionScope::Bound(_) => return Ok(()),
         };
-        match crate::resolve_promise(&self.loaded.store, &identity, &ticket)? {
+        match crate::resolve_promise(&self.loaded.store, &self.identity, &ticket)? {
             Some(work_unit) => {
                 crate::validate_scoped_work_unit_with_identity(
                     &self.loaded.store,
                     &work_unit,
-                    &identity,
+                    &self.identity,
                 )?;
                 self.scope = SessionScope::Bound(work_unit);
                 Ok(())

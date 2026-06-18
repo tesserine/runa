@@ -11,11 +11,15 @@ runa's actual architecture.
 
 ## Workspace Structure
 
-Three crates, Rust 2024 edition, resolver v3:
+Seven crates, Rust 2024 edition, resolver v3:
 
 - **`libagent`** — All domain logic: data model, TOML manifest parsing, JSON Schema validation, dependency graph, artifact state tracking, trigger condition evaluation, context injection construction, graph-based dry-run projection, pre/post-execution enforcement, project loading, protocol selection, status evaluation, and session state.
 - **`runa-cli`** — Thin CLI binary. Clap-based argument parsing, delegates to libagent and the session MCP surface. No domain logic.
 - **`runa-mcp`** — MCP server binary. In fixed-protocol mode, serves one named protocol invocation per process. In session mode, serves one scoped work-unit session with driver verbs and current-step output tools in one MCP connection. Writes produced artifacts into the workspace through the same validation path in both modes.
+- **`runa-forge-contract`** — Provider-neutral forge capability contract: the canonical operation set, tool schemas, scoped handles, and tool-set composition rules.
+- **`runa-forge-github`** — GitHub forge connector implementation and request construction.
+- **`runa-forge-sourcehut`** — SourceHut forge connector implementation and request construction.
+- **`runa-forge-compose`** — Runtime composition from `[forge]` config into a connector-backed MCP tool surface.
 
 Supported runtime adapters live in top-level **`adapters/`**. They translate
 the runtime-agnostic `RUNA_MCP_CONFIG` payload into each runtime's MCP
@@ -48,7 +52,17 @@ These are library capabilities exposed by libagent and consumed by both the CLI 
 
 10. **CLI execution commands.** `runa state`, `runa step`, `runa run`, and `runa go` share the same scope-resolved topology, readiness evaluation, and scope handling. Without `--work-unit`, commands evaluate only unscoped protocols; with `--work-unit <ID>`, they evaluate only scoped protocols for that delegated work unit after canonical identity validation. `step --dry-run` previews only the next concrete execution, while `run --dry-run` projects the full optimistic cascade to quiescence from declared `produces` outputs plus already-known required output choice branches within that same scope and scope-filtered execution order; optional `may_produce` outputs do not advance the projection unless they already exist, and required output choice branches are not synthesized unless exactly one member already exists. Live execution targets Linux. Live `step` executes exactly one ready candidate through fixed-protocol MCP, then re-scans and prints the refreshed state. Live `run` repeats the execute → scan → enforce → re-evaluate cycle until quiescence, resolves its agent command from `--agent-command -- <argv...>` or `[agent].command` in config, reopens exhausted work when a later reconciliation changes relevant inputs, and exits with outcome-specific status codes. Live `go` launches the configured agent with `runa-mcp --session --work-unit <ID>`, sends a generic one-tick prompt, and verifies that the selected session step recorded execution through the session surface. Before launching an agent, live execution builds a `runa-mcp` config, exports it through `RUNA_MCP_CONFIG`, injects config-resolved transcript and forge identity environment into both the agent process and MCP config, and launches the configured argv unmodified; runtime-specific MCP adaptation belongs to the runtime or adapter. When transcript capture is enabled by config or `RUNA_TRANSCRIPT_DIR`, live execution appends structured transcript events for the rendered prompt, agent stdout/stderr, and exit status beneath the configured root, separated by deployment, work unit, and per-invocation run id.
 
-11. **MCP runtime loop.** In fixed-protocol mode, `runa-mcp` parses `--protocol` and optional `--work-unit`, loads the project, scans the workspace, resolves the named protocol from the manifest, validates declared scope and canonical work-unit identity against the provided arguments, validates that its outputs can be served as MCP tools, and serves output tools via stdio. In session mode, `runa-mcp --session --work-unit <ID>` opens a scoped `SessionState`, advertises driver tools plus current-step output tools, and emits `notifications/tools/list_changed` whenever a session verb changes the current step and therefore the advertised output tools. When transcript capture is enabled, tool calls and tool results are appended under the same deployment/work-unit/run transcript path as CLI execution events.
+11. **Forge connector composition.** `runa-forge-contract` defines the
+canonical forge operations (`read-ticket`, `create-ticket`, `claim-work-unit`,
+`record-progress`, `deliver-change-proposal`, `reflect-disposition`,
+`apply-approved-change`, and `close-out`) plus self-contained input/output
+schemas. GitHub and SourceHut connectors implement those operations behind a
+provider-neutral trait and reject references outside their configured scope
+before issuing provider requests. `runa-forge-compose` resolves `[forge]`
+config into at most one connector runtime, applies role-qualified aliases, and
+fails loudly on exposed tool-name collisions.
+
+12. **MCP runtime loop.** In fixed-protocol mode, `runa-mcp` parses `--protocol` and optional `--work-unit`, loads the project, scans the workspace, resolves the named protocol from the manifest, validates declared scope and canonical work-unit identity against the provided arguments, validates that its outputs can be served as MCP tools, and serves output tools via stdio. In session mode, `runa-mcp --session --work-unit <ID>` opens a scoped `SessionState`, advertises driver tools plus current-step output tools, and emits `notifications/tools/list_changed` whenever a session verb changes the current step and therefore the advertised output tools. In both modes, a configured forge connector appends its forge tools to the advertised MCP surface, and connector/artifact/driver name collisions are rejected during tool-list composition. When transcript capture is enabled, tool calls and tool results are appended under the same deployment/work-unit/run transcript path as CLI execution events.
 
 ## Modules
 

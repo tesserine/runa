@@ -1,0 +1,818 @@
+use apollo_compiler::{ExecutableDocument, Schema};
+use runa_forge_contract::{ForgeError, Operation};
+use runa_forge_sourcehut::{
+    ProviderRequest, SourcehutConfig, SourcehutConnector, SourcehutHttpTransport,
+    SourcehutRecordingTransport, SourcehutTransport,
+};
+use serde_json::{Value, json};
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::path::Path;
+use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+const SOURCEHUT_TODO_SCHEMA: &str = include_str!("fixtures/todo.sr.ht.schema.graphqls");
+const TRACKER_RID: &str = "06fdktpsb5w8q09e22xy0m6fnr";
+
+fn config(api_base: &str) -> SourcehutConfig {
+    SourcehutConfig {
+        tracker_id: "4".to_string(),
+        api_base: api_base.to_string(),
+        git_remote: "ssh://git@git.sr.ht/~tesserine/runa".to_string(),
+        credential_env: None,
+        credential_command: None,
+    }
+}
+
+fn handle(number: u64) -> serde_json::Value {
+    json!({
+        "id": format!("sourcehut:tracker:4:ticket:{number}"),
+        "display": format!("sourcehut:4#{number}")
+    })
+}
+
+fn change() -> serde_json::Value {
+    json!({
+        "id": "sourcehut:tracker:4:change:issue-203:version:1",
+        "display": "issue-203"
+    })
+}
+
+fn input_for_operation(operation: Operation) -> serde_json::Value {
+    match operation {
+        Operation::ReadTicket => json!({"reference": "203"}),
+        Operation::CreateTicket => json!({"title": "title", "body": "body"}),
+        Operation::ClaimWorkUnit => json!({"handle": handle(203)}),
+        Operation::RecordProgress => json!({"handle": handle(203), "body": "progress"}),
+        Operation::DeliverChangeProposal => {
+            json!({"work_unit": handle(203), "branch": "issue-203", "commit": "abc123", "base": "main", "summary": "summary", "body": "body", "version": 1})
+        }
+        Operation::ReflectDisposition => {
+            json!({"work_unit": handle(203), "change": change(), "disposition": {"kind": "approved", "against_version": 1, "reviewer": "reviewer", "reviewed_at": "2026-06-17T00:00:00Z", "findings": []}, "body": "approved"})
+        }
+        Operation::ApplyApprovedChange => {
+            json!({"work_unit": handle(203), "change": change(), "approved_version": 1, "approved_commit": "abc123", "base": "main"})
+        }
+        Operation::CloseOut => {
+            json!({"work_unit": handle(203), "completion": {"criterion_summary": "done", "gaps": [], "change_reference": "abc123", "documentation_status": "updated"}, "body": "done"})
+        }
+    }
+}
+
+fn config_with_remote(api_base: &str, git_remote: String) -> SourcehutConfig {
+    SourcehutConfig {
+        git_remote,
+        ..config(api_base)
+    }
+}
+
+fn git(args: &[&str], cwd: &Path) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run git {args:?}: {error}"));
+    assert!(
+        output.status.success(),
+        "git {args:?} failed with status {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn local_git_fixture() -> (tempfile::TempDir, String) {
+    let remote = tempfile::tempdir().unwrap();
+    git(&["init", "--bare"], remote.path());
+    let commit = git(
+        &["rev-parse", "HEAD"],
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    );
+    (remote, commit)
+}
+
+fn validate_sourcehut_graphql(query: &str) {
+    let schema =
+        Schema::parse_and_validate(SOURCEHUT_TODO_SCHEMA, "todo.sr.ht.schema.graphqls").unwrap();
+    ExecutableDocument::parse_and_validate(&schema, query, "operation.graphql").unwrap();
+}
+
+fn graphql_request_from_http(request: &str) -> Value {
+    let body = request
+        .split("\r\n\r\n")
+        .nth(1)
+        .expect("HTTP request should include a body");
+    serde_json::from_str(body).unwrap_or_else(|error| {
+        panic!("request body should be GraphQL JSON: {error}\nrequest:\n{request}")
+    })
+}
+
+fn assert_graphql_request_validates(request: &str, expected_field: &str) {
+    let body = graphql_request_from_http(request);
+    let query = body
+        .get("query")
+        .and_then(Value::as_str)
+        .expect("GraphQL request should include a query string");
+    validate_sourcehut_graphql(query);
+    assert!(
+        query.contains(expected_field),
+        "query did not contain {expected_field}: {query}"
+    );
+}
+
+#[derive(Debug, Clone, Default)]
+struct SourcehutTrackerFakeTransport {
+    requests: Arc<Mutex<Vec<ProviderRequest>>>,
+}
+
+impl SourcehutTrackerFakeTransport {
+    fn requests(&self) -> Vec<ProviderRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+impl SourcehutTransport for SourcehutTrackerFakeTransport {
+    fn send(
+        &self,
+        _config: &SourcehutConfig,
+        request: ProviderRequest,
+    ) -> Result<Value, ForgeError> {
+        self.requests.lock().unwrap().push(request.clone());
+        if request.kind == "GIT" {
+            return Ok(json!({
+                "commit": "abc123",
+                "ref": "refs/heads/issue-203"
+            }));
+        }
+        if request.kind != "GRAPHQL" {
+            return Err(ForgeError::Unsupported(format!(
+                "fake cannot execute {}",
+                request.kind
+            )));
+        }
+
+        let variables = request
+            .body
+            .as_ref()
+            .and_then(|body| body.get("variables"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        match request.operation.as_str() {
+            "trackers" => {
+                if variables.get("cursor").and_then(Value::as_str) == Some("next") {
+                    Ok(json!({
+                        "data": {
+                            "trackers": {
+                                "results": [
+                                    { "id": 4, "rid": TRACKER_RID, "name": "runa" }
+                                ],
+                                "cursor": null
+                            }
+                        }
+                    }))
+                } else {
+                    Ok(json!({
+                        "data": {
+                            "trackers": {
+                                "results": [
+                                    { "id": 1, "rid": "01not-the-runa-tracker", "name": "other" }
+                                ],
+                                "cursor": "next"
+                            }
+                        }
+                    }))
+                }
+            }
+            "ticket" => {
+                if variables.get("tracker").and_then(Value::as_str) != Some(TRACKER_RID) {
+                    return Ok(json!({
+                        "errors": [{ "message": "tracker(rid:) requires an opaque resource id" }]
+                    }));
+                }
+                Ok(json!({
+                    "data": {
+                        "tracker": {
+                            "id": 4,
+                            "rid": TRACKER_RID,
+                            "name": "runa",
+                            "ticket": {
+                                "id": 203,
+                                "subject": "Forge connectors",
+                                "body": "body",
+                                "status": "REPORTED"
+                            }
+                        }
+                    }
+                }))
+            }
+            "submitTicket" => Ok(json!({
+                "data": {
+                    "submitTicket": {
+                        "id": 203,
+                        "subject": "Forge connectors",
+                        "body": "body",
+                        "status": "REPORTED"
+                    }
+                }
+            })),
+            "updateTicketStatus" => {
+                Ok(json!({ "data": { "updateTicketStatus": { "id": "claim-203" } } }))
+            }
+            "submitComment" => Ok(json!({ "data": { "submitComment": { "id": "comment-203" } } })),
+            operation => Err(ForgeError::Unsupported(format!(
+                "fake cannot execute operation {operation}"
+            ))),
+        }
+    }
+}
+
+#[test]
+fn read_ticket_accepts_deployment_reference_forms_and_issues_scoped_handles() {
+    let transport = SourcehutTrackerFakeTransport::default();
+    let connector = SourcehutConnector::new(config("https://todo.test/query"), transport.clone());
+
+    for reference in ["sourcehut:4#203", "#203", "203"] {
+        let output = connector
+            .call(Operation::ReadTicket, json!({ "reference": reference }))
+            .unwrap();
+
+        assert_eq!(output["handle"]["id"], "sourcehut:tracker:4:ticket:203");
+        assert_eq!(output["title"], "Forge connectors");
+    }
+
+    let requests = transport.requests();
+    let tracker_list_requests = requests
+        .iter()
+        .filter(|request| request.operation == "trackers")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tracker_list_requests.len(),
+        2,
+        "tracker rid should be resolved through one paged listing sequence"
+    );
+    let ticket_tracker_variables = requests
+        .iter()
+        .filter(|request| request.operation == "ticket")
+        .map(|request| {
+            request
+                .body
+                .as_ref()
+                .and_then(|body| body.pointer("/variables/tracker"))
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ticket_tracker_variables, vec![TRACKER_RID; 3]);
+}
+
+#[test]
+fn sourcehut_fake_rejects_numeric_tracker_id_as_tracker_rid() {
+    let transport = SourcehutTrackerFakeTransport::default();
+    let response = transport
+        .send(
+            &config("https://todo.test/query"),
+            ProviderRequest {
+                kind: "GRAPHQL".to_string(),
+                operation: "ticket".to_string(),
+                path: "/query".to_string(),
+                body: Some(json!({
+                    "query": "query ticket($tracker: ID!, $id: Int!) { tracker(rid: $tracker) { ticket(id: $id) { id subject body status } } }",
+                    "variables": { "tracker": "4", "id": 203 }
+                })),
+            },
+        )
+        .unwrap();
+
+    assert!(response.get("errors").is_some(), "{response}");
+}
+
+#[test]
+fn foreign_scope_is_rejected_before_transport() {
+    let transport = SourcehutRecordingTransport::default();
+    let connector = SourcehutConnector::new(config("https://todo.test/query"), transport.clone());
+
+    let error = connector
+        .call(
+            Operation::CloseOut,
+            json!({
+                "work_unit": {
+                    "id": "sourcehut:tracker:9:ticket:203",
+                    "display": "sourcehut:9#203"
+                },
+                "completion": {
+                    "criterion_summary": "done",
+                    "gaps": [],
+                    "change_reference": "abc123",
+                    "documentation_status": "updated"
+                },
+                "body": "done"
+            }),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("foreign scope"));
+    assert!(transport.requests().is_empty());
+}
+
+#[test]
+fn every_operation_constructs_the_expected_provider_request() {
+    let transport = SourcehutTrackerFakeTransport::default();
+    let connector = SourcehutConnector::new(config("https://todo.test/query"), transport.clone());
+
+    let cases = [
+        (
+            Operation::ReadTicket,
+            json!({"reference": "203"}),
+            "GRAPHQL",
+            "ticket",
+        ),
+        (
+            Operation::CreateTicket,
+            json!({"title": "title", "body": "body"}),
+            "GRAPHQL",
+            "submitTicket",
+        ),
+        (
+            Operation::ClaimWorkUnit,
+            json!({"handle": handle(203)}),
+            "GRAPHQL",
+            "updateTicketStatus",
+        ),
+        (
+            Operation::RecordProgress,
+            json!({"handle": handle(203), "body": "progress"}),
+            "GRAPHQL",
+            "submitComment",
+        ),
+        (
+            Operation::DeliverChangeProposal,
+            json!({"work_unit": handle(203), "branch": "issue-203", "commit": "abc123", "base": "main", "summary": "summary", "body": "body", "version": 1}),
+            "GIT",
+            "deliverChangeProposal",
+        ),
+        (
+            Operation::ReflectDisposition,
+            json!({"work_unit": handle(203), "change": {"id": "sourcehut:tracker:4:change:issue-203:version:1", "display": "issue-203"}, "disposition": {"kind": "approved", "against_version": 1, "reviewer": "reviewer", "reviewed_at": "2026-06-17T00:00:00Z", "findings": []}, "body": "approved"}),
+            "GRAPHQL",
+            "submitComment",
+        ),
+        (
+            Operation::ApplyApprovedChange,
+            json!({"work_unit": handle(203), "change": {"id": "sourcehut:tracker:4:change:issue-203:version:1", "display": "issue-203"}, "approved_version": 1, "approved_commit": "abc123", "base": "main"}),
+            "GIT",
+            "applyApprovedChange",
+        ),
+        (
+            Operation::CloseOut,
+            json!({"work_unit": handle(203), "completion": {"criterion_summary": "done", "gaps": [], "change_reference": "abc123", "documentation_status": "updated"}, "body": "done"}),
+            "GRAPHQL",
+            "submitComment",
+        ),
+    ];
+
+    for (operation, input, _, _) in &cases {
+        connector.call(*operation, input.clone()).unwrap();
+    }
+
+    let expected_requests = [
+        ("GRAPHQL", "trackers"),
+        ("GRAPHQL", "trackers"),
+        ("GRAPHQL", "ticket"),
+        ("GRAPHQL", "submitTicket"),
+        ("GRAPHQL", "updateTicketStatus"),
+        ("GRAPHQL", "submitComment"),
+        ("GIT", "deliverChangeProposal"),
+        ("GRAPHQL", "submitComment"),
+        ("GIT", "resolveChangeProposal"),
+        ("GIT", "applyApprovedChange"),
+        ("GRAPHQL", "submitComment"),
+    ];
+    let requests = transport.requests();
+    assert_eq!(requests.len(), expected_requests.len());
+    for (request, (kind, operation_name)) in requests.iter().zip(expected_requests) {
+        assert_eq!(request.kind, kind);
+        assert_eq!(request.operation, operation_name);
+        if request.kind == "GRAPHQL" {
+            let body = request
+                .body
+                .as_ref()
+                .expect("GraphQL request should have body");
+            let query = body
+                .get("query")
+                .and_then(Value::as_str)
+                .expect("GraphQL request should include query string");
+            validate_sourcehut_graphql(query);
+            if operation_name == "trackers" {
+                assert!(
+                    query.contains("trackers"),
+                    "query did not list trackers: {query}"
+                );
+            } else {
+                assert!(
+                    query.contains(operation_name),
+                    "query did not contain {operation_name}: {query}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn every_operation_rejects_provider_error_payloads_without_success_receipts() {
+    let transport = SourcehutRecordingTransport::with_repeating_response(json!({
+        "errors": [{"message": "provider rejected mutation"}]
+    }));
+    let connector = SourcehutConnector::new(config("https://todo.test/query"), transport.clone());
+
+    for operation in Operation::ALL {
+        let result = connector.call(operation, input_for_operation(operation));
+
+        assert!(
+            result.is_err(),
+            "{operation} should reject SourceHut provider errors, got {result:?}"
+        );
+    }
+
+    assert_eq!(transport.requests().len(), Operation::ALL.len());
+}
+
+#[test]
+fn every_operation_rejects_null_or_absent_required_provider_results() {
+    for response in [
+        json!({
+            "data": {
+                "tracker": {
+                    "ticket": null
+                },
+                "submitTicket": null,
+                "updateTicketStatus": null,
+                "submitComment": null
+            }
+        }),
+        json!({ "data": {} }),
+    ] {
+        let transport = SourcehutRecordingTransport::with_repeating_response(response);
+        let connector =
+            SourcehutConnector::new(config("https://todo.test/query"), transport.clone());
+
+        for operation in Operation::ALL {
+            let result = connector.call(operation, input_for_operation(operation));
+
+            assert!(
+                result.is_err(),
+                "{operation} should reject absent/null required provider result, got {result:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn apply_approved_change_rejects_delivered_ref_mismatch_before_push() {
+    let transport = SourcehutRecordingTransport::with_repeating_response(json!({
+        "commit": "delivered-commit",
+        "ref": "refs/heads/issue-203"
+    }));
+    let connector = SourcehutConnector::new(config("https://todo.test/query"), transport.clone());
+
+    let error = connector
+        .call(
+            Operation::ApplyApprovedChange,
+            json!({
+                "work_unit": handle(203),
+                "change": {
+                    "id": "sourcehut:tracker:4:change:issue-203:version:1",
+                    "display": "issue-203"
+                },
+                "approved_version": 1,
+                "approved_commit": "different-commit",
+                "base": "main"
+            }),
+        )
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("different-commit")
+            && error.to_string().contains("delivered-commit"),
+        "delivered ref mismatch should report requested and actual commits: {error}"
+    );
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].kind, "GIT");
+    assert_eq!(requests[0].operation, "resolveChangeProposal");
+}
+
+#[test]
+fn production_http_transport_rejects_graphql_errors_under_http_200() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let size = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..size]);
+        assert!(request.starts_with("POST /query "));
+        assert_graphql_request_validates(&request, "tracker");
+        let body = r#"{"errors":[{"message":"provider rejected mutation"}]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+
+    let connector = SourcehutConnector::new(
+        config(&format!("http://{address}/query")),
+        SourcehutHttpTransport,
+    );
+    let error = connector
+        .call(Operation::ReadTicket, json!({ "reference": "203" }))
+        .unwrap_err();
+
+    assert!(error.to_string().contains("GraphQL"));
+    server.join().unwrap();
+}
+
+#[test]
+fn sourcehut_schema_rejects_nonexistent_top_level_ticket_operations() {
+    let schema =
+        Schema::parse_and_validate(SOURCEHUT_TODO_SCHEMA, "todo.sr.ht.schema.graphqls").unwrap();
+    for query in [
+        "query ticket($id: Int!) { ticket(id: $id) { id subject body status } }",
+        "mutation createTicket($subject: String!, $body: String!) { createTicket(subject: $subject, body: $body) { id subject body status } }",
+        "mutation closeTicket($id: Int!, $body: String!) { closeTicket(id: $id, body: $body) { id } }",
+    ] {
+        assert!(
+            ExecutableDocument::parse_and_validate(&schema, query, "operation.graphql").is_err(),
+            "query should fail against real SourceHut schema: {query}"
+        );
+    }
+}
+
+#[test]
+fn sourcehut_schema_models_tracker_rid_and_tracker_listing_accessors() {
+    validate_sourcehut_graphql(
+        "query trackerByRid($tracker: ID!, $id: Int!) { tracker(rid: $tracker) { id rid name ticket(id: $id) { id subject body status } } }",
+    );
+    validate_sourcehut_graphql(
+        "query trackerRid($cursor: Cursor) { trackers(cursor: $cursor) { results { id rid name } cursor } }",
+    );
+
+    let schema =
+        Schema::parse_and_validate(SOURCEHUT_TODO_SCHEMA, "todo.sr.ht.schema.graphqls").unwrap();
+    let numeric_root_lookup =
+        "query trackerById($tracker: Int!) { tracker(id: $tracker) { id rid name } }";
+    assert!(
+        ExecutableDocument::parse_and_validate(&schema, numeric_root_lookup, "operation.graphql")
+            .is_err(),
+        "root tracker(id:) must not validate against the SourceHut schema"
+    );
+}
+
+#[test]
+fn production_http_transport_executes_and_parses_read_ticket() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let size = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..size]);
+        assert!(request.starts_with("POST /query "));
+        assert_graphql_request_validates(&request, "trackers");
+        let body = format!(
+            r#"{{"data":{{"trackers":{{"results":[{{"id":4,"rid":"{TRACKER_RID}","name":"runa"}}],"cursor":null}}}}}}"#
+        );
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let size = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..size]);
+        assert!(request.starts_with("POST /query "));
+        assert_graphql_request_validates(&request, "tracker");
+        let body = r#"{"data":{"tracker":{"ticket":{"id":203,"subject":"Harness title","body":"Harness body","status":"REPORTED"}}}}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+
+    let connector = SourcehutConnector::new(
+        config(&format!("http://{address}/query")),
+        SourcehutHttpTransport,
+    );
+    let output = connector
+        .call(Operation::ReadTicket, json!({ "reference": "203" }))
+        .unwrap();
+
+    assert_eq!(output["title"], "Harness title");
+    assert_eq!(output["handle"]["id"], "sourcehut:tracker:4:ticket:203");
+    server.join().unwrap();
+}
+
+#[test]
+fn production_http_transport_executes_and_parses_every_graphql_operation() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let expected = [
+        (
+            "trackers",
+            r#"{"data":{"trackers":{"results":[{"id":4,"rid":"06fdktpsb5w8q09e22xy0m6fnr","name":"runa"}],"cursor":null}}}"#,
+        ),
+        (
+            "tracker",
+            r#"{"data":{"tracker":{"ticket":{"id":203,"subject":"Harness read","body":"Read body","status":"REPORTED"}}}}"#,
+        ),
+        (
+            "submitTicket",
+            r#"{"data":{"submitTicket":{"id":204,"subject":"Harness create","body":"Created body","status":"REPORTED"}}}"#,
+        ),
+        (
+            "updateTicketStatus",
+            r#"{"data":{"updateTicketStatus":{"id":"claim-203"}}}"#,
+        ),
+        (
+            "submitComment",
+            r#"{"data":{"submitComment":{"id":"progress-1"}}}"#,
+        ),
+        (
+            "submitComment",
+            r#"{"data":{"submitComment":{"id":"disposition-1"}}}"#,
+        ),
+        (
+            "submitComment",
+            r#"{"data":{"submitComment":{"id":"closed-203"}}}"#,
+        ),
+    ];
+    let server = thread::spawn(move || {
+        for (operation_name, body) in expected {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let size = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..size]);
+            assert!(
+                request.starts_with("POST /query "),
+                "unexpected request: {request}"
+            );
+            assert_graphql_request_validates(&request, operation_name);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+
+    let connector = SourcehutConnector::new(
+        config(&format!("http://{address}/query")),
+        SourcehutHttpTransport,
+    );
+    let read = connector
+        .call(Operation::ReadTicket, json!({ "reference": "203" }))
+        .unwrap();
+    let created = connector
+        .call(
+            Operation::CreateTicket,
+            json!({"title": "title", "body": "body"}),
+        )
+        .unwrap();
+    let claimed = connector
+        .call(Operation::ClaimWorkUnit, json!({"handle": handle(203)}))
+        .unwrap();
+    let progress = connector
+        .call(
+            Operation::RecordProgress,
+            json!({"handle": handle(203), "body": "progress"}),
+        )
+        .unwrap();
+    let disposition = connector
+        .call(
+            Operation::ReflectDisposition,
+            json!({"work_unit": handle(203), "change": {"id": "sourcehut:tracker:4:change:issue-203:version:1", "display": "issue-203"}, "disposition": {"kind": "approved", "against_version": 1, "reviewer": "reviewer", "reviewed_at": "2026-06-17T00:00:00Z", "findings": []}, "body": "approved"}),
+        )
+        .unwrap();
+    let closed = connector
+        .call(
+            Operation::CloseOut,
+            json!({"work_unit": handle(203), "completion": {"criterion_summary": "done", "gaps": [], "change_reference": "abc123", "documentation_status": "updated"}, "body": "done"}),
+        )
+        .unwrap();
+
+    assert_eq!(read["title"], "Harness read");
+    assert_eq!(created["handle"]["id"], "sourcehut:tracker:4:ticket:204");
+    assert_eq!(created["title"], "Harness create");
+    assert_eq!(claimed["receipt"], "claim-203");
+    assert_eq!(progress["receipt"], "progress-1");
+    assert_eq!(disposition["receipt"], "disposition-1");
+    assert_eq!(closed["receipt"], "closed-203");
+    server.join().unwrap();
+}
+
+#[test]
+fn production_git_transport_delivers_change_proposal_to_remote_ref() {
+    let (remote, commit) = local_git_fixture();
+    let connector = SourcehutConnector::new(
+        config_with_remote(
+            "http://127.0.0.1:1/query",
+            remote.path().to_string_lossy().into_owned(),
+        ),
+        SourcehutHttpTransport,
+    );
+
+    let output = connector
+        .call(
+            Operation::DeliverChangeProposal,
+            json!({
+                "work_unit": handle(203),
+                "branch": "issue-203",
+                "commit": commit,
+                "base": "main",
+                "summary": "summary",
+                "body": "body",
+                "version": 1
+            }),
+        )
+        .unwrap();
+
+    let remote_commit = git(
+        &[
+            "ls-remote",
+            remote.path().to_str().unwrap(),
+            "refs/heads/issue-203",
+        ],
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    );
+    assert!(remote_commit.starts_with(&commit));
+    assert_eq!(output["commit"], commit);
+}
+
+#[test]
+fn production_git_transport_applies_approved_change_to_base_ref() {
+    let (remote, commit) = local_git_fixture();
+    let connector = SourcehutConnector::new(
+        config_with_remote(
+            "http://127.0.0.1:1/query",
+            remote.path().to_string_lossy().into_owned(),
+        ),
+        SourcehutHttpTransport,
+    );
+
+    connector
+        .call(
+            Operation::DeliverChangeProposal,
+            json!({
+                "work_unit": handle(203),
+                "branch": "issue-203",
+                "commit": commit,
+                "base": "main",
+                "summary": "summary",
+                "body": "body",
+                "version": 1
+            }),
+        )
+        .unwrap();
+
+    let output = connector
+        .call(
+            Operation::ApplyApprovedChange,
+            json!({
+                "work_unit": handle(203),
+                "change": {"id": "sourcehut:tracker:4:change:issue-203:version:1", "display": "issue-203"},
+                "approved_version": 1,
+                "approved_commit": commit,
+                "base": "main"
+            }),
+        )
+        .unwrap();
+
+    let remote_commit = git(
+        &[
+            "ls-remote",
+            remote.path().to_str().unwrap(),
+            "refs/heads/main",
+        ],
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    );
+    assert!(remote_commit.starts_with(&commit));
+    assert_eq!(output["applied_commit"], commit);
+    assert_eq!(output["receipt"], "refs/heads/main");
+}
+
+#[allow(dead_code)]
+fn _request_type_is_public(_: ProviderRequest) {}

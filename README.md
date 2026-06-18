@@ -208,14 +208,24 @@ See [CLI Reference](docs/cli-reference.md) for flags, exit codes, configuration,
 
 `runa init` creates `.runa/config.toml` with the methodology path. Operators
 may also set durable project defaults there for live agent command,
-transcript capture, and scoped forge identity. Environment variables such as
+transcript capture, scoped forge identity, and MCP forge connector settings.
+Environment variables such as
 `RUNA_TRANSCRIPT_DIR` and `RUNA_FORGE_*` remain per-invocation overrides;
 config is the project-local default.
+
+When `[forge]` identifies a supported connector, `runa-mcp` composes the
+methodology artifact tools with forge tools for the canonical work-unit
+lifecycle: read/create ticket, claim work, record progress, deliver a change
+proposal, reflect review disposition, apply an approved change, and close out.
+GitHub and SourceHut connector implementations are provided.
 
 Runa ships supported agent adapters for Codex and Claude Code in `adapters/`.
 Set `[agent].command` to `./adapters/agent-codex.sh` or
 `./adapters/agent-claude-code.sh`; the adapter translates `RUNA_MCP_CONFIG` for
 the selected runtime.
+
+GitHub forge claiming requires `[forge].assignee` so `claim-work-unit` can set
+a real issue assignee instead of reporting a synthetic claim.
 
 ## Build
 

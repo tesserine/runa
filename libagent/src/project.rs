@@ -4,6 +4,7 @@
 //! manifest, builds the dependency graph, and initializes the artifact store.
 //! See [`load`] for the main entry point.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -80,6 +81,18 @@ pub struct ForgeConfig {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tracker_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_base: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_remote: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_command: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tool_aliases: BTreeMap<String, String>,
 }
 
 impl ForgeConfig {
@@ -651,6 +664,11 @@ type = "sourcehut"
 owner = "operator"
 name = "weforge"
 tracker_id = "4"
+api_base = "https://todo.example/query"
+git_remote = "ssh://git@git.example/runa"
+assignee = "pentaxis93"
+credential_env = "WEFORGE_OPERATOR_PAT"
+credential_command = ["secret-tool", "lookup", "token"]
 "#,
         )
         .unwrap();
@@ -661,6 +679,23 @@ tracker_id = "4"
         assert_eq!(config.forge.owner.as_deref(), Some("operator"));
         assert_eq!(config.forge.name.as_deref(), Some("weforge"));
         assert_eq!(config.forge.tracker_id.as_deref(), Some("4"));
+        assert_eq!(
+            config.forge.api_base.as_deref(),
+            Some("https://todo.example/query")
+        );
+        assert_eq!(
+            config.forge.git_remote.as_deref(),
+            Some("ssh://git@git.example/runa")
+        );
+        assert_eq!(config.forge.assignee.as_deref(), Some("pentaxis93"));
+        assert_eq!(
+            config.forge.credential_env.as_deref(),
+            Some("WEFORGE_OPERATOR_PAT")
+        );
+        assert_eq!(
+            config.forge.credential_command,
+            ["secret-tool", "lookup", "token"]
+        );
     }
 
     #[test]
@@ -678,6 +713,12 @@ tracker_id = "4"
                 owner: Some("tesserine".to_string()),
                 name: Some("runa".to_string()),
                 tracker_id: Some("4".to_string()),
+                api_base: None,
+                git_remote: None,
+                assignee: Some("pentaxis93".to_string()),
+                credential_env: None,
+                credential_command: Vec::new(),
+                tool_aliases: BTreeMap::new(),
             },
         };
 

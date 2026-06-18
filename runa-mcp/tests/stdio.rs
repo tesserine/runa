@@ -1,11 +1,14 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use rmcp::ClientHandler;
-use rmcp::model::{CallToolRequestParam, CallToolResult};
+use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::ServiceExt;
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use tokio::process::Command;
@@ -60,6 +63,27 @@ produces = ["implementation"]
 scoped = true
 trigger = { type = "on_change", name = "implementation" }
 "#
+}
+
+fn forge_collision_manifest_toml() -> &'static str {
+    r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "read-ticket"
+
+[[protocols]]
+name = "take"
+produces = ["read-ticket"]
+trigger = { type = "on_change", name = "read-ticket" }
+"#
+}
+
+fn forge_collision_schemas() -> Vec<(&'static str, &'static str)> {
+    vec![(
+        "read-ticket",
+        r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+    )]
 }
 
 fn methodology_schemas() -> Vec<(&'static str, &'static str)> {
@@ -275,6 +299,35 @@ fn append_github_forge_config(project_dir: &Path, owner: &str, name: &str) {
     .unwrap();
 }
 
+fn append_github_forge_config_with_api(
+    project_dir: &Path,
+    owner: &str,
+    name: &str,
+    api_base: &str,
+) {
+    let config_path = project_dir.join(".runa/config.toml");
+    let existing = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        config_path,
+        format!(
+            "{existing}\n[forge]\ntype = \"github\"\nowner = \"{owner}\"\nname = \"{name}\"\napi_base = \"{api_base}\"\n",
+        ),
+    )
+    .unwrap();
+}
+
+fn append_sourcehut_forge_config_with_api(project_dir: &Path, tracker_id: &str, api_base: &str) {
+    let config_path = project_dir.join(".runa/config.toml");
+    let existing = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        config_path,
+        format!(
+            "{existing}\n[forge]\ntype = \"sourcehut\"\ntracker_id = \"{tracker_id}\"\napi_base = \"{api_base}\"\n",
+        ),
+    )
+    .unwrap();
+}
+
 fn append_transcript_config(project_dir: &Path, transcript_dir: &Path) {
     let config_path = project_dir.join(".runa/config.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
@@ -327,11 +380,113 @@ fn tool_result_text(result: &CallToolResult) -> String {
         .clone()
 }
 
-fn session_call(name: &str) -> CallToolRequestParam {
-    CallToolRequestParam {
-        name: name.to_string().into(),
-        arguments: Some(serde_json::Map::new()),
-    }
+fn session_call(name: &str) -> CallToolRequestParams {
+    CallToolRequestParams::new(name.to_string())
+}
+
+fn tool_call(name: &str, arguments: serde_json::Value) -> CallToolRequestParams {
+    CallToolRequestParams::new(name.to_string()).with_arguments(
+        arguments
+            .as_object()
+            .expect("tool arguments must be an object")
+            .clone(),
+    )
+}
+
+fn canonical_forge_tool_names() -> Vec<&'static str> {
+    vec![
+        "apply-approved-change",
+        "claim-work-unit",
+        "close-out",
+        "create-ticket",
+        "deliver-change-proposal",
+        "read-ticket",
+        "record-progress",
+        "reflect-disposition",
+    ]
+}
+
+fn one_shot_json_server<F>(
+    body: &'static str,
+    assert_request: F,
+) -> (String, thread::JoinHandle<()>)
+where
+    F: FnOnce(&str) + Send + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let size = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..size]);
+        assert_request(&request);
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    (format!("http://{address}"), server)
+}
+
+#[tokio::test]
+async fn call_tool_rejects_forge_artifact_name_collision_before_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        forge_collision_manifest_toml(),
+        &forge_collision_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    append_github_forge_config(&project_dir, "tesserine", "runa");
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("take")
+                        .env_remove("RUNA_FORGE_TYPE")
+                        .env_remove("RUNA_FORGE_OWNER")
+                        .env_remove("RUNA_FORGE_NAME")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let result = service
+        .call_tool(tool_call(
+            "read-ticket",
+            serde_json::json!({
+                "instance_id": "artifact-1",
+                "title": "must not dispatch to forge"
+            }),
+        ))
+        .await
+        .unwrap();
+    let text = tool_result_text(&result);
+    assert!(
+        text.contains("tool name collision") && text.contains("read-ticket"),
+        "colliding tool name should be rejected before forge dispatch: {text}"
+    );
+    assert!(
+        !project_dir
+            .join(".runa/workspace/read-ticket/artifact-1.json")
+            .exists(),
+        "colliding call must not write an artifact"
+    );
+
+    service.cancel().await.unwrap();
 }
 
 fn assert_no_execution_record_for(project_dir: &Path, protocol: &str) {
@@ -577,15 +732,13 @@ async fn session_record_read_advance_records_execution_for_producing_step() {
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -676,15 +829,13 @@ async fn session_advance_records_context_time_input_provenance() {
     .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
     service.call_tool(session_call("advance")).await.unwrap();
@@ -761,15 +912,13 @@ async fn session_advance_reopens_current_step_when_context_input_changes() {
     )
     .unwrap();
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -851,15 +1000,13 @@ async fn session_advance_reopens_current_step_when_readiness_consumes_context_in
     .unwrap();
     service.call_tool(session_call("readiness")).await.unwrap();
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -915,15 +1062,13 @@ async fn session_advance_emits_tool_list_changed_when_current_step_changes() {
     .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -976,15 +1121,13 @@ async fn session_advance_reconciles_deleted_output_before_recording_execution() 
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
     fs::remove_file(workspace.join("claim/claim-1.json")).unwrap();
@@ -1059,15 +1202,13 @@ async fn session_advance_rejects_deleted_required_input_before_downstream_select
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
     fs::remove_file(workspace.join("work-unit/work-unit-166.json")).unwrap();
@@ -1340,15 +1481,13 @@ async fn session_advance_error_preserves_current_step_when_next_step_is_unservab
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -1422,15 +1561,13 @@ async fn session_advance_persistence_error_preserves_current_step_and_no_record(
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
     let execution_record_path = project_dir.join(".runa/store/execution-records.json");
@@ -1778,8 +1915,297 @@ async fn mcp_accepts_tracker_backed_work_unit_with_forge_identity_only_in_config
         .unwrap();
 
     let tools = service.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name.as_ref(), "claim");
+    let mut tool_names = tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+    tool_names.sort_unstable();
+
+    let mut expected_names = vec!["claim"];
+    expected_names.extend(canonical_forge_tool_names());
+    expected_names.sort_unstable();
+    assert_eq!(tool_names, expected_names);
+
+    let read_ticket = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "read-ticket")
+        .expect("read-ticket connector tool should be advertised");
+    assert!(
+        read_ticket.output_schema.is_some(),
+        "forge connector tools should advertise output schemas"
+    );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_forge_connector_uses_resolved_override_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest_path = write_methodology(
+        dir.path(),
+        scoped_work_unit_manifest_toml(),
+        &scoped_work_unit_schemas(),
+        &["take"],
+    );
+    let project_dir = dir.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+    append_github_forge_config_with_api(
+        &project_dir,
+        "stale-owner",
+        "stale-repo",
+        "http://127.0.0.1:1",
+    );
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("work-unit")).unwrap();
+    fs::write(
+        workspace.join("work-unit/work-unit-163.json"),
+        r#"{"title":"Scope","description":"Enforce canonical scope","acceptance_criteria":["Reject aliases"],"handle":{"forge_tag":"github","url":"https://github.com/override-owner/override-repo/issues/163","number":163}}"#,
+    )
+    .unwrap();
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("take")
+                        .arg("--work-unit")
+                        .arg("work-unit-163")
+                        .env("RUNA_FORGE_TYPE", "github")
+                        .env("RUNA_FORGE_OWNER", "override-owner")
+                        .env("RUNA_FORGE_NAME", "override-repo")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let tools = service.list_all_tools().await.unwrap();
+    assert!(
+        tools.iter().any(|tool| tool.name.as_ref() == "read-ticket"),
+        "forge connector tools should be advertised"
+    );
+
+    let result = service
+        .call_tool(tool_call(
+            "read-ticket",
+            serde_json::json!({ "reference": "stale-owner/stale-repo#203" }),
+        ))
+        .await
+        .unwrap();
+    let text = tool_result_text(&result);
+    assert!(
+        text.contains("foreign scope") && text.contains("override-owner/override-repo"),
+        "stale file-config identity should not be accepted: {text}"
+    );
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mcp_github_forge_tool_dispatches_production_transport_without_blocking_runtime_panic() {
+    let dir = setup_project();
+    let project_dir = dir.path().join("project");
+    let (api_base, server) = one_shot_json_server(
+        r#"{"number":203,"title":"MCP GitHub title","body":"MCP body","state":"open"}"#,
+        |request| {
+            assert!(
+                request.starts_with("GET /repos/tesserine/runa/issues/203 "),
+                "unexpected GitHub request: {request}"
+            );
+        },
+    );
+    append_github_forge_config_with_api(&project_dir, "tesserine", "runa", &api_base);
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("implement")
+                        .arg("--work-unit")
+                        .arg("wu-1")
+                        .env_remove("RUNA_FORGE_TYPE")
+                        .env_remove("RUNA_FORGE_OWNER")
+                        .env_remove("RUNA_FORGE_NAME")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        service.call_tool(tool_call(
+            "read-ticket",
+            serde_json::json!({ "reference": "203" }),
+        )),
+    )
+    .await
+    .expect("MCP call should return before the timeout")
+    .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&tool_result_text(&result)).unwrap();
+    assert_eq!(payload["title"], "MCP GitHub title");
+    assert_eq!(payload["handle"]["id"], "github:tesserine/runa:issue:203");
+
+    service.cancel().await.unwrap();
+    server.join().unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mcp_sourcehut_forge_tool_dispatches_production_transport_without_blocking_runtime_panic() {
+    let dir = setup_project();
+    let project_dir = dir.path().join("project");
+    let tracker_rid = "06fdktpsb5w8q09e22xy0m6fnr";
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let responses = [
+            (
+                r#"{"data":{"trackers":{"results":[{"id":4,"rid":"06fdktpsb5w8q09e22xy0m6fnr","name":"runa"}],"cursor":null}}}"#,
+                "trackers",
+            ),
+            (
+                r#"{"data":{"tracker":{"ticket":{"id":203,"subject":"MCP SourceHut title","body":"MCP body","status":"REPORTED"}}}}"#,
+                "ticket",
+            ),
+        ];
+        for (body, expected) in responses {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let size = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..size]);
+            assert!(
+                request.starts_with("POST /query "),
+                "unexpected SourceHut request: {request}"
+            );
+            match expected {
+                "trackers" => {
+                    assert!(request.contains("trackers"), "request: {request}");
+                }
+                "ticket" => {
+                    assert!(
+                        request.contains(&format!(r#""tracker":"{tracker_rid}""#)),
+                        "request should target resolved tracker rid: {request}"
+                    );
+                    assert!(
+                        !request.contains(r#""tracker":"4""#),
+                        "request should not use numeric tracker id as rid: {request}"
+                    );
+                }
+                _ => unreachable!(),
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+    let api_base = format!("http://{address}");
+    append_sourcehut_forge_config_with_api(&project_dir, "4", &format!("{api_base}/query"));
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("implement")
+                        .arg("--work-unit")
+                        .arg("wu-1")
+                        .env_remove("RUNA_FORGE_TYPE")
+                        .env_remove("RUNA_FORGE_OWNER")
+                        .env_remove("RUNA_FORGE_NAME")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        service.call_tool(tool_call(
+            "read-ticket",
+            serde_json::json!({ "reference": "203" }),
+        )),
+    )
+    .await
+    .expect("MCP call should return before the timeout")
+    .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&tool_result_text(&result)).unwrap();
+    assert_eq!(payload["title"], "MCP SourceHut title");
+    assert_eq!(payload["handle"]["id"], "sourcehut:tracker:4:ticket:203");
+
+    service.cancel().await.unwrap();
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn mcp_rejects_forge_input_missing_advertised_required_field_before_dispatch() {
+    let dir = setup_project();
+    let project_dir = dir.path().join("project");
+    append_github_forge_config_with_api(&project_dir, "tesserine", "runa", "http://127.0.0.1:9");
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("implement")
+                        .arg("--work-unit")
+                        .arg("wu-1")
+                        .env_remove("RUNA_FORGE_TYPE")
+                        .env_remove("RUNA_FORGE_OWNER")
+                        .env_remove("RUNA_FORGE_NAME")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let result = service
+        .call_tool(tool_call(
+            "apply-approved-change",
+            serde_json::json!({
+                "work_unit": {
+                    "id": "github:tesserine/runa:issue:203",
+                    "display": "tesserine/runa#203"
+                },
+                "change": {
+                    "id": "github:tesserine/runa:pull:12:version:1",
+                    "display": "tesserine/runa#12"
+                },
+                "approved_commit": "abc123",
+                "base": "main"
+            }),
+        ))
+        .await
+        .unwrap();
+    let text = tool_result_text(&result);
+    assert!(
+        text.contains("approved_version") && text.contains("advertised schema"),
+        "missing required field should be rejected by the MCP surface schema guard: {text}"
+    );
+    assert!(
+        !text.contains("transport error"),
+        "schema rejection must happen before provider transport dispatch: {text}"
+    );
 
     service.cancel().await.unwrap();
 }
@@ -1849,15 +2275,13 @@ async fn scoped_protocol_writes_artifact_with_injected_work_unit() {
     assert_eq!(tools[0].name.as_ref(), "implementation");
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "implementation".into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "implementation",
+            serde_json::json!({
                 "instance_id": "impl-1",
                 "title": "ship it"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -1894,15 +2318,13 @@ async fn tool_calls_append_transcript_events_when_enabled() {
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "implementation".into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "implementation",
+            serde_json::json!({
                 "instance_id": "impl-1",
                 "title": "ship it"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -1935,6 +2357,10 @@ async fn tool_calls_append_transcript_events_from_config_when_environment_is_uns
                         .arg("wu-1")
                         .env_remove("RUNA_TRANSCRIPT_DIR")
                         .env_remove("RUNA_TRANSCRIPT_REDACT_ENV")
+                        .env_remove("RUNA_FORGE_TYPE")
+                        .env_remove("RUNA_FORGE_OWNER")
+                        .env_remove("RUNA_FORGE_NAME")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
                         .current_dir(&project_dir);
                 }),
             )
@@ -1944,15 +2370,13 @@ async fn tool_calls_append_transcript_events_from_config_when_environment_is_uns
         .unwrap();
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "implementation".into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "implementation",
+            serde_json::json!({
                 "instance_id": "impl-1",
                 "title": "ship it"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -1964,6 +2388,59 @@ async fn tool_calls_append_transcript_events_from_config_when_environment_is_uns
     assert!(events.contains("\"schema_version\":2"));
     assert!(events.contains("\"deployment\":\"project:sha256:"));
     assert!(events.contains("\"run_id\":\"run-"));
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn forge_tool_calls_append_transcript_events_when_enabled() {
+    let dir = setup_project();
+    let project_dir = dir.path().join("project");
+    let transcript_dir = dir.path().join("transcript");
+    append_github_forge_config(&project_dir, "tesserine", "runa");
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("implement")
+                        .arg("--work-unit")
+                        .arg("wu-1")
+                        .env("RUNA_TRANSCRIPT_DIR", &transcript_dir)
+                        .env_remove("RUNA_FORGE_TYPE")
+                        .env_remove("RUNA_FORGE_OWNER")
+                        .env_remove("RUNA_FORGE_NAME")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    service
+        .call_tool(tool_call(
+            "read-ticket",
+            serde_json::json!({ "reference": "tesserine/groundwork#203" }),
+        ))
+        .await
+        .unwrap();
+
+    let events = if transcript_dir.exists() {
+        read_transcript_events(&transcript_dir)
+    } else {
+        String::new()
+    };
+    assert!(
+        events.contains(r#""kind":"tool_call","protocol":"implement","work_unit":"wu-1","tool_name":"read-ticket""#),
+        "missing forge tool_call transcript event: {events}"
+    );
+    assert!(
+        events.contains(r#""kind":"tool_result","protocol":"implement","work_unit":"wu-1","tool_name":"read-ticket""#),
+        "missing forge tool_result transcript event: {events}"
+    );
 
     service.cancel().await.unwrap();
 }
@@ -2016,15 +2493,13 @@ async fn session_driver_calls_append_transcript_events_when_enabled() {
         .await
         .unwrap();
     service
-        .call_tool(CallToolRequestParam {
-            name: "claim".to_string().into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "claim",
+            serde_json::json!({
                 "instance_id": "claim-1",
                 "scope": "claim this work"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
     service.call_tool(session_call("advance")).await.unwrap();
@@ -2159,15 +2634,13 @@ trigger = { type = "on_change", name = "implementation" }
     assert_eq!(tools[0].name.as_ref(), "implementation");
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "implementation".into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "implementation",
+            serde_json::json!({
                 "instance_id": "impl-1",
                 "title": "ship it"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
@@ -2234,15 +2707,13 @@ trigger = { type = "on_change", name = "implementation" }
     assert!(!tool_properties.contains_key("work_unit"));
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "implementation".into(),
-            arguments: serde_json::json!({
+        .call_tool(tool_call(
+            "implementation",
+            serde_json::json!({
                 "instance_id": "impl-1",
                 "title": "ship it"
-            })
-            .as_object()
-            .cloned(),
-        })
+            }),
+        ))
         .await
         .unwrap();
 
