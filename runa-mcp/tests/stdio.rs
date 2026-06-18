@@ -1,7 +1,10 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use rmcp::ClientHandler;
@@ -313,6 +316,18 @@ fn append_github_forge_config_with_api(
     .unwrap();
 }
 
+fn append_sourcehut_forge_config_with_api(project_dir: &Path, tracker_id: &str, api_base: &str) {
+    let config_path = project_dir.join(".runa/config.toml");
+    let existing = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        config_path,
+        format!(
+            "{existing}\n[forge]\ntype = \"sourcehut\"\ntracker_id = \"{tracker_id}\"\napi_base = \"{api_base}\"\n",
+        ),
+    )
+    .unwrap();
+}
+
 fn append_transcript_config(project_dir: &Path, transcript_dir: &Path) {
     let config_path = project_dir.join(".runa/config.toml");
     let existing = fs::read_to_string(&config_path).unwrap();
@@ -389,6 +404,32 @@ fn canonical_forge_tool_names() -> Vec<&'static str> {
         "record-progress",
         "reflect-disposition",
     ]
+}
+
+fn one_shot_json_server<F>(
+    body: &'static str,
+    assert_request: F,
+) -> (String, thread::JoinHandle<()>)
+where
+    F: FnOnce(&str) + Send + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let size = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..size]);
+        assert_request(&request);
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    (format!("http://{address}"), server)
 }
 
 #[tokio::test]
@@ -1964,6 +2005,116 @@ async fn mcp_forge_connector_uses_resolved_override_identity() {
     );
 
     service.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mcp_github_forge_tool_dispatches_production_transport_without_blocking_runtime_panic() {
+    let dir = setup_project();
+    let project_dir = dir.path().join("project");
+    let (api_base, server) = one_shot_json_server(
+        r#"{"number":203,"title":"MCP GitHub title","body":"MCP body","state":"open"}"#,
+        |request| {
+            assert!(
+                request.starts_with("GET /repos/tesserine/runa/issues/203 "),
+                "unexpected GitHub request: {request}"
+            );
+        },
+    );
+    append_github_forge_config_with_api(&project_dir, "tesserine", "runa", &api_base);
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("implement")
+                        .arg("--work-unit")
+                        .arg("wu-1")
+                        .env_remove("RUNA_FORGE_TYPE")
+                        .env_remove("RUNA_FORGE_OWNER")
+                        .env_remove("RUNA_FORGE_NAME")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        service.call_tool(tool_call(
+            "read-ticket",
+            serde_json::json!({ "reference": "203" }),
+        )),
+    )
+    .await
+    .expect("MCP call should return before the timeout")
+    .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&tool_result_text(&result)).unwrap();
+    assert_eq!(payload["title"], "MCP GitHub title");
+    assert_eq!(payload["handle"]["id"], "github:tesserine/runa:issue:203");
+
+    service.cancel().await.unwrap();
+    server.join().unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mcp_sourcehut_forge_tool_dispatches_production_transport_without_blocking_runtime_panic() {
+    let dir = setup_project();
+    let project_dir = dir.path().join("project");
+    let (api_base, server) = one_shot_json_server(
+        r#"{"data":{"tracker":{"ticket":{"id":203,"subject":"MCP SourceHut title","body":"MCP body","status":"REPORTED"}}}}"#,
+        |request| {
+            assert!(
+                request.starts_with("POST /query "),
+                "unexpected SourceHut request: {request}"
+            );
+            assert!(
+                request.contains(r#""tracker":"4""#),
+                "request should target configured tracker: {request}"
+            );
+        },
+    );
+    append_sourcehut_forge_config_with_api(&project_dir, "4", &format!("{api_base}/query"));
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(
+                Command::new(env!("CARGO_BIN_EXE_runa-mcp")).configure(|cmd| {
+                    cmd.arg("--protocol")
+                        .arg("implement")
+                        .arg("--work-unit")
+                        .arg("wu-1")
+                        .env_remove("RUNA_FORGE_TYPE")
+                        .env_remove("RUNA_FORGE_OWNER")
+                        .env_remove("RUNA_FORGE_NAME")
+                        .env_remove("RUNA_FORGE_TRACKER_ID")
+                        .current_dir(&project_dir);
+                }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        service.call_tool(tool_call(
+            "read-ticket",
+            serde_json::json!({ "reference": "203" }),
+        )),
+    )
+    .await
+    .expect("MCP call should return before the timeout")
+    .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&tool_result_text(&result)).unwrap();
+    assert_eq!(payload["title"], "MCP SourceHut title");
+    assert_eq!(payload["handle"]["id"], "sourcehut:tracker:4:ticket:203");
+
+    service.cancel().await.unwrap();
+    server.join().unwrap();
 }
 
 #[tokio::test]

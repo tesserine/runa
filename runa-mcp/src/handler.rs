@@ -27,7 +27,7 @@ pub struct RunaHandler {
     /// Maps artifact type name → full JSON Schema (with work_unit intact).
     tool_schemas: HashMap<String, Value>,
     session: Option<Mutex<SessionState>>,
-    forge_runtime: Option<ForgeRuntime>,
+    forge_runtime: Option<Arc<ForgeRuntime>>,
 }
 
 struct HandlerState {
@@ -53,7 +53,7 @@ impl RunaHandler {
             tools,
             tool_schemas,
             session: None,
-            forge_runtime,
+            forge_runtime: forge_runtime.map(Arc::new),
         }
     }
 
@@ -87,7 +87,7 @@ impl RunaHandler {
             tools: Vec::new(),
             tool_schemas: HashMap::new(),
             session: Some(Mutex::new(session)),
-            forge_runtime,
+            forge_runtime: forge_runtime.map(Arc::new),
         })
     }
 
@@ -121,50 +121,67 @@ impl RunaHandler {
             tools: Vec::new(),
             tool_schemas: HashMap::new(),
             session: Some(Mutex::new(session)),
-            forge_runtime,
+            forge_runtime: forge_runtime.map(Arc::new),
         })
     }
 
-    fn call_forge_tool(
+    async fn call_forge_tool(
         &self,
         tool_name: &str,
         input: Value,
     ) -> Option<Result<CallToolResult, McpError>> {
-        let runtime = self.forge_runtime.as_ref()?;
+        let runtime = self.forge_runtime.as_ref()?.clone();
         if !runtime.tools.contains_key(tool_name) {
             return None;
         }
         let (protocol, work_unit) = self.transcript_context();
+        let tool_name = tool_name.to_string();
         if let Err(error) = append_tool_event_with_context(
             "tool_call",
             protocol.as_deref(),
             work_unit.as_deref(),
-            tool_name,
+            &tool_name,
             Some(input.clone()),
             None,
         ) {
             return Some(Err(error));
         }
-        Some((|| match runtime.call_tool(tool_name, input) {
-            Ok(payload) => {
+        let dispatch_tool_name = tool_name.clone();
+        let output =
+            tokio::task::spawn_blocking(move || runtime.call_tool(&dispatch_tool_name, input))
+                .await;
+        Some((|| match output {
+            Err(error) => {
+                let message = format!("forge dispatch task failed: {error}");
+                append_tool_event_with_context(
+                    "tool_result",
+                    protocol.as_deref(),
+                    work_unit.as_deref(),
+                    &tool_name,
+                    None,
+                    Some(&message),
+                )?;
+                Ok(CallToolResult::error(vec![Content::text(message)]))
+            }
+            Ok(Ok(payload)) => {
                 let (result, content) = json_tool_result_with_content(&payload)?;
                 append_tool_event_with_context(
                     "tool_result",
                     protocol.as_deref(),
                     work_unit.as_deref(),
-                    tool_name,
+                    &tool_name,
                     None,
                     Some(&content),
                 )?;
                 Ok(result)
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 let message = error.to_string();
                 append_tool_event_with_context(
                     "tool_result",
                     protocol.as_deref(),
                     work_unit.as_deref(),
-                    tool_name,
+                    &tool_name,
                     None,
                     Some(&message),
                 )?;
@@ -943,12 +960,12 @@ impl ServerHandler for RunaHandler {
             let session = session.lock().unwrap();
             let (mut tools, _) = session_tools_and_schemas(&session)
                 .map_err(|error| McpError::internal_error(error, None))?;
-            append_forge_tools(&mut tools, self.forge_runtime.as_ref())
+            append_forge_tools(&mut tools, self.forge_runtime.as_deref())
                 .map_err(|error| McpError::internal_error(error, None))?;
             return Ok(ListToolsResult::with_all_items(tools));
         }
         let mut tools = self.tools.clone();
-        append_forge_tools(&mut tools, self.forge_runtime.as_ref())
+        append_forge_tools(&mut tools, self.forge_runtime.as_deref())
             .map_err(|error| McpError::internal_error(error, None))?;
         Ok(ListToolsResult::with_all_items(tools))
     }
@@ -962,14 +979,17 @@ impl ServerHandler for RunaHandler {
         if let Some(message) = self.forge_tool_collision_message(&tool_name)? {
             return Ok(CallToolResult::error(vec![Content::text(message)]));
         }
-        if let Some(result) = self.call_forge_tool(
-            &tool_name,
-            request
-                .arguments
-                .as_ref()
-                .map(|arguments| Value::Object(arguments.clone()))
-                .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
-        ) {
+        if let Some(result) = self
+            .call_forge_tool(
+                &tool_name,
+                request
+                    .arguments
+                    .as_ref()
+                    .map(|arguments| Value::Object(arguments.clone()))
+                    .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
+            )
+            .await
+        {
             return result;
         }
         if let Some(session) = &self.session {
