@@ -289,6 +289,41 @@ fn apply_approved_change_rejects_base_mismatch_before_merge() {
 }
 
 #[test]
+fn apply_approved_change_rejects_head_mismatch_before_merge() {
+    let transport = GithubRecordingTransport::with_response(json!({
+        "base": { "ref": "main" },
+        "head": { "sha": "delivered-commit" }
+    }));
+    let connector = GithubConnector::new(config("https://api.github.test"), transport.clone());
+
+    let error = connector
+        .call(
+            Operation::ApplyApprovedChange,
+            json!({
+                "work_unit": handle(203),
+                "change": {
+                    "id": "github:tesserine/runa:pull:12:version:1",
+                    "display": "tesserine/runa#12"
+                },
+                "approved_version": 1,
+                "approved_commit": "different-commit",
+                "base": "main"
+            }),
+        )
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("different-commit")
+            && error.to_string().contains("delivered-commit"),
+        "head mismatch should report requested and actual commits: {error}"
+    );
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].path, "/repos/tesserine/runa/pulls/12");
+}
+
+#[test]
 fn deliver_change_proposal_rejects_created_pr_head_sha_mismatch() {
     let transport = GithubRecordingTransport::with_response(json!({
         "number": 12,

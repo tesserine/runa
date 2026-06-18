@@ -337,14 +337,33 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
             .get("work_unit")
             .ok_or_else(|| ForgeError::InvalidInput("work_unit is required".into()))?;
         self.ticket_number(Some(work_unit))?;
-        let change = self.change_id(input.get("change"))?;
+        let (change_branch, change_version) = self.change_parts(input.get("change"))?;
+        let approved_version = required_u64(&input, "approved_version")?;
         let approved_commit = required_string(&input, "approved_commit")?;
         let base = required_string(&input, "base")?;
+        if change_version != approved_version {
+            return Err(ForgeError::InvalidInput(format!(
+                "change version {change_version} does not match approved_version {approved_version}"
+            )));
+        }
+        let change_ref = git_ref(change_branch);
+        let delivered = self.git(
+            "resolveChangeProposal",
+            json!({
+                "ref": change_ref,
+            }),
+        )?;
+        let delivered_ref = git_result_ref(&delivered)?;
+        let delivered_commit = git_result_commit(&delivered)?;
+        if delivered_commit != approved_commit {
+            return Err(ForgeError::InvalidInput(format!(
+                "change ref {delivered_ref} points at '{delivered_commit}', not approved commit '{approved_commit}'"
+            )));
+        }
         let destination_ref = git_ref(base);
         let response = self.git(
             "applyApprovedChange",
             json!({
-                "change": change,
                 "source": approved_commit,
                 "destination": destination_ref,
             }),
@@ -448,10 +467,38 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
     }
 
     fn change_id<'a>(&self, value: Option<&'a Value>) -> Result<&'a str, ForgeError> {
+        let _ = self.change_parts(value)?;
         let handle = handle_id(value)?;
         let prefix = format!("sourcehut:tracker:{}:change:", self.config.tracker_id);
         if let Some(change) = handle.strip_prefix(&prefix) {
             return Ok(change);
+        }
+        if handle.starts_with("sourcehut:tracker:") {
+            return Err(ForgeError::ForeignScope(format!(
+                "{handle} does not match tracker {}",
+                self.config.tracker_id
+            )));
+        }
+        Err(ForgeError::InvalidInput(format!(
+            "handle '{handle}' is not a SourceHut change handle"
+        )))
+    }
+
+    fn change_parts<'a>(&self, value: Option<&'a Value>) -> Result<(&'a str, u64), ForgeError> {
+        let handle = handle_id(value)?;
+        let prefix = format!("sourcehut:tracker:{}:change:", self.config.tracker_id);
+        if let Some(change) = handle.strip_prefix(&prefix) {
+            let (branch, version) = change.rsplit_once(":version:").ok_or_else(|| {
+                ForgeError::InvalidInput(format!(
+                    "handle '{handle}' is not a versioned SourceHut change handle"
+                ))
+            })?;
+            if branch.is_empty() {
+                return Err(ForgeError::InvalidInput(format!(
+                    "handle '{handle}' is not a versioned SourceHut change handle"
+                )));
+            }
+            return Ok((branch, parse_number(version)?));
         }
         if handle.starts_with("sourcehut:tracker:") {
             return Err(ForgeError::ForeignScope(format!(
@@ -554,6 +601,14 @@ fn execute_git(config: &SourcehutConfig, request: ProviderRequest) -> Result<Val
     let body = request
         .body
         .ok_or_else(|| ForgeError::InvalidInput("git request body is required".into()))?;
+    if request.operation == "resolveChangeProposal" {
+        let change_ref = body
+            .get("ref")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ForgeError::InvalidInput("git ref is required".into()))?;
+        return resolve_git_ref(remote, change_ref);
+    }
     let source = body
         .get("source")
         .and_then(Value::as_str)
@@ -582,8 +637,18 @@ fn execute_git(config: &SourcehutConfig, request: ProviderRequest) -> Result<Val
         )));
     }
 
+    let resolved = resolve_git_ref(remote, destination)?;
+
+    Ok(json!({
+        "commit": git_result_commit(&resolved)?,
+        "ref": git_result_ref(&resolved)?,
+        "push": String::from_utf8_lossy(&push.stdout).to_string()
+    }))
+}
+
+fn resolve_git_ref(remote: &str, target_ref: &str) -> Result<Value, ForgeError> {
     let ls_remote = Command::new("git")
-        .args(["ls-remote", remote, destination])
+        .args(["ls-remote", remote, target_ref])
         .output()
         .map_err(|error| ForgeError::Transport(format!("git ls-remote failed: {error}")))?;
     if !ls_remote.status.success() {
@@ -599,17 +664,16 @@ fn execute_git(config: &SourcehutConfig, request: ProviderRequest) -> Result<Val
     let Some((commit, produced_ref)) = stdout
         .lines()
         .find_map(|line| line.split_once('\t'))
-        .filter(|(_, produced_ref)| *produced_ref == destination)
+        .filter(|(_, produced_ref)| *produced_ref == target_ref)
     else {
         return Err(ForgeError::ProviderResponse(format!(
-            "git push did not produce ref {destination}"
+            "git remote did not contain ref {target_ref}"
         )));
     };
 
     Ok(json!({
         "commit": commit,
-        "ref": produced_ref,
-        "push": String::from_utf8_lossy(&push.stdout).to_string()
+        "ref": produced_ref
     }))
 }
 

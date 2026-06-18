@@ -339,9 +339,15 @@ impl<T: GithubTransport> GithubConnector<T> {
             .get("work_unit")
             .ok_or_else(|| ForgeError::InvalidInput("work_unit is required".into()))?;
         self.issue_number(Some(work_unit))?;
-        let pull = self.pull_number(input.get("change"))?;
+        let (pull, change_version) = self.pull_change(input.get("change"))?;
+        let approved_version = required_u64(&input, "approved_version")?;
         let approved_commit = required_string(&input, "approved_commit")?;
         let base = required_string(&input, "base")?;
+        if change_version != approved_version {
+            return Err(ForgeError::InvalidInput(format!(
+                "change version {change_version} does not match approved_version {approved_version}"
+            )));
+        }
         let pull_snapshot = self.send(
             "GET",
             format!(
@@ -354,6 +360,12 @@ impl<T: GithubTransport> GithubConnector<T> {
         if actual_base != base {
             return Err(ForgeError::InvalidInput(format!(
                 "change base '{actual_base}' does not match requested base '{base}'"
+            )));
+        }
+        let actual_head = response_string(&pull_snapshot, &["/head/sha"])?;
+        if actual_head != approved_commit {
+            return Err(ForgeError::InvalidInput(format!(
+                "change head SHA '{actual_head}' does not match approved commit '{approved_commit}'"
             )));
         }
         let response = self.send(
@@ -460,11 +472,28 @@ impl<T: GithubTransport> GithubConnector<T> {
     }
 
     fn pull_number(&self, value: Option<&Value>) -> Result<u64, ForgeError> {
+        Ok(self.pull_change(value)?.0)
+    }
+
+    fn pull_change(&self, value: Option<&Value>) -> Result<(u64, u64), ForgeError> {
         let handle = handle_id(value)?;
         let prefix = format!("github:{}:pull:", self.repo_scope());
         if let Some(rest) = handle.strip_prefix(&prefix) {
-            let number = rest.split(':').next().unwrap_or(rest);
-            return parse_number(number);
+            let mut parts = rest.split(':');
+            let number = parts.next().unwrap_or_default();
+            let version_label = parts.next();
+            let version = parts.next();
+            if version_label != Some("version") || parts.next().is_some() {
+                return Err(ForgeError::InvalidInput(format!(
+                    "handle '{handle}' is not a versioned GitHub pull handle"
+                )));
+            }
+            let version = version.ok_or_else(|| {
+                ForgeError::InvalidInput(format!(
+                    "handle '{handle}' is not a versioned GitHub pull handle"
+                ))
+            })?;
+            return Ok((parse_number(number)?, parse_number(version)?));
         }
         if handle.starts_with("github:") {
             return Err(ForgeError::ForeignScope(format!(

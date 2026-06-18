@@ -262,9 +262,20 @@ fn every_operation_constructs_the_expected_provider_request() {
         connector.call(*operation, input.clone()).unwrap();
     }
 
+    let expected_requests = [
+        ("GRAPHQL", "ticket"),
+        ("GRAPHQL", "submitTicket"),
+        ("GRAPHQL", "updateTicketStatus"),
+        ("GRAPHQL", "submitComment"),
+        ("GIT", "deliverChangeProposal"),
+        ("GRAPHQL", "submitComment"),
+        ("GIT", "resolveChangeProposal"),
+        ("GIT", "applyApprovedChange"),
+        ("GRAPHQL", "submitComment"),
+    ];
     let requests = transport.requests();
-    assert_eq!(requests.len(), cases.len());
-    for (request, (_, _, kind, operation_name)) in requests.iter().zip(cases) {
+    assert_eq!(requests.len(), expected_requests.len());
+    for (request, (kind, operation_name)) in requests.iter().zip(expected_requests) {
         assert_eq!(request.kind, kind);
         assert_eq!(request.operation, operation_name);
         if request.kind == "GRAPHQL" {
@@ -332,6 +343,41 @@ fn every_operation_rejects_null_or_absent_required_provider_results() {
             );
         }
     }
+}
+
+#[test]
+fn apply_approved_change_rejects_delivered_ref_mismatch_before_push() {
+    let transport = SourcehutRecordingTransport::with_repeating_response(json!({
+        "commit": "delivered-commit",
+        "ref": "refs/heads/issue-203"
+    }));
+    let connector = SourcehutConnector::new(config("https://todo.test/query"), transport.clone());
+
+    let error = connector
+        .call(
+            Operation::ApplyApprovedChange,
+            json!({
+                "work_unit": handle(203),
+                "change": {
+                    "id": "sourcehut:tracker:4:change:issue-203:version:1",
+                    "display": "issue-203"
+                },
+                "approved_version": 1,
+                "approved_commit": "different-commit",
+                "base": "main"
+            }),
+        )
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("different-commit")
+            && error.to_string().contains("delivered-commit"),
+        "delivered ref mismatch should report requested and actual commits: {error}"
+    );
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].kind, "GIT");
+    assert_eq!(requests[0].operation, "resolveChangeProposal");
 }
 
 #[test]
@@ -561,6 +607,21 @@ fn production_git_transport_applies_approved_change_to_base_ref() {
         ),
         SourcehutHttpTransport,
     );
+
+    connector
+        .call(
+            Operation::DeliverChangeProposal,
+            json!({
+                "work_unit": handle(203),
+                "branch": "issue-203",
+                "commit": commit,
+                "base": "main",
+                "summary": "summary",
+                "body": "body",
+                "version": 1
+            }),
+        )
+        .unwrap();
 
     let output = connector
         .call(
