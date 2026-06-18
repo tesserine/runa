@@ -151,11 +151,16 @@ impl SourcehutTransport for SourcehutHttpTransport {
 pub struct SourcehutConnector<T> {
     config: SourcehutConfig,
     transport: T,
+    tracker_rid: Arc<Mutex<Option<String>>>,
 }
 
 impl<T: SourcehutTransport> SourcehutConnector<T> {
     pub fn new(config: SourcehutConfig, transport: T) -> Self {
-        Self { config, transport }
+        Self {
+            config,
+            transport,
+            tracker_rid: Arc::new(Mutex::new(None)),
+        }
     }
 
     pub fn call(&self, operation: Operation, input: Value) -> Result<Value, ForgeError> {
@@ -209,6 +214,77 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
         reject_provider_error_payload(&response)?;
         Ok(response)
     }
+
+    fn tracker_rid(&self) -> Result<String, ForgeError> {
+        if let Some(rid) = self.tracker_rid_cache()?.clone() {
+            return Ok(rid);
+        }
+
+        let resolved = self.resolve_tracker_rid()?;
+        let mut cache = self.tracker_rid_cache()?;
+        if let Some(rid) = cache.as_ref() {
+            return Ok(rid.clone());
+        }
+        *cache = Some(resolved.clone());
+        Ok(resolved)
+    }
+
+    fn tracker_rid_cache(&self) -> Result<std::sync::MutexGuard<'_, Option<String>>, ForgeError> {
+        self.tracker_rid.lock().map_err(|_| {
+            ForgeError::Transport("sourcehut tracker rid cache lock poisoned".to_string())
+        })
+    }
+
+    fn resolve_tracker_rid(&self) -> Result<String, ForgeError> {
+        let tracker_id = self.tracker_id_number()?;
+        let mut cursor = Value::Null;
+        loop {
+            // SourceHut's trackers(cursor:) lists trackers owned by the credential
+            // user. The runa deployment credential owns its configured tracker;
+            // grant-only trackers need owner+name resolution outside this fix.
+            let response = self.graphql(
+                "trackers",
+                "query trackers($cursor: Cursor) { trackers(cursor: $cursor) { results { id rid name } cursor } }",
+                json!({ "cursor": cursor }),
+            )?;
+            let trackers = required_provider_object(&response, "/data/trackers", "trackers")?;
+            let results = trackers
+                .get("results")
+                .and_then(Value::as_array)
+                .ok_or_else(|| ForgeError::ProviderResponse("missing trackers results".into()))?;
+            for tracker in results {
+                if tracker.get("id").and_then(Value::as_u64) == Some(tracker_id) {
+                    return tracker
+                        .get("rid")
+                        .and_then(Value::as_str)
+                        .filter(|rid| !rid.is_empty())
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            ForgeError::ProviderResponse(format!(
+                                "SourceHut tracker {} did not include an opaque rid",
+                                self.config.tracker_id
+                            ))
+                        });
+                }
+            }
+
+            match trackers.get("cursor") {
+                None | Some(Value::Null) => break,
+                Some(Value::String(next)) if next.is_empty() => break,
+                Some(Value::String(next)) => cursor = json!(next),
+                Some(_) => {
+                    return Err(ForgeError::ProviderResponse(
+                        "SourceHut trackers cursor was not a string or null".into(),
+                    ));
+                }
+            }
+        }
+
+        Err(ForgeError::ProviderResponse(format!(
+            "SourceHut tracker_id {} was not returned by trackers(cursor:)",
+            self.config.tracker_id
+        )))
+    }
 }
 
 impl<T: SourcehutTransport> ForgeConnector for SourcehutConnector<T> {
@@ -234,10 +310,11 @@ impl<T: SourcehutTransport> SourcehutConnector<T> {
     fn read_ticket(&self, input: Value) -> Result<Value, ForgeError> {
         let reference = required_string(&input, "reference")?;
         let number = self.resolve_reference(reference)?;
+        let tracker_rid = self.tracker_rid()?;
         let response = self.graphql(
             "ticket",
-            "query ticket($tracker: ID!, $id: Int!) { tracker(rid: $tracker) { ticket(id: $id) { id subject body status } } }",
-            json!({ "id": number, "tracker": self.config.tracker_id }),
+            "query ticket($tracker: ID!, $id: Int!) { tracker(rid: $tracker) { id rid name ticket(id: $id) { id subject body status } } }",
+            json!({ "id": number, "tracker": tracker_rid }),
         )?;
         self.ticket_snapshot(
             number,

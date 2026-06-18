@@ -2064,19 +2064,55 @@ async fn mcp_github_forge_tool_dispatches_production_transport_without_blocking_
 async fn mcp_sourcehut_forge_tool_dispatches_production_transport_without_blocking_runtime_panic() {
     let dir = setup_project();
     let project_dir = dir.path().join("project");
-    let (api_base, server) = one_shot_json_server(
-        r#"{"data":{"tracker":{"ticket":{"id":203,"subject":"MCP SourceHut title","body":"MCP body","status":"REPORTED"}}}}"#,
-        |request| {
+    let tracker_rid = "06fdktpsb5w8q09e22xy0m6fnr";
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let responses = [
+            (
+                r#"{"data":{"trackers":{"results":[{"id":4,"rid":"06fdktpsb5w8q09e22xy0m6fnr","name":"runa"}],"cursor":null}}}"#,
+                "trackers",
+            ),
+            (
+                r#"{"data":{"tracker":{"ticket":{"id":203,"subject":"MCP SourceHut title","body":"MCP body","status":"REPORTED"}}}}"#,
+                "ticket",
+            ),
+        ];
+        for (body, expected) in responses {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let size = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..size]);
             assert!(
                 request.starts_with("POST /query "),
                 "unexpected SourceHut request: {request}"
             );
-            assert!(
-                request.contains(r#""tracker":"4""#),
-                "request should target configured tracker: {request}"
-            );
-        },
-    );
+            match expected {
+                "trackers" => {
+                    assert!(request.contains("trackers"), "request: {request}");
+                }
+                "ticket" => {
+                    assert!(
+                        request.contains(&format!(r#""tracker":"{tracker_rid}""#)),
+                        "request should target resolved tracker rid: {request}"
+                    );
+                    assert!(
+                        !request.contains(r#""tracker":"4""#),
+                        "request should not use numeric tracker id as rid: {request}"
+                    );
+                }
+                _ => unreachable!(),
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+    let api_base = format!("http://{address}");
     append_sourcehut_forge_config_with_api(&project_dir, "4", &format!("{api_base}/query"));
 
     let service = ()

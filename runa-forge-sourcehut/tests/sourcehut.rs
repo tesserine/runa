@@ -1,17 +1,19 @@
 use apollo_compiler::{ExecutableDocument, Schema};
-use runa_forge_contract::Operation;
+use runa_forge_contract::{ForgeError, Operation};
 use runa_forge_sourcehut::{
     ProviderRequest, SourcehutConfig, SourcehutConnector, SourcehutHttpTransport,
-    SourcehutRecordingTransport,
+    SourcehutRecordingTransport, SourcehutTransport,
 };
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 const SOURCEHUT_TODO_SCHEMA: &str = include_str!("fixtures/todo.sr.ht.schema.graphqls");
+const TRACKER_RID: &str = "06fdktpsb5w8q09e22xy0m6fnr";
 
 fn config(api_base: &str) -> SourcehutConfig {
     SourcehutConfig {
@@ -120,20 +122,115 @@ fn assert_graphql_request_validates(request: &str, expected_field: &str) {
     );
 }
 
-#[test]
-fn read_ticket_accepts_deployment_reference_forms_and_issues_scoped_handles() {
-    let transport = SourcehutRecordingTransport::with_repeating_response(json!({
-        "data": {
-            "tracker": {
-                "ticket": {
-                    "id": 203,
-                    "subject": "Forge connectors",
-                    "body": "body",
-                    "status": "REPORTED"
+#[derive(Debug, Clone, Default)]
+struct SourcehutTrackerFakeTransport {
+    requests: Arc<Mutex<Vec<ProviderRequest>>>,
+}
+
+impl SourcehutTrackerFakeTransport {
+    fn requests(&self) -> Vec<ProviderRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+impl SourcehutTransport for SourcehutTrackerFakeTransport {
+    fn send(
+        &self,
+        _config: &SourcehutConfig,
+        request: ProviderRequest,
+    ) -> Result<Value, ForgeError> {
+        self.requests.lock().unwrap().push(request.clone());
+        if request.kind == "GIT" {
+            return Ok(json!({
+                "commit": "abc123",
+                "ref": "refs/heads/issue-203"
+            }));
+        }
+        if request.kind != "GRAPHQL" {
+            return Err(ForgeError::Unsupported(format!(
+                "fake cannot execute {}",
+                request.kind
+            )));
+        }
+
+        let variables = request
+            .body
+            .as_ref()
+            .and_then(|body| body.get("variables"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        match request.operation.as_str() {
+            "trackers" => {
+                if variables.get("cursor").and_then(Value::as_str) == Some("next") {
+                    Ok(json!({
+                        "data": {
+                            "trackers": {
+                                "results": [
+                                    { "id": 4, "rid": TRACKER_RID, "name": "runa" }
+                                ],
+                                "cursor": null
+                            }
+                        }
+                    }))
+                } else {
+                    Ok(json!({
+                        "data": {
+                            "trackers": {
+                                "results": [
+                                    { "id": 1, "rid": "01not-the-runa-tracker", "name": "other" }
+                                ],
+                                "cursor": "next"
+                            }
+                        }
+                    }))
                 }
             }
+            "ticket" => {
+                if variables.get("tracker").and_then(Value::as_str) != Some(TRACKER_RID) {
+                    return Ok(json!({
+                        "errors": [{ "message": "tracker(rid:) requires an opaque resource id" }]
+                    }));
+                }
+                Ok(json!({
+                    "data": {
+                        "tracker": {
+                            "id": 4,
+                            "rid": TRACKER_RID,
+                            "name": "runa",
+                            "ticket": {
+                                "id": 203,
+                                "subject": "Forge connectors",
+                                "body": "body",
+                                "status": "REPORTED"
+                            }
+                        }
+                    }
+                }))
+            }
+            "submitTicket" => Ok(json!({
+                "data": {
+                    "submitTicket": {
+                        "id": 203,
+                        "subject": "Forge connectors",
+                        "body": "body",
+                        "status": "REPORTED"
+                    }
+                }
+            })),
+            "updateTicketStatus" => {
+                Ok(json!({ "data": { "updateTicketStatus": { "id": "claim-203" } } }))
+            }
+            "submitComment" => Ok(json!({ "data": { "submitComment": { "id": "comment-203" } } })),
+            operation => Err(ForgeError::Unsupported(format!(
+                "fake cannot execute operation {operation}"
+            ))),
         }
-    }));
+    }
+}
+
+#[test]
+fn read_ticket_accepts_deployment_reference_forms_and_issues_scoped_handles() {
+    let transport = SourcehutTrackerFakeTransport::default();
     let connector = SourcehutConnector::new(config("https://todo.test/query"), transport.clone());
 
     for reference in ["sourcehut:4#203", "#203", "203"] {
@@ -144,6 +241,52 @@ fn read_ticket_accepts_deployment_reference_forms_and_issues_scoped_handles() {
         assert_eq!(output["handle"]["id"], "sourcehut:tracker:4:ticket:203");
         assert_eq!(output["title"], "Forge connectors");
     }
+
+    let requests = transport.requests();
+    let tracker_list_requests = requests
+        .iter()
+        .filter(|request| request.operation == "trackers")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tracker_list_requests.len(),
+        2,
+        "tracker rid should be resolved through one paged listing sequence"
+    );
+    let ticket_tracker_variables = requests
+        .iter()
+        .filter(|request| request.operation == "ticket")
+        .map(|request| {
+            request
+                .body
+                .as_ref()
+                .and_then(|body| body.pointer("/variables/tracker"))
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ticket_tracker_variables, vec![TRACKER_RID; 3]);
+}
+
+#[test]
+fn sourcehut_fake_rejects_numeric_tracker_id_as_tracker_rid() {
+    let transport = SourcehutTrackerFakeTransport::default();
+    let response = transport
+        .send(
+            &config("https://todo.test/query"),
+            ProviderRequest {
+                kind: "GRAPHQL".to_string(),
+                operation: "ticket".to_string(),
+                path: "/query".to_string(),
+                body: Some(json!({
+                    "query": "query ticket($tracker: ID!, $id: Int!) { tracker(rid: $tracker) { ticket(id: $id) { id subject body status } } }",
+                    "variables": { "tracker": "4", "id": 203 }
+                })),
+            },
+        )
+        .unwrap();
+
+    assert!(response.get("errors").is_some(), "{response}");
 }
 
 #[test]
@@ -176,35 +319,7 @@ fn foreign_scope_is_rejected_before_transport() {
 
 #[test]
 fn every_operation_constructs_the_expected_provider_request() {
-    let transport = SourcehutRecordingTransport::with_repeating_response(json!({
-        "data": {
-            "tracker": {
-                "ticket": {
-                    "id": 203,
-                    "subject": "Forge connectors",
-                    "body": "body",
-                    "status": "REPORTED"
-                }
-            },
-            "submitTicket": {
-                "id": 203,
-                "subject": "Forge connectors",
-                "body": "body",
-                "status": "REPORTED"
-            },
-            "updateTicketStatus": {
-                "id": "claim-203"
-            },
-            "submitComment": {
-                "id": "comment-203"
-            },
-            "closeOut": {
-                "id": "closed-203"
-            },
-        },
-        "commit": "abc123",
-        "ref": "refs/heads/issue-203"
-    }));
+    let transport = SourcehutTrackerFakeTransport::default();
     let connector = SourcehutConnector::new(config("https://todo.test/query"), transport.clone());
 
     let cases = [
@@ -263,6 +378,8 @@ fn every_operation_constructs_the_expected_provider_request() {
     }
 
     let expected_requests = [
+        ("GRAPHQL", "trackers"),
+        ("GRAPHQL", "trackers"),
         ("GRAPHQL", "ticket"),
         ("GRAPHQL", "submitTicket"),
         ("GRAPHQL", "updateTicketStatus"),
@@ -288,10 +405,17 @@ fn every_operation_constructs_the_expected_provider_request() {
                 .and_then(Value::as_str)
                 .expect("GraphQL request should include query string");
             validate_sourcehut_graphql(query);
-            assert!(
-                query.contains(operation_name),
-                "query did not contain {operation_name}: {query}"
-            );
+            if operation_name == "trackers" {
+                assert!(
+                    query.contains("trackers"),
+                    "query did not list trackers: {query}"
+                );
+            } else {
+                assert!(
+                    query.contains(operation_name),
+                    "query did not contain {operation_name}: {query}"
+                );
+            }
         }
     }
 }
@@ -430,10 +554,47 @@ fn sourcehut_schema_rejects_nonexistent_top_level_ticket_operations() {
 }
 
 #[test]
+fn sourcehut_schema_models_tracker_rid_and_tracker_listing_accessors() {
+    validate_sourcehut_graphql(
+        "query trackerByRid($tracker: ID!, $id: Int!) { tracker(rid: $tracker) { id rid name ticket(id: $id) { id subject body status } } }",
+    );
+    validate_sourcehut_graphql(
+        "query trackerRid($cursor: Cursor) { trackers(cursor: $cursor) { results { id rid name } cursor } }",
+    );
+
+    let schema =
+        Schema::parse_and_validate(SOURCEHUT_TODO_SCHEMA, "todo.sr.ht.schema.graphqls").unwrap();
+    let numeric_root_lookup =
+        "query trackerById($tracker: Int!) { tracker(id: $tracker) { id rid name } }";
+    assert!(
+        ExecutableDocument::parse_and_validate(&schema, numeric_root_lookup, "operation.graphql")
+            .is_err(),
+        "root tracker(id:) must not validate against the SourceHut schema"
+    );
+}
+
+#[test]
 fn production_http_transport_executes_and_parses_read_ticket() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let size = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..size]);
+        assert!(request.starts_with("POST /query "));
+        assert_graphql_request_validates(&request, "trackers");
+        let body = format!(
+            r#"{{"data":{{"trackers":{{"results":[{{"id":4,"rid":"{TRACKER_RID}","name":"runa"}}],"cursor":null}}}}}}"#
+        );
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+
         let (mut stream, _) = listener.accept().unwrap();
         let mut request = [0_u8; 4096];
         let size = stream.read(&mut request).unwrap();
@@ -468,6 +629,10 @@ fn production_http_transport_executes_and_parses_every_graphql_operation() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let expected = [
+        (
+            "trackers",
+            r#"{"data":{"trackers":{"results":[{"id":4,"rid":"06fdktpsb5w8q09e22xy0m6fnr","name":"runa"}],"cursor":null}}}"#,
+        ),
         (
             "tracker",
             r#"{"data":{"tracker":{"ticket":{"id":203,"subject":"Harness read","body":"Read body","status":"REPORTED"}}}}"#,

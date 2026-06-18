@@ -137,9 +137,11 @@ fn sourcehut_graphql_coordinates_follow_resolved_env_identity() {
         ("RUNA_FORGE_NAME", "override-repo"),
         ("RUNA_FORGE_TRACKER_ID", "9"),
     ]);
-    let (api_base, request_capture, server) = http_json_server(
+    let tracker_rid = "06fdktpsb5w8q09e22xy0m6fnr";
+    let (api_base, request_capture, server) = http_json_sequence_server(&[
+        r#"{"data":{"trackers":{"results":[{"id":9,"rid":"06fdktpsb5w8q09e22xy0m6fnr","name":"override-repo"}],"cursor":null}}}"#,
         r#"{"data":{"tracker":{"ticket":{"id":203,"subject":"Override","description":"body","status":"open"}}}}"#,
-    );
+    ]);
 
     let runtime = runtime_from_config(&ForgeConfig {
         forge_type: Some("sourcehut".to_string()),
@@ -156,9 +158,16 @@ fn sourcehut_graphql_coordinates_follow_resolved_env_identity() {
         .call_tool("read-ticket", json!({ "reference": "203" }))
         .unwrap();
 
-    let request = request_capture.lock().unwrap().clone();
-    assert!(request.starts_with("POST /query "));
-    assert!(request.contains(r#""tracker":"9""#), "request: {request}");
+    let requests = request_capture.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with("POST /query "));
+    assert!(requests[0].contains("trackers"), "request: {}", requests[0]);
+    assert!(requests[1].starts_with("POST /query "));
+    assert!(
+        requests[1].contains(&format!(r#""tracker":"{tracker_rid}""#)),
+        "request: {}",
+        requests[1]
+    );
     assert_eq!(output["handle"]["id"], "sourcehut:tracker:9:ticket:203");
     server.join().unwrap();
 }
@@ -233,6 +242,35 @@ fn http_json_server(body: &'static str) -> (String, Arc<Mutex<String>>, thread::
             body
         )
         .unwrap();
+    });
+    (format!("http://{address}"), request_capture, server)
+}
+
+fn http_json_sequence_server(
+    bodies: &[&'static str],
+) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let request_capture = Arc::new(Mutex::new(Vec::new()));
+    let thread_capture = Arc::clone(&request_capture);
+    let bodies = bodies.to_vec();
+    let server = thread::spawn(move || {
+        for body in bodies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let size = stream.read(&mut request).unwrap();
+            thread_capture
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&request[..size]).to_string());
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
     });
     (format!("http://{address}"), request_capture, server)
 }
