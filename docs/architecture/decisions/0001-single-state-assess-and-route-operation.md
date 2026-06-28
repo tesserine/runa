@@ -87,23 +87,67 @@ becomes a derivation, not an input." `discover_ready_candidates` already proves
 the engine can derive the next move from state; decisions 2–6 work out applying
 that one step earlier, at entry.
 
-## Decision 2 — The entry spectrum and its routing *(open — to be reckoned)*
+## Decision 2 — The entry spectrum and its routing *(settled)*
 
 **Question:** how the operation resolves a `request` across everything it can
-reference and dispatches accordingly. The spectrum: unstructured prose →
-exploration that may terminate in work-unit-craft (`survey` → `decompose`); a
-reference to an existing work-unit/ticket → resolve its maturity and route
-(developed → execute; thin → refine); and the recursive case — a work-unit
-already in hand → assess readiness → route to its state-based workflow.
+reference and dispatches accordingly — prose, a reference to a developed
+work-unit/ticket, a reference to a thin one, or a work-unit already in hand.
 
-**Known constraints:** routing intelligence lives in the operation, not in
-`request` fields. The developed-referent route is the
-[#188](https://github.com/tesserine/runa/issues/188) cold-start entry
-(`entry::resolve_ticket_reference` → acquisition surface → bound scope); the
-prose route is the planning cascade
-([#174](https://github.com/tesserine/runa/issues/174)). To reckon: where the
-referent's maturity is assessed, and how "developed vs thin" is decided without
-prescribing implementation.
+**Decision.** At the entry boundary the operation derives the route by
+**resolving any reference the request carries and attempting to bring it to a
+valid `work-unit`**, then dispatching on the outcome. The maturity of the
+referent is not classified separately; it is read from whether the referent
+*materializes into a schema-valid `work-unit`*. Three routes result, each an
+existing mechanism:
+
+1. **Reference → already a valid work-unit, or materializes cleanly → execute.**
+   `entry::resolve_ticket_reference` resolves the reference to a tracker identity
+   (identity only, no forge read); a reference that already resolves to a
+   recorded valid `work-unit` binds scope directly, and one that does not is
+   brought through the methodology's acquisition surface, which materializes the
+   `work-unit` from the ticket. Once bound, execution is the ordinary scoped
+   operation. *(This is the [#188](https://github.com/tesserine/runa/issues/188)
+   cold-start entry.)*
+
+2. **Reference → fails materialization (thin) → refine, then re-resolve.** When
+   the referent does not map onto the `work-unit` schema — no extractable
+   acceptance criteria, an empty body, a non-open ticket — materialization fails
+   with a named work-unit-quality defect. That defect routes to `decompose`'s
+   `refine-work-unit` discipline, which improves the ticket *at its planning
+   home*; the operation then re-resolves. Materialization **never fabricates the
+   missing content** — a thin referent is improved at its source, not hand-filled
+   into an execution snapshot the planning home never authorized. *(This is
+   `acquire`'s existing gap-routing.)*
+
+3. **No resolvable reference (prose) → survey.** A request carrying prose and no
+   resolvable referent enters `survey`, which assesses the exigence and may
+   terminate in `decompose` (work-units), or in "no work needed." *(This is the
+   existing `request` → `survey` path, drivable unscoped per
+   [#174](https://github.com/tesserine/runa/issues/174).)*
+
+The **maturity criterion is therefore the `work-unit` schema itself**: a referent
+is "developed" exactly when it materializes into a schema-valid `work-unit`, and
+"thin" exactly when it does not. No separate maturity classifier is introduced,
+and the discriminator lives in the operation (resolve-and-materialize), not in
+`request` fields — which is decision 1's "scope becomes a derivation" applied to
+the entry spectrum. The recursive case the model names — a work-unit already in
+hand → assess readiness → next step — is precisely the scoped
+`discover_ready_candidates` the operation already runs; entry resolution simply
+produces the bound work-unit that the recursion then carries.
+
+**Boundaries (routed to their own decisions, not resolved here):**
+
+- *How autonomously the operation traverses these routes* — proceed straight
+  through (e.g. thin → refine → re-resolve → execute) versus halt at a fork and
+  report for operator judgment — is a property of who runs the loop and at what
+  granularity, and is decided in **Decision 4 (mode-identity)**.
+- *A request carrying both a reference and prose* — whether the reference sets
+  the route with prose as accompanying intent, or prose can redirect a developed
+  referent into survey/reckon — is a property of the request's shape and is
+  decided in **Decision 5**.
+- *A `survey` terminal that files an unplanned, undecomposed issue for later*
+  (the "explore, then park" outcome) is a `survey`/`decompose` behavior addressed
+  in the **Decision 6** unification, not a new entry route.
 
 ## Decision 3 — Command structure *(open — to be reckoned)*
 
