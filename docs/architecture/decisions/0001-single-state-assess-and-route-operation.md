@@ -1,6 +1,6 @@
 # ADR-0001 — The single state-assess-and-route operation (request as entry-state)
 
-- **Status:** Proposed — decision 1 settled; decisions 2–6 under active reckoning ([#210](https://github.com/tesserine/runa/issues/210)).
+- **Status:** Proposed — all six decisions drafted; ready for review.
 - **Date:** 2026-06-28
 - **Deciders:** Robbie and the governance station.
 - **Spike:** [#210](https://github.com/tesserine/runa/issues/210) · **Epic:** [#167](https://github.com/tesserine/runa/issues/167) (dual-mode).
@@ -215,42 +215,83 @@ autonomous traverses to quiescence, interactive one tick at a time, with full
 automation the default and observation a sideways vector over durable state,
 never a mid-cascade pause (session-surface contract).
 
-## Decision 5 — The request artifact shape *(open — to be reckoned)*
+## Decision 5 — The request artifact shape *(settled)*
 
-**Question:** the shape implied by decisions 2–3 — terse, a reference and/or
-short prose, `additionalProperties` disciplined; whether the free-text `context`
-catch-all is replaced by a typed `references` list.
+**Decision.** The `request` is
 
-**Known constraints:** the `request` is canonical in `tesserine/commons`
-(`REQUEST.md` + `schemas/request/v1/`); the groundwork-vendored copy follows. The
-discriminator is *the operation resolving the referent's state*, not request
-fields — so the request stays thin. A previously-scoped standalone schema fix
-(drop the `context` catch-all) folds in here. The commons major-version change
-policy (ADR-0005) applies if a field is removed or an optional one made required.
+`{ description (required), source (required), references (optional) }`,
+`additionalProperties: false`,
 
-## Decision 6 — Unification map *(open — to be reckoned)*
+and the free-text `context` catch-all is **removed**. `description` carries the
+ask and the direction; `source` carries provenance; `references` is a typed list
+of pointers the operation resolves.
 
-**Question:** how the model composes the existing pieces, naming what each
-contributes and what changes:
-[#188](https://github.com/tesserine/runa/issues/188) (landed cold-start ticket
-entry) as the developed-referent route;
-[#174](https://github.com/tesserine/runa/issues/174) (open `go`-unscoped) — does
-it fold into the single operation or remain its unscoped-entry component; and
-`survey` / `acquire` / `decompose` / the readiness-based scoped pipeline.
+The shape follows from decision 2: `references` is the structural input the
+operation reads to derive the entry route — typed references present and
+resolvable → the developed/thin routes (execute / refine); none → the prose route
+(`description` → survey). This also fixes the *reference + prose together*
+question deferred from decision 2: when both are present, the references set the
+route and `description` is the intent/direction carried into it — matching the
+session-surface contract's "operator intent enters once at the session seed... and
+the direction declared from it." The request never declares its own route through
+a `kind` field; the operation derives the route from whether the references
+resolve. Removing `context` is what closes the leak it invited: an open "anything
+else" field admits the downstream thinking (`survey`'s exigence, `decompose`'s
+plan) that the request must not carry.
+
+**Consequence — schema major version.** The `request` is canonical in
+`tesserine/commons` (`REQUEST.md` + `schemas/request/v1/`). Removing a field is a
+breaking change under the commons change policy (ADR-0005), so this lands as
+**request schema v2** (`schemas/request/v2/`), with v1 retained for existing
+consumers during migration and the groundwork-vendored copy moving to v2. The
+exact `references` entry schema (pointer kinds, format) is implementation detail
+for the commons schema work, not fixed here.
+
+## Decision 6 — Unification map *(settled)*
+
+The model composes existing pieces; little is built new, and what changes is
+named here.
+
+| Piece | Role in the single operation | Change |
+| --- | --- | --- |
+| [#188](https://github.com/tesserine/runa/issues/188) (landed) | The developed-referent route (decision 2 routes 1–2): reference → resolve → bind, or acquire-and-bind. The promised-scope entry. | None — used as-is. |
+| [#174](https://github.com/tesserine/runa/issues/174) (open) | The unscoped-planning **component** the operation requires for the prose route (decision 2 route 3): `go` driving survey/decompose with no work-unit. | Prerequisite, not absorbed — lands as its own work; the operation depends on it. |
+| `acquire` | The maturity criterion (decision 2): materialize, or route to refine. | None — its existing two-outcome behavior *is* the discriminator. |
+| `survey` | The prose route's protocol: exigence assessment. | None for the core model. A future "explore, then park as an unplanned issue" terminal (the collaborative-reckon outcome) is a separate `survey`/`decompose` behavior, not required here. |
+| `decompose` (`refine-work-unit`) | The thin-referent route: improve the ticket at its planning home, then re-resolve. | None — used as-is. |
+| Scoped pipeline (`take`…`land`) | What routes 1–2 execute, via the recursive scoped `discover_ready_candidates`. | None. |
+
+**What changes in runa:** the operator surface collapses to the single verb `go`
+(decision 3, per the session-surface contract); the engine derives scope/route
+from the seed at the entry boundary rather than from `--work-unit` (decision 1).
+
+**What this implies for a committed contract.** The session-surface contract's
+scope model is *bound | promised* — both leading to a work-unit (routes 1–2). The
+single operation adds the **unscoped/prose entry** (route 3), which that model
+does not yet include. Completing this therefore implies a **coordinated update to
+[`session-surface-contract.md`](../../session-surface-contract.md)** extending its
+scope model to the unscoped entry. That contract change is follow-on work, named
+here, not performed in this ADR.
 
 ## Consequences
 
-- Once decisions 2–6 settle, the implementation decomposes into coordinated
-  work-units across runa (the operation/entry change), groundwork
-  (`survey` / `acquire` alignment), and `tesserine/commons` (the request shape).
-  The decomposition is follow-on work, not this ADR.
-- Coordinates with: [#174](https://github.com/tesserine/runa/issues/174) (folds
-  in or remains a component),
+- **Implementation decomposes from this ADR** into coordinated work-units across
+  runa (the entry-derivation engine change plus the `go` / scope-flag CLI move),
+  `tesserine/commons` (request schema v2), and the groundwork methodology (the
+  re-vendored request schema; `survey` / `acquire` / `decompose` used as-is). The
+  decomposition is follow-on work, not this ADR.
+- **Request schema goes to v2** (decision 5): removing `context` is breaking under
+  the commons change policy (ADR-0005); v1 is retained during migration.
+- **A coordinated `session-surface-contract.md` update** (decision 6) extends its
+  *bound | promised* scope model to the unscoped/prose entry route.
+- **Builds on** [#188](https://github.com/tesserine/runa/issues/188) (landed);
+  **requires** [#174](https://github.com/tesserine/runa/issues/174) as the
+  unscoped-planning component.
+- **Coordinates with**
   [pentaxis93/commons#6](https://github.com/pentaxis93/commons/issues/6)
-  (golden-rule fleshing),
+  (golden-rule fleshing) and
   [pentaxis93/commons#9](https://github.com/pentaxis93/commons/issues/9)
   (inheritance that hardens the lineage citation).
-- Builds on: [#188](https://github.com/tesserine/runa/issues/188) (landed).
 
 ## References
 
