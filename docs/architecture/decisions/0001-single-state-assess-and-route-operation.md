@@ -149,34 +149,71 @@ produces the bound work-unit that the recursion then carries.
   (the "explore, then park" outcome) is a `survey`/`decompose` behavior addressed
   in the **Decision 6** unification, not a new entry route.
 
-## Decision 3 — Command structure *(open — to be reckoned)*
+## Decision 3 — Command structure *(settled — by deference to the session-surface contract)*
 
-**Question:** whether one command (`go`) suffices — the operation derives the
-move from state — or a thin layer separates *seeding intent* (placing a
-`request`) from *advancing*. And what the terse surface is (a reference is "the
-same amount as a pathname").
+The command structure is already settled by the committed
+[`session-surface-contract.md`](../../session-surface-contract.md) (source
+invariant: commons ADR-0015): *"The operator-facing surface is therefore a
+single outer verb — `go` — and the operator addresses nothing finer... Mode is
+the cadence of `go`, not a different or larger vocabulary."* This ADR adopts that
+surface; it does not re-decide it. The "one command" the model reaches for is the
+landed contract, not a new proposal.
 
-**Known constraints:** "one command" must preserve the cascade-vs-one-tick
-distinction that already exists — `run` loops to quiescence (autonomous),
-`step` / `go` advance one bead (interactive). This is
-[#167](https://github.com/tesserine/runa/issues/167)'s axis (who runs the loop,
-at what granularity), not a second meaning. The shape to reckon: keep
-loop-granularity, drop the *scope* flag (`--work-unit` / `--ticket`) in favor of
-state-derivation. To be grounded against `docs/session-surface-contract.md`.
+What this ADR records is the **engine delta** that brings the running CLI to the
+contract under decision 1:
 
-## Decision 4 — Mode-identity *(open — to be reckoned)*
+- `step`, `run`, and `go` are the single verb `go` at different **cadences** —
+  one tick versus issued to quiescence — not separate verbs. `state` is the
+  separate **observability vector** (read-only over durable state), which the
+  contract holds distinct from the control surface ("Observation does not enter
+  through the control surface").
+- The direct scope flag `--work-unit <ID>`, which *names* a scope and bypasses
+  seed-derivation, is retired from the operator surface in favor of decision 1:
+  scope is **read from the seed**, not named by the operator. Seed-supply
+  affordances remain — a `request` artifact in the workspace, or a reference
+  (today carried by `--ticket <REF>`, which the contract already classifies as
+  seed delivery, "not a new verb and not a third mode").
+- There is no thin seed-vs-advance layer at the operator surface. Intent enters
+  once at the seed (contract: "operator intent enters once at the session seed
+  through the canonical commons request artifact"), and `go` advances. Seeding is
+  *data*; `go` is the *verb*. They are not two operator operations.
 
-**Question:** how the operation carries identical semantics in autonomous and
-interactive sessions. [#167](https://github.com/tesserine/runa/issues/167): mode
-is a property of the session, not the operation — it reduces to who issues the
-verbs and at what checkpoint granularity, never an authorization-shaped second
-difference.
+The cascade's internal decomposition (how reconcile/select, context, recording,
+and commit are factored) remains, per the contract, an engineering concern
+carrying no interface commitment.
 
-**Known constraints:** the decision must be **backed by a concrete check of how
-the configured agent runtimes (Codex, Claude Code adapters in `adapters/`)
-already behave** — confirming the property holds, not assuming it
-([#210](https://github.com/tesserine/runa/issues/210) AC). To be grounded
-against `adapters/` and `docs/session-surface-contract.md`.
+## Decision 4 — Mode-identity *(settled — by deference to ADR-0015, confirmed against the adapters)*
+
+Mode-identity is fixed by commons
+[ADR-0015](https://github.com/tesserine/commons/blob/main/adr/0015-mode-is-a-property-of-the-session.md)
+and stated operationally by the session-surface contract: the stage semantics are
+identical in both modes, and *"caller identity, shell shape, launch path, or UI
+affordance must not create a second meaning"*; there is no per-operation human
+approval gate in either mode; authority over a transition is **conformance** (a
+typed disposition artifact runa validates), not approval. This ADR adopts the
+invariant; it does not re-decide it.
+
+The spike requires this be **confirmed against the configured runtimes, not
+assumed** ([#210](https://github.com/tesserine/runa/issues/210) AC). Confirmed:
+`adapters/agent-codex.sh` and `adapters/agent-claude-code.sh` are pure
+MCP-registration shims. Each requires `RUNA_MCP_CONFIG`, translates it to its
+runtime's MCP-config shape (Codex: TOML `mcp_servers` overrides on `codex exec`;
+Claude Code: a temp `--mcp-config` JSON on `claude`), and `exec`s the runtime
+with passthrough arguments. **Neither carries any notion of mode, cadence, scope,
+work-unit, ticket, or operator.** They are mode-agnostic by construction: runa
+builds the same `RUNA_MCP_CONFIG` whether an autonomous `run` loop or an
+interactive `go` tick launched the agent, and the adapter has no input that
+distinguishes the caller. Mode lives entirely in runa's loop cadence — who issues
+`go`, and how many times — never in the runtime invocation. The property holds.
+
+The entry-routing operation therefore inherits mode-identity at no cost: deriving
+the route from state at the entry boundary is the same assess-then-select stage
+in both modes. This **resolves decision 2's deferred autonomy boundary**: how
+autonomously the operation traverses the entry routes (e.g. thin → refine →
+re-resolve → execute) is the *cadence of `go`*, not a routing variant —
+autonomous traverses to quiescence, interactive one tick at a time, with full
+automation the default and observation a sideways vector over durable state,
+never a mid-cascade pause (session-surface contract).
 
 ## Decision 5 — The request artifact shape *(open — to be reckoned)*
 
