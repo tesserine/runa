@@ -20,4 +20,7 @@ that supersedes it).
 ## Index
 
 - [ADR-0001](0001-single-state-assess-and-route-operation.md) — The single
-  state-assess-and-route operation (request as entry-state) — *Proposed*
+  state-assess-and-route operation (request as entry-state) — *Accepted*
+  (Decisions 3 & 5 superseded in part by ADR-0002)
+- [ADR-0002](0002-operator-intent-seeding-wish.md) — Operator intent seeding:
+  `wish` authors, `go` advances — *Proposed*
