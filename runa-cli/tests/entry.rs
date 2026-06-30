@@ -610,13 +610,13 @@ fn run_ticket_reports_success_when_acquisition_is_the_only_work() {
     assert!(stdout.contains("Run outcome: success"), "stdout: {stdout}");
 }
 
-/// The acquisition triggers on `request` (which it does not require); the ticket
+/// The acquisition triggers on `intent` (which it does not require); the ticket
 /// substitutes that trigger.
 const TRIGGER_ONLY_ENTRY_MANIFEST: &str = r#"
 name = "groundwork"
 
 [[artifact_types]]
-name = "request"
+name = "intent"
 
 [[artifact_types]]
 name = "work-unit"
@@ -628,7 +628,7 @@ name = "claim"
 name = "decompose"
 produces = ["work-unit"]
 scoped = false
-trigger = { type = "on_artifact", name = "request" }
+trigger = { type = "on_artifact", name = "intent" }
 
 [[protocols]]
 name = "take"
@@ -644,7 +644,7 @@ fn setup_trigger_only_entry_project(dir: &Path) -> PathBuf {
         TRIGGER_ONLY_ENTRY_MANIFEST,
         &[
             (
-                "request",
+                "intent",
                 r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
             ),
             (
@@ -669,11 +669,11 @@ fn setup_trigger_only_entry_project(dir: &Path) -> PathBuf {
 fn run_ticket_admits_acquisition_when_only_trigger_type_partially_scanned() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_trigger_only_entry_project(dir.path());
-    // An unreadable `request` (the substituted trigger type, not a required
+    // An unreadable `intent` (the substituted trigger type, not a required
     // input) leaves it only partially scanned.
-    let request_dir = project_dir.join(".runa/workspace/request");
-    fs::create_dir_all(&request_dir).unwrap();
-    let unreadable = request_dir.join("hidden.json");
+    let intent_dir = project_dir.join(".runa/workspace/intent");
+    fs::create_dir_all(&intent_dir).unwrap();
+    let unreadable = intent_dir.join("hidden.json");
     fs::write(&unreadable, r#"{"title":"hidden"}"#).unwrap();
     fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
 

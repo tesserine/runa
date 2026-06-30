@@ -985,15 +985,15 @@ trigger = { type = "on_artifact", name = "work-unit" }
         write_entry_project_with_acquisition_requires(dir, materialize, false)
     }
 
-    /// `acquisition_requires_request` declares an unmet `requires` on the
+    /// `acquisition_requires_intent` declares an unmet `requires` on the
     /// acquisition surface so its preconditions block at cold-start entry.
     fn write_entry_project_with_acquisition_requires(
         dir: &Path,
         materialize: bool,
-        acquisition_requires_request: bool,
+        acquisition_requires_intent: bool,
     ) -> PathBuf {
-        let decompose_requires = if acquisition_requires_request {
-            "requires = [\"request\"]\n"
+        let decompose_requires = if acquisition_requires_intent {
+            "requires = [\"intent\"]\n"
         } else {
             ""
         };
@@ -1005,7 +1005,7 @@ name = "groundwork"
 name = "work-unit"
 
 [[artifact_types]]
-name = "request"
+name = "intent"
 
 [[artifact_types]]
 name = "claim"
@@ -1014,7 +1014,7 @@ name = "claim"
 name = "decompose"
 {decompose_requires}produces = ["work-unit"]
 scoped = false
-trigger = {{ type = "on_artifact", name = "request" }}
+trigger = {{ type = "on_artifact", name = "intent" }}
 
 [[protocols]]
 name = "take"
@@ -1033,7 +1033,7 @@ trigger = {{ type = "on_artifact", name = "work-unit" }}
                     r#"{"type":"object","required":["title","handle"],"properties":{"title":{"type":"string"},"handle":{"type":"object"}}}"#,
                 ),
                 (
-                    "request",
+                    "intent",
                     r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
                 ),
                 (
@@ -1128,8 +1128,18 @@ trigger = { type = "on_artifact", name = "work-unit" }
         }
     }
 
+    fn unset_forge_env() -> crate::test_helpers::EnvGuard {
+        crate::test_helpers::EnvGuard::unset(&[
+            "RUNA_FORGE_TYPE",
+            "RUNA_FORGE_OWNER",
+            "RUNA_FORGE_NAME",
+            "RUNA_FORGE_TRACKER_ID",
+        ])
+    }
+
     #[test]
     fn open_entry_cold_pins_acquisition_step() {
+        let _env = unset_forge_env();
         let dir = tempfile::tempdir().unwrap();
         let project_dir = write_entry_project(dir.path(), false);
 
@@ -1144,6 +1154,7 @@ trigger = { type = "on_artifact", name = "work-unit" }
 
     #[test]
     fn open_entry_re_entry_binds_without_acquisition_surface() {
+        let _env = unset_forge_env();
         let dir = tempfile::tempdir().unwrap();
         // No unscoped work-unit producer exists, but the work-unit is already
         // recorded: re-entry must degrade to a bound session rather than fail on
@@ -1160,6 +1171,7 @@ trigger = { type = "on_artifact", name = "work-unit" }
 
     #[test]
     fn open_entry_cold_without_acquisition_surface_is_error() {
+        let _env = unset_forge_env();
         let dir = tempfile::tempdir().unwrap();
         // No work-unit recorded and no acquisition surface: a cold start has no
         // way to acquire, so discovery fails.
@@ -1177,6 +1189,7 @@ trigger = { type = "on_artifact", name = "work-unit" }
 
     #[test]
     fn open_entry_blocks_when_acquisition_preconditions_unmet() {
+        let _env = unset_forge_env();
         let dir = tempfile::tempdir().unwrap();
         // decompose requires an absent `request`; entry substitutes only the
         // trigger, so the unmet precondition must still block.
@@ -1189,6 +1202,7 @@ trigger = { type = "on_artifact", name = "work-unit" }
 
     #[test]
     fn open_entry_binds_immediately_when_work_unit_exists() {
+        let _env = unset_forge_env();
         let dir = tempfile::tempdir().unwrap();
         let project_dir = write_entry_project(dir.path(), true);
 
@@ -1203,6 +1217,7 @@ trigger = { type = "on_artifact", name = "work-unit" }
 
     #[test]
     fn advance_from_acquisition_binds_and_selects_take() {
+        let _env = unset_forge_env();
         let dir = tempfile::tempdir().unwrap();
         let project_dir = write_entry_project(dir.path(), false);
         let mut session =
@@ -1230,6 +1245,7 @@ trigger = { type = "on_artifact", name = "work-unit" }
 
     #[test]
     fn advance_restores_promised_scope_when_post_bind_commit_fails() {
+        let _env = unset_forge_env();
         let dir = tempfile::tempdir().unwrap();
         let project_dir = write_entry_project(dir.path(), false);
         let mut session =
@@ -1269,6 +1285,7 @@ trigger = { type = "on_artifact", name = "work-unit" }
 
     #[test]
     fn advance_without_materialized_work_unit_is_unresolved() {
+        let _env = unset_forge_env();
         let dir = tempfile::tempdir().unwrap();
         let project_dir = write_entry_project(dir.path(), false);
         let mut session =
