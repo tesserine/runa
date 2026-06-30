@@ -1,7 +1,49 @@
 # ADR-0002 — Operator intent seeding: `wish` authors, `go` advances
 
-**Status:** Proposed
-**Supersedes (in part):** [ADR-0001](0001-single-state-assess-and-route-operation.md) — Decision 3 (command structure) and Decision 5 (request artifact shape), on the points named below.
+**Status:** Withdrawn — 2026-06-30. Decision A (`runa wish`) is unsound and never reached Accepted; see the withdrawal note below.
+**Supersedes:** nothing. The supersession this ADR claimed over ADR-0001 Decisions 3 and 5 is void — Decision 3 stands in full; Decision 5's shape stands and its rename is carried elsewhere (below).
+
+## Withdrawal note (2026-06-30)
+
+This ADR is withdrawn. Its organizing decision — **Decision A**, that the operator
+`wish` gesture is a **`runa` verb** — is unsound against the substrate, and the ADR
+has no remaining reason to exist as a runa decision once that falls.
+
+**Why Decision A is void.** `runa`'s entire command surface (`Init`, `List`,
+`Doctor`, `Scan`, `State`, `Step`, `Run`, `Go`) operates only on artifacts that
+*already exist*: it scans, validates, computes readiness, and advances. It carries
+no model and authors no content; even its cold-start path (`go --ticket`) performs
+no forge read of its own and hands materialization to the methodology. A verb that
+greets an operator, elicits prose intent, and authors a `{description, source}`
+seed is the one capability runa's architecture defines it as *not* having. This
+ADR's own Context conceded runa "validates artifacts, it doesn't author intent" —
+and then had it author intent. That is the contradiction.
+
+**Where the work actually lives.** The operator `wish` gesture belongs to
+**`agentd`** — the session launcher, which already lowers operator intent into a
+conforming seed (`agentd-runner` `resolve_invocation_input`, arm
+`InvocationInput::RequestText`: takes `description`, stamps `source: operator`,
+validates against the methodology's request schema, seeds the session). It is
+tracked by **`tesserine/agentd#152`** (`agentd wish`).
+
+**The one sound thing this ADR identified — the rename — is carried forward, not
+lost.** Decision B (rename the entry artifact `request` → `intent`) is a real and
+necessary change, but it is an artifact decision **owned by `tesserine/commons`**
+(the artifact's home), not a runa ADR concern. It is re-homed to **`tesserine/commons#94`**
+and sequenced *after* the `babbie-ops#67` integration test (it does not gate it).
+
+**Effect on ADR-0001.** Nothing is superseded. Decision 3 (single outer verb
+`go`; seeding is data) stands in full — the matured-surface framing that would have
+superseded it is void. Decision 5's v2 *shape* stands; only the artifact *name*
+changes, under the commons rename above.
+
+The body below is retained as the historical record of the withdrawn proposal. It
+does not govern.
+
+---
+
+**Original status (superseded by this withdrawal):** Proposed
+**Originally claimed to supersede (in part):** [ADR-0001](0001-single-state-assess-and-route-operation.md) — Decision 3 (command structure) and Decision 5 (request artifact shape). *Both claims void; see withdrawal note above.*
 
 ## Lineage
 

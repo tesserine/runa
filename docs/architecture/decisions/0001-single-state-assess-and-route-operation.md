@@ -1,6 +1,6 @@
 # ADR-0001 — The single state-assess-and-route operation (request as entry-state)
 
-- **Status:** Accepted — 2026-06-30; all six decisions settled. Implementation decomposes from this ADR. **Decisions 3 and 5 superseded in part by [ADR-0002](0002-operator-intent-seeding-wish.md).**
+- **Status:** Accepted — 2026-06-30; all six decisions settled. Implementation decomposes from this ADR. (ADR-0002 was withdrawn 2026-06-30; it claimed to supersede Decisions 3 and 5, but that supersession is void. **Decision 3 stands in full.** Decision 5's v2 *shape* stands; only the artifact *name* changes, under the `request` → `intent` rename re-homed to `tesserine/commons#94` and sequenced after `babbie-ops#67`.)
 - **Date:** 2026-06-28
 - **Deciders:** Robbie and the governance station.
 - **Spike:** [#210](https://github.com/tesserine/runa/issues/210) · **Epic:** [#167](https://github.com/tesserine/runa/issues/167) (dual-mode).
