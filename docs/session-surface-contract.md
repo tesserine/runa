@@ -170,7 +170,7 @@ remove a gate.
 
 The operator holds intent authority. Operator intent enters once at the session
 seed through the canonical commons
-[request artifact](https://github.com/tesserine/commons/blob/main/REQUEST.md)
+[intent artifact](https://github.com/tesserine/commons/blob/main/INTENT.md)
 and the direction declared from it, such as Groundwork `take` session direction.
 The operator may alter or withdraw that intent, and the session must regenerate
 from the changed seed. The operator is not inserted as an approver of each
