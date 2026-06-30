@@ -14,13 +14,17 @@ canonical home, `pentaxis93/principles`. An ADR **cites** those sources as what
 it realizes; it does not restate them (Single Home).
 
 Records are numbered sequentially (`NNNN-kebab-title.md`) and never renumbered.
-Status is one of **Proposed**, **Accepted**, or **Superseded** (naming the ADR
-that supersedes it).
+Status is one of **Proposed**, **Accepted**, **Superseded** (naming the ADR
+that supersedes it), or **Withdrawn** (a proposal found unsound before it was
+accepted — nothing supersedes it; the withdrawal note states why).
 
 ## Index
 
 - [ADR-0001](0001-single-state-assess-and-route-operation.md) — The single
   state-assess-and-route operation (request as entry-state) — *Accepted*
-  (Decisions 3 & 5 superseded in part by ADR-0002)
+  (Decision 3 stands in full; Decision 5's shape stands, its artifact name changing
+  under the `request` → `intent` rename re-homed to `tesserine/commons#94`)
 - [ADR-0002](0002-operator-intent-seeding-wish.md) — Operator intent seeding:
-  `wish` authors, `go` advances — *Proposed*
+  `wish` authors, `go` advances — *Withdrawn* (Decision A unsound: `wish` is an
+  `agentd` verb, not runa — `tesserine/agentd#152`; the `request` → `intent` rename
+  it identified is re-homed to `tesserine/commons#94`)
