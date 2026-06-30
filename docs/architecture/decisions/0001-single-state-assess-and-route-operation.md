@@ -1,6 +1,6 @@
 # ADR-0001 — The single state-assess-and-route operation (request as entry-state)
 
-- **Status:** Proposed — all six decisions drafted; ready for review.
+- **Status:** Accepted — 2026-06-30; all six decisions settled. Implementation decomposes from this ADR.
 - **Date:** 2026-06-28
 - **Deciders:** Robbie and the governance station.
 - **Spike:** [#210](https://github.com/tesserine/runa/issues/210) · **Epic:** [#167](https://github.com/tesserine/runa/issues/167) (dual-mode).
