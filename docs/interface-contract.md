@@ -122,10 +122,10 @@ checks described here.
 ### Entry References and the Acquisition Surface
 
 A session may be opened from a forge ticket reference instead of a recorded
-`work-unit` instance id, via `runa run --ticket <REF>` or
-`runa go --ticket <REF>`. The accepted reference forms are a bare ticket number,
-`#<N>`, `owner/repo#<N>`, a GitHub issue URL, or `sourcehut:<tracker_id>#<N>`.
-runa parses the reference and normalizes it to a tracker identity
+`work-unit` instance id when no selector is supplied and assessed state contains
+exactly one valid unscoped `intent.target`. The accepted reference forms are a
+bare ticket number, `#<N>`, `owner/repo#<N>`, a GitHub issue URL, or
+`sourcehut:<tracker_id>#<N>`. runa parses the reference and normalizes it to a tracker identity
 (`github:<owner>/<name>:<N>` or `sourcehut:<tracker_id>:<N>`); a reference that
 asserts a deployment other than the active one is rejected, and a bare reference
 inherits the active deployment identity. **runa never reads ticket content** —
@@ -134,15 +134,14 @@ reads through its own mechanics. During entry, runa exports `RUNA_ENTRY_TICKET`
 (the ticket number) alongside the `RUNA_FORGE_*` atoms so those mechanics can
 resolve the ticket.
 
-`runa go` may also be opened with no selector. With no selector, runa first
-checks assessed valid unscoped `intent` artifacts for exactly one seed
-`target`; when one is present, it parses that target as the entry reference and
-opens the same promised ticket entry scope as `--ticket <REF>`. That
-seed-target path is ticket entry: the scope is derived from assessed state at
-the entry boundary, not supplied as an input. When no seed target is present,
-no-selector `go` remains the ordinary prose path: it evaluates the unscoped
-protocol set, injects no `work_unit`, and performs no forge reference parsing or
-promise binding.
+With no selector, `runa run`, `runa go`, and `runa-mcp --session` first check
+assessed valid unscoped `intent` artifacts for exactly one seed `target`; when
+one is present, they parse that target as the entry reference and open the
+promised ticket entry scope. That seed-target path is ticket entry: the scope is
+derived from assessed state at the entry boundary, not supplied as an input.
+When no seed target is present, no-selector execution remains the ordinary prose
+path: it evaluates the unscoped protocol set, injects no `work_unit`, and
+performs no forge reference parsing or promise binding.
 
 The acquisition surface runa serves is the single unscoped protocol whose
 declared outputs (`produces`, `may_produce`, or required output choice members)

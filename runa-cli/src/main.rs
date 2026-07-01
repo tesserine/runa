@@ -65,12 +65,8 @@ enum Commands {
     /// Advance an interactive session by one operator tick
     Go {
         /// Delegated work unit to advance
-        #[arg(long, conflicts_with = "ticket")]
-        work_unit: Option<String>,
-
-        /// Open the session from a forge ticket reference (cold-start entry)
         #[arg(long)]
-        ticket: Option<String>,
+        work_unit: Option<String>,
     },
 }
 
@@ -87,10 +83,6 @@ struct RunArgs {
     /// Evaluate only the specified delegated work unit
     #[arg(long)]
     work_unit: Option<String>,
-
-    /// Open the cascade from a forge ticket reference (cold-start entry)
-    #[arg(long, conflicts_with = "work_unit")]
-    ticket: Option<String>,
 
     /// Override the live agent command; pass argv after `--`, for example `--agent-command -- <argv tokens>`
     #[arg(long = "agent-command")]
@@ -224,7 +216,6 @@ fn main() {
                 args.dry_run,
                 args.json,
                 args.work_unit.as_deref(),
-                args.ticket.as_deref(),
                 args.agent_command,
                 &args.agent_command_argv,
             ) {
@@ -237,13 +228,8 @@ fn main() {
                 Err(err) => fatal_command_error("run", &err, err.exit_code()),
             }
         }
-        Commands::Go { work_unit, ticket } => {
-            match commands::go::run(
-                &working_dir,
-                config_override_ref,
-                work_unit.as_deref(),
-                ticket.as_deref(),
-            ) {
+        Commands::Go { work_unit } => {
+            match commands::go::run(&working_dir, config_override_ref, work_unit.as_deref()) {
                 Ok(outcome) => {
                     let exit_code = outcome.exit_code().code();
                     if exit_code != 0 {

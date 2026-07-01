@@ -1,4 +1,4 @@
-//! Cold-start ticket entry: `runa run --ticket` / `runa go --ticket`.
+//! Cold-start seed-target entry from `intent.target`.
 
 mod common;
 
@@ -60,6 +60,9 @@ const BLOCKED_ENTRY_MANIFEST: &str = r#"
 name = "groundwork"
 
 [[artifact_types]]
+name = "intent"
+
+[[artifact_types]]
 name = "seed"
 
 [[artifact_types]]
@@ -85,6 +88,10 @@ trigger = { type = "on_artifact", name = "work-unit" }
 
 fn blocked_entry_schemas() -> &'static [(&'static str, &'static str)] {
     &[
+        (
+            "intent",
+            r#"{"type":"object","required":["statement","source"],"properties":{"statement":{"type":"string"},"source":{"type":"string"},"target":{"type":"string"}}}"#,
+        ),
         (
             "seed",
             r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
@@ -185,6 +192,9 @@ fn write_intent_target_instance(project_dir: &Path, instance_id: &str, target: &
 /// `may_produce` (the groundwork shape) instead of `produces`.
 const MAY_PRODUCE_ENTRY_MANIFEST: &str = r#"
 name = "groundwork"
+
+[[artifact_types]]
+name = "intent"
 
 [[artifact_types]]
 name = "work-unit"
@@ -310,14 +320,13 @@ fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
 }
 
 #[test]
-fn run_ticket_dry_run_projects_acquisition_then_take() {
+fn run_intent_target_dry_run_projects_acquisition_then_take() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
 
     let output = clear_forge_env(&mut runa_bin())
         .arg("run")
-        .arg("--ticket")
-        .arg("#14")
         .arg("--dry-run")
         .arg("--json")
         .current_dir(&project_dir)
@@ -350,7 +359,7 @@ fn run_ticket_dry_run_projects_acquisition_then_take() {
 }
 
 #[test]
-fn run_intent_target_dry_run_projects_same_entry_as_ticket() {
+fn run_intent_target_dry_run_projects_existing_work_unit_entry() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_entry_project(dir.path());
     write_intent_target(&project_dir, "#14");
@@ -471,17 +480,16 @@ fn run_intent_target_rejects_foreign_deployment_reference() {
 }
 
 #[test]
-fn run_ticket_cold_acquires_then_cascades_to_take() {
+fn run_intent_target_cold_acquires_then_cascades_to_take() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_entry_project(dir.path());
+    write_intent_target(&project_dir, "tesserine/runa#14");
     let log_path = dir.path().join("executed.log");
     let agent_path = write_entry_agent(dir.path());
     append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
 
     let output = clear_forge_env(&mut runa_bin())
         .arg("run")
-        .arg("--ticket")
-        .arg("tesserine/runa#14")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -505,14 +513,13 @@ fn run_ticket_cold_acquires_then_cascades_to_take() {
 }
 
 #[test]
-fn run_ticket_dry_run_projects_take_for_may_produce_acquisition() {
+fn run_intent_target_dry_run_projects_take_for_may_produce_acquisition() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_may_produce_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
 
     let output = clear_forge_env(&mut runa_bin())
         .arg("run")
-        .arg("--ticket")
-        .arg("#14")
         .arg("--dry-run")
         .arg("--json")
         .current_dir(&project_dir)
@@ -536,17 +543,16 @@ fn run_ticket_dry_run_projects_take_for_may_produce_acquisition() {
 }
 
 #[test]
-fn run_ticket_unresolved_leaves_no_acquisition_record() {
+fn run_intent_target_unresolved_leaves_no_acquisition_record() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
     let log_path = dir.path().join("executed.log");
     let agent_path = write_mismatched_ticket_agent(dir.path());
     append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
 
     let output = clear_forge_env(&mut runa_bin())
         .arg("run")
-        .arg("--ticket")
-        .arg("#14")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -568,17 +574,16 @@ fn run_ticket_unresolved_leaves_no_acquisition_record() {
 }
 
 #[test]
-fn run_ticket_blocks_when_acquisition_input_partially_scanned() {
+fn run_intent_target_blocks_when_acquisition_input_partially_scanned() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_partial_scan_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
     let log_path = dir.path().join("executed.log");
     let agent_path = write_entry_agent(dir.path());
     append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
 
     let output = clear_forge_env(&mut runa_bin())
         .arg("run")
-        .arg("--ticket")
-        .arg("#14")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -590,17 +595,16 @@ fn run_ticket_blocks_when_acquisition_input_partially_scanned() {
 }
 
 #[test]
-fn go_ticket_blocks_when_acquisition_input_partially_scanned() {
+fn go_intent_target_blocks_when_acquisition_input_partially_scanned() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_partial_scan_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
     let log_path = dir.path().join("executed.log");
     let agent_path = write_entry_agent(dir.path());
     append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
 
     let output = clear_forge_env(&mut runa_bin())
         .arg("go")
-        .arg("--ticket")
-        .arg("#14")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -609,42 +613,13 @@ fn go_ticket_blocks_when_acquisition_input_partially_scanned() {
     assert!(!log_path.exists(), "acquisition agent should not run");
 }
 
-/// A methodology whose only protocol is the acquisition itself — there is no
-/// further scoped work after the work-unit is materialized.
-const ACQUISITION_ONLY_MANIFEST: &str = r#"
-name = "groundwork"
-
-[[artifact_types]]
-name = "work-unit"
-
-[[protocols]]
-name = "decompose"
-produces = ["work-unit"]
-scoped = false
-trigger = { type = "on_artifact", name = "work-unit" }
-"#;
-
-fn setup_acquisition_only_project(dir: &Path) -> PathBuf {
-    let manifest_path = common::write_methodology(
-        dir,
-        ACQUISITION_ONLY_MANIFEST,
-        &[(
-            "work-unit",
-            r#"{"type":"object","required":["title","handle"],"properties":{"title":{"type":"string"},"handle":{"type":"object"}}}"#,
-        )],
-        &["decompose"],
-    );
-    let project_dir = dir.join("project");
-    fs::create_dir(&project_dir).unwrap();
-    init_project(&project_dir, &manifest_path);
-    common::append_github_forge_config(&project_dir, "tesserine", "runa");
-    project_dir
-}
-
-/// The acquisition optionally accepts `notes`; the ticket entry must withhold it
+/// The acquisition optionally accepts `notes`; seed-target entry must withhold it
 /// when its type is untrusted.
 const ACCEPTS_NOTES_MANIFEST: &str = r#"
 name = "groundwork"
+
+[[artifact_types]]
+name = "intent"
 
 [[artifact_types]]
 name = "notes"
@@ -666,6 +641,10 @@ fn setup_accepts_notes_entry_project(dir: &Path) -> PathBuf {
         ACCEPTS_NOTES_MANIFEST,
         &[
             (
+                "intent",
+                r#"{"type":"object","required":["statement","source"],"properties":{"statement":{"type":"string"},"source":{"type":"string"},"target":{"type":"string"}}}"#,
+            ),
+            (
                 "notes",
                 r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
             ),
@@ -684,9 +663,10 @@ fn setup_accepts_notes_entry_project(dir: &Path) -> PathBuf {
 }
 
 #[test]
-fn run_ticket_dry_run_withholds_accepts_from_partially_scanned_type() {
+fn run_intent_target_dry_run_withholds_accepts_from_partially_scanned_type() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_accepts_notes_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
     // A valid `notes` exists, but an unreadable sibling leaves the type only
     // partially scanned (untrusted).
     let notes_dir = project_dir.join(".runa/workspace/notes");
@@ -698,8 +678,6 @@ fn run_ticket_dry_run_withholds_accepts_from_partially_scanned_type() {
 
     let output = clear_forge_env(&mut runa_bin())
         .arg("run")
-        .arg("--ticket")
-        .arg("#14")
         .arg("--dry-run")
         .arg("--json")
         .current_dir(&project_dir)
@@ -723,137 +701,16 @@ fn run_ticket_dry_run_withholds_accepts_from_partially_scanned_type() {
 }
 
 #[test]
-fn run_ticket_reports_success_when_acquisition_is_the_only_work() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = setup_acquisition_only_project(dir.path());
-    let log_path = dir.path().join("executed.log");
-    let agent_path = write_entry_agent(dir.path());
-    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
-
-    let output = clear_forge_env(&mut runa_bin())
-        .arg("run")
-        .arg("--ticket")
-        .arg("#14")
-        .current_dir(&project_dir)
-        .output()
-        .unwrap();
-
-    // Acquisition ran and there is no further scoped work: the command must
-    // report success, not nothing-ready (exit 4).
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(fs::read_to_string(&log_path).unwrap(), "decompose\n");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Run outcome: success"), "stdout: {stdout}");
-}
-
-/// The acquisition triggers on `intent` (which it does not require); the ticket
-/// substitutes that trigger.
-const TRIGGER_ONLY_ENTRY_MANIFEST: &str = r#"
-name = "groundwork"
-
-[[artifact_types]]
-name = "intent"
-
-[[artifact_types]]
-name = "work-unit"
-
-[[artifact_types]]
-name = "claim"
-
-[[protocols]]
-name = "decompose"
-produces = ["work-unit"]
-scoped = false
-trigger = { type = "on_artifact", name = "intent" }
-
-[[protocols]]
-name = "take"
-requires = ["work-unit"]
-produces = ["claim"]
-scoped = true
-trigger = { type = "on_artifact", name = "work-unit" }
-"#;
-
-fn setup_trigger_only_entry_project(dir: &Path) -> PathBuf {
-    let manifest_path = common::write_methodology(
-        dir,
-        TRIGGER_ONLY_ENTRY_MANIFEST,
-        &[
-            (
-                "intent",
-                r#"{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
-            ),
-            (
-                "work-unit",
-                r#"{"type":"object","required":["title","handle"],"properties":{"title":{"type":"string"},"handle":{"type":"object"}}}"#,
-            ),
-            (
-                "claim",
-                r#"{"type":"object","required":["work_unit","scope"],"properties":{"work_unit":{"type":"string"},"scope":{"type":"string"}}}"#,
-            ),
-        ],
-        &["decompose", "take"],
-    );
-    let project_dir = dir.join("project");
-    fs::create_dir(&project_dir).unwrap();
-    init_project(&project_dir, &manifest_path);
-    common::append_github_forge_config(&project_dir, "tesserine", "runa");
-    project_dir
-}
-
-#[test]
-fn run_ticket_admits_acquisition_when_only_trigger_type_partially_scanned() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = setup_trigger_only_entry_project(dir.path());
-    // An unreadable `intent` (the substituted trigger type, not a required
-    // input) leaves it only partially scanned.
-    let intent_dir = project_dir.join(".runa/workspace/intent");
-    fs::create_dir_all(&intent_dir).unwrap();
-    let unreadable = intent_dir.join("hidden.json");
-    fs::write(&unreadable, r#"{"title":"hidden"}"#).unwrap();
-    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
-
-    let log_path = dir.path().join("executed.log");
-    let agent_path = write_entry_agent(dir.path());
-    append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
-
-    let output = clear_forge_env(&mut runa_bin())
-        .arg("run")
-        .arg("--ticket")
-        .arg("#14")
-        .current_dir(&project_dir)
-        .output()
-        .unwrap();
-
-    // The ticket replaces the trigger, so a partial scan of the trigger-only
-    // `request` must not block: acquisition runs and the cascade completes.
-    assert!(
-        output.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(fs::read_to_string(&log_path).unwrap(), "decompose\ntake\n");
-}
-
-#[test]
-fn run_ticket_blocks_when_acquisition_preconditions_unmet() {
+fn run_intent_target_blocks_when_acquisition_preconditions_unmet() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_blocked_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
     let log_path = dir.path().join("executed.log");
     let agent_path = write_entry_agent(dir.path());
     append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
 
     let output = clear_forge_env(&mut runa_bin())
         .arg("run")
-        .arg("--ticket")
-        .arg("#14")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -869,14 +726,13 @@ fn run_ticket_blocks_when_acquisition_preconditions_unmet() {
 }
 
 #[test]
-fn run_ticket_dry_run_blocks_when_acquisition_preconditions_unmet() {
+fn run_intent_target_dry_run_blocks_when_acquisition_preconditions_unmet() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_blocked_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
 
     let output = clear_forge_env(&mut runa_bin())
         .arg("run")
-        .arg("--ticket")
-        .arg("#14")
         .arg("--dry-run")
         .arg("--json")
         .current_dir(&project_dir)
@@ -894,17 +750,16 @@ fn run_ticket_dry_run_blocks_when_acquisition_preconditions_unmet() {
 }
 
 #[test]
-fn go_ticket_blocks_when_acquisition_preconditions_unmet() {
+fn go_intent_target_blocks_when_acquisition_preconditions_unmet() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_blocked_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
     let log_path = dir.path().join("executed.log");
     let agent_path = write_entry_agent(dir.path());
     append_agent_command_config(&project_dir, &[agent_path.as_path(), log_path.as_path()]);
 
     let output = clear_forge_env(&mut runa_bin())
         .arg("go")
-        .arg("--ticket")
-        .arg("#14")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -927,9 +782,10 @@ fn taint_work_unit_scan(project_dir: &Path) {
 }
 
 #[test]
-fn run_ticket_blocks_when_work_unit_scan_incomplete() {
+fn run_intent_target_blocks_when_work_unit_scan_incomplete() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
     taint_work_unit_scan(&project_dir);
     let log_path = dir.path().join("executed.log");
     let agent_path = write_entry_agent(dir.path());
@@ -937,8 +793,6 @@ fn run_ticket_blocks_when_work_unit_scan_incomplete() {
 
     let output = clear_forge_env(&mut runa_bin())
         .arg("run")
-        .arg("--ticket")
-        .arg("#14")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -955,9 +809,10 @@ fn run_ticket_blocks_when_work_unit_scan_incomplete() {
 }
 
 #[test]
-fn go_ticket_blocks_when_work_unit_scan_incomplete() {
+fn go_intent_target_blocks_when_work_unit_scan_incomplete() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
     taint_work_unit_scan(&project_dir);
     let log_path = dir.path().join("executed.log");
     let agent_path = write_entry_agent(dir.path());
@@ -965,8 +820,6 @@ fn go_ticket_blocks_when_work_unit_scan_incomplete() {
 
     let output = clear_forge_env(&mut runa_bin())
         .arg("go")
-        .arg("--ticket")
-        .arg("#14")
         .current_dir(&project_dir)
         .output()
         .unwrap();
@@ -979,26 +832,28 @@ fn go_ticket_blocks_when_work_unit_scan_incomplete() {
 }
 
 #[test]
-fn run_ticket_rejects_foreign_deployment_reference() {
+fn run_ticket_flag_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_entry_project(dir.path());
 
     let output = clear_forge_env(&mut runa_bin())
         .arg("run")
         .arg("--ticket")
-        .arg("tesserine/groundwork#14")
-        .arg("--dry-run")
+        .arg("#14")
         .current_dir(&project_dir)
         .output()
         .unwrap();
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("disagrees"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("unexpected argument '--ticket'"),
+        "stderr: {stderr}"
+    );
 }
 
 #[test]
-fn run_ticket_conflicts_with_work_unit() {
+fn run_ticket_flag_is_not_hidden_work_unit_selector() {
     let output = runa_bin()
         .arg("run")
         .arg("--ticket")
@@ -1010,7 +865,10 @@ fn run_ticket_conflicts_with_work_unit() {
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cannot be used with"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("unexpected argument '--ticket'"),
+        "stderr: {stderr}"
+    );
 }
 
 fn runa_mcp_bin_path() -> PathBuf {
@@ -1018,68 +876,6 @@ fn runa_mcp_bin_path() -> PathBuf {
         .parent()
         .unwrap()
         .join(format!("runa-mcp{}", std::env::consts::EXE_SUFFIX))
-}
-
-#[test]
-fn mcp_session_ticket_entry_materializes_work_unit_and_binds_to_take() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = setup_entry_project(dir.path());
-    let runa_mcp_path = runa_mcp_bin_path();
-    let log_path = dir.path().join("session.out");
-
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(
-            r####"
-set -eu
-{
-    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"entry-test","version":"1.0.0"}}}'
-    printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"next-protocol-context","arguments":{}}}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"work-unit","arguments":{"instance_id":"work-unit-14-cold-start","title":"Cold start","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/14","number":14}}}}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"advance","arguments":{}}}'
-    sleep 1
-} | "$1" --session --ticket '#14' > "$2"
-if grep -q '"error"' "$2"; then
-    cat "$2" >&2
-    exit 23
-fi
-"####,
-        )
-        .arg("drive-entry")
-        .arg(&runa_mcp_path)
-        .arg(&log_path)
-        .env_remove("RUNA_FORGE_TYPE")
-        .env_remove("RUNA_FORGE_OWNER")
-        .env_remove("RUNA_FORGE_NAME")
-        .env_remove("RUNA_FORGE_TRACKER_ID")
-        .current_dir(&project_dir)
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "entry session failed\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let transcript = fs::read_to_string(&log_path).unwrap();
-    // The acquisition step is served, the work-unit is materialized, and the
-    // session binds — advance reports `take` as the next step.
-    assert!(transcript.contains("## Session entry"), "{transcript}");
-    assert!(
-        transcript.contains("github:tesserine/runa#14"),
-        "{transcript}"
-    );
-    // advance reports `take` as the bound next step.
-    assert!(transcript.contains("next_step"), "{transcript}");
-    assert!(transcript.contains("take"), "{transcript}");
-    assert!(
-        project_dir
-            .join(".runa/workspace/work-unit/work-unit-14-cold-start.json")
-            .is_file()
-    );
 }
 
 #[test]
@@ -1165,7 +961,7 @@ printf '%s' "$RUNA_MCP_CONFIG" > "$2"
     printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"work-unit","arguments":{"instance_id":"work-unit-14-cold-start","title":"Cold start","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/14","number":14}}}}'
     printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"advance","arguments":{}}}'
     sleep 1
-} | "$3" --session --ticket '#14' > "$4"
+} | "$3" --session > "$4"
 if grep -q '"error"' "$4"; then
     cat "$4" >&2
     exit 23
@@ -1201,10 +997,7 @@ fi
 
     let config: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
-    assert_eq!(
-        config["args"],
-        serde_json::json!(["--session", "--ticket", "#14"])
-    );
+    assert_eq!(config["args"], serde_json::json!(["--session"]));
     assert!(
         project_dir
             .join(".runa/workspace/work-unit/work-unit-14-cold-start.json")
@@ -1218,9 +1011,9 @@ fi
 }
 
 #[test]
-fn go_ticket_invalid_reference_is_usage_error_without_agent() {
-    // No `[agent].command` is configured. An invalid reference must still report
-    // a usage error (2), not a missing-agent config failure (6).
+fn go_ticket_flag_is_rejected_without_agent() {
+    // No `[agent].command` is configured. The retired flag must still report a
+    // usage error (2), not a missing-agent config failure (6).
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_entry_project(dir.path());
 
@@ -1235,7 +1028,7 @@ fn go_ticket_invalid_reference_is_usage_error_without_agent() {
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("not a recognized forge ticket reference"),
+        stderr.contains("unexpected argument '--ticket'"),
         "stderr: {stderr}"
     );
 }
@@ -1257,7 +1050,7 @@ fn go_without_selector_reaches_unscoped_evaluation() {
 }
 
 #[test]
-fn go_ticket_conflicts_with_work_unit() {
+fn go_ticket_flag_is_not_hidden_work_unit_selector() {
     let output = runa_bin()
         .arg("go")
         .arg("--ticket")
@@ -1267,4 +1060,9 @@ fn go_ticket_conflicts_with_work_unit() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unexpected argument '--ticket'"),
+        "stderr: {stderr}"
+    );
 }

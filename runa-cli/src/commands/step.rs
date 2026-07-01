@@ -1234,38 +1234,6 @@ pub(crate) fn build_session_unscoped_mcp_config(
     }
 }
 
-pub(crate) fn build_session_ticket_mcp_config(
-    mcp_command: &str,
-    working_dir: &Path,
-    config_path: &Path,
-    ticket: &str,
-    runtime_env: &BTreeMap<String, String>,
-) -> McpServerConfig {
-    let working_dir = absolutize_path(working_dir, working_dir);
-    let config_path = absolutize_path(config_path, &working_dir);
-    let mut env = BTreeMap::new();
-    env.insert(
-        "RUNA_CONFIG".to_string(),
-        config_path.to_string_lossy().into_owned(),
-    );
-    env.insert(
-        "RUNA_WORKING_DIR".to_string(),
-        working_dir.to_string_lossy().into_owned(),
-    );
-    env.extend(libagent::transcript::transcript_env());
-    env.extend(runtime_env.clone());
-
-    McpServerConfig {
-        command: normalize_mcp_command(mcp_command, &working_dir),
-        args: vec![
-            "--session".to_string(),
-            "--ticket".to_string(),
-            ticket.to_string(),
-        ],
-        env,
-    }
-}
-
 fn normalize_mcp_command(command: &str, working_dir: &Path) -> String {
     let command_path = Path::new(command);
     if command_path.is_absolute() {

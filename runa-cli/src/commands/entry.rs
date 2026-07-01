@@ -1,4 +1,4 @@
-//! Cold-start ticket entry wiring shared by `go` and `run`.
+//! Cold-start seed-target entry wiring shared by `go` and `run`.
 //!
 //! These helpers parse a forge ticket reference, resolve it against recorded
 //! work-units, discover the methodology's acquisition surface, and synthesize
@@ -8,9 +8,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use libagent::{
-    Config, ProtocolDeclaration, ResolvedForgeIdentity, ScanFindings, ScanResult, TicketRef,
-};
+use libagent::{Config, ProtocolDeclaration, ScanFindings, ScanResult, TicketRef};
 
 use crate::commands::CommandError;
 use crate::commands::step::{PlannedEntry, StepError, resolved_runtime_env};
@@ -41,22 +39,11 @@ pub(crate) fn partially_scanned_set(scan_result: &ScanResult) -> HashSet<String>
         .collect()
 }
 
-/// Parse and resolve a ticket reference against the project's forge deployment.
-pub(crate) fn resolve_reference(
-    loaded: &LoadedProject,
-    raw: &str,
-) -> Result<(TicketRef, ResolvedForgeIdentity), StepError> {
-    let identity = libagent::resolve_forge_identity(&loaded.config.forge);
-    let ticket =
-        libagent::resolve_ticket_reference(raw, &identity).map_err(StepError::TicketReference)?;
-    Ok((ticket, identity))
-}
-
 /// Resolve the reference to an already-recorded work-unit (re-entry), or `None`
 /// when the work-unit does not exist yet (cold start).
 pub(crate) fn resolve_existing(
     loaded: &LoadedProject,
-    identity: &ResolvedForgeIdentity,
+    identity: &libagent::ResolvedForgeIdentity,
     ticket: &TicketRef,
 ) -> Result<Option<String>, StepError> {
     libagent::resolve_promise(&loaded.store, identity, ticket)
@@ -79,7 +66,7 @@ pub(crate) fn promised_scope_token(ticket: &TicketRef) -> String {
     format!("work-unit-{}", ticket.number)
 }
 
-/// Build the synthesized acquisition planned entry for a cold ticket entry.
+/// Build the synthesized acquisition planned entry for a cold seed-target entry.
 ///
 /// The entry's trigger is the ticket reference; its context carries the
 /// reference (and nothing of the ticket's content) plus the acquisition
