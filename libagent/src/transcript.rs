@@ -412,6 +412,9 @@ mod tests {
         transcript_env_from_settings,
     };
     use crate::project::{ForgeConfig, TranscriptConfig};
+    use crate::scoped_identity::{
+        RUNA_FORGE_NAME, RUNA_FORGE_OWNER, RUNA_FORGE_TRACKER_ID, RUNA_FORGE_TYPE,
+    };
     use crate::test_helpers::EnvGuard;
     use serde_json::json;
     use std::path::PathBuf;
@@ -443,6 +446,10 @@ mod tests {
             REDACT_ENV_ENV,
             DEPLOYMENT_ENV,
             RUN_ID_ENV,
+            RUNA_FORGE_TYPE,
+            RUNA_FORGE_OWNER,
+            RUNA_FORGE_NAME,
+            RUNA_FORGE_TRACKER_ID,
         ]);
         let temp = tempfile::tempdir().unwrap();
         let working_dir = temp.path().join("project");
@@ -676,6 +683,10 @@ mod tests {
             REDACT_ENV_ENV,
             DEPLOYMENT_ENV,
             RUN_ID_ENV,
+            RUNA_FORGE_TYPE,
+            RUNA_FORGE_OWNER,
+            RUNA_FORGE_NAME,
+            RUNA_FORGE_TRACKER_ID,
         ]);
         let temp = tempfile::tempdir().unwrap();
         let settings = resolve_transcript_settings_with_forge(

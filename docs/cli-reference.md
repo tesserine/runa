@@ -335,14 +335,20 @@ Without `--dry-run`, requires a Linux host plus an effective agent command. `run
 ### `runa go`
 
 ```bash
-runa go (--work-unit <ID> | --ticket <REF>) [--config <PATH>]
+runa go [--work-unit <ID> | --ticket <REF>] [--config <PATH>]
 ```
 
-Advances one scoped interactive session tick. `go` evaluates the delegated work
-unit, launches the configured agent with a `runa-mcp --session --work-unit
-<ID>` MCP config, and sends only a generic one-tick instruction on stdin. The
-agent retrieves the current protocol context through `next-protocol-context`,
-records outputs through the current output tools, calls `advance`, and stops.
+Advances one interactive session tick. With no selector, `go` evaluates
+unscoped protocols and launches the configured agent with a `runa-mcp --session`
+MCP config. With `--work-unit <ID>`, it evaluates the delegated scoped work unit
+and launches `runa-mcp --session --work-unit <ID>`. In both cases, `go` sends
+only a generic one-tick instruction on stdin. The agent retrieves the current
+protocol context through `next-protocol-context`, records outputs through the
+current output tools, calls `advance`, and stops.
+
+With no selector, the session has no `work_unit` in context and performs no
+forge or ticket resolution. It selects the first READY unscoped protocol, such
+as a survey step activated by an existing prose intent.
 
 With `--ticket <REF>` (mutually exclusive with `--work-unit`; same reference
 grammar as `runa run --ticket`), `go` opens a cold-start session. When the
@@ -356,7 +362,7 @@ ready. Mode changes only who issues the verb at what cadence, never its meaning.
 commands. Those remain the session surface mechanics inside `runa-mcp`; the
 operator-facing command is the single tick.
 
-If no scoped protocol is READY, `go` prints `No READY protocols.` and exits
+If no in-scope protocol is READY, `go` prints `No READY protocols.` and exits
 with the same no-work distinction as `step`: `3` when work remains blocked or
 waiting, `4` when no actionable work remains because outputs are current. If the
 agent exits successfully but does not advance the selected session step, `go`
@@ -365,7 +371,7 @@ fails with exit `5`.
 **Flags:**
 
 - `--work-unit <ID>` — Advance only scoped protocols for the delegated work unit
-  `<ID>`. Required unless `--ticket` is given.
+  `<ID>`.
 - `--ticket <REF>` — Open the tick from a forge ticket reference (cold-start
   entry). Mutually exclusive with `--work-unit`.
 
@@ -386,12 +392,12 @@ fails with exit `5`.
 
 ```bash
 runa-mcp --protocol <name> [--work-unit <name>]
-runa-mcp --session (--work-unit <name> | --ticket <ref>)
+runa-mcp --session [--work-unit <name> | --ticket <ref>]
 ```
 
 In fixed-protocol mode, the server loads the project, scans the workspace, resolves the named protocol from the manifest, validates that its declared scope matches the presence or absence of `--work-unit`, validates canonical `work-unit` identity for scoped sessions, validates that its required output types can be served as MCP tools, and serves that protocol's output tools over stdio. Each output artifact type (`produces`, required output choice members, and viable `may_produce`) becomes one MCP tool. The tool input schema is the artifact type's JSON Schema with the `work_unit` field removed — the server injects `work_unit` automatically from the `--work-unit` argument. If a configured forge connector is available, the server also appends its canonical forge tools with self-contained input and output schemas.
 
-In session mode, the server serves one scoped work-unit session in a single MCP connection, opened either with `--work-unit <name>` (a recorded work-unit) or `--ticket <ref>` (a forge ticket reference for cold-start entry). With `--ticket`, the session begins in a promised scope serving the methodology's acquisition surface; once the agent materializes the `work-unit`, `advance` binds the session to it and the tool list flips to the bound step's tools. The runtime resolves the reference to an identity only and performs no forge read; provider reads and writes happen only through explicitly invoked connector tools. The tool list always includes the driver tools `readiness`, `next-protocol-context`, and `advance`, plus the output tools for the current ready step, plus any configured forge connector tools. A current step is refused if any declared output type for that step would collide with one of those reserved driver tool names; connector/artifact collisions are also rejected during tool-list composition. Every driver verb rescans and revalidates the scoped work-unit identity before reporting, serving, or advancing. `readiness` reports the same status classification as `runa state` for the session scope, and selects the first non-exhausted ready step when the session has no current step. `next-protocol-context` verifies that the current step still satisfies readiness authority for its trigger and preconditions, and returns both the structured context and rendered prompt for the current step without advancing it. `advance` verifies that the current step still satisfies readiness authority for its trigger and preconditions, enforces postconditions for the current step, uses staged execution metadata to select and validate the next ready step, and only then persists that metadata and advances the session. Any driver verb that changes the current step emits `notifications/tools/list_changed` so caching MCP clients can rediscover the current step's output tools. Output tools validate and write artifacts exactly as in fixed-protocol mode; recording an output does not advance the session.
+In session mode, the server serves one session in a single MCP connection, opened unscoped with no selector, scoped with `--work-unit <name>` (a recorded work-unit), or as cold-start entry with `--ticket <ref>` (a forge ticket reference). An unscoped session evaluates the ordinary unscoped readiness path and injects no work-unit. With `--ticket`, the session begins in a promised scope serving the methodology's acquisition surface; once the agent materializes the `work-unit`, `advance` binds the session to it and the tool list flips to the bound step's tools. The runtime resolves the reference to an identity only and performs no forge read; provider reads and writes happen only through explicitly invoked connector tools. The tool list always includes the driver tools `readiness`, `next-protocol-context`, and `advance`, plus the output tools for the current ready step, plus any configured forge connector tools. A current step is refused if any declared output type for that step would collide with one of those reserved driver tool names; connector/artifact collisions are also rejected during tool-list composition. Every driver verb rescans and revalidates the scoped work-unit identity before reporting, serving, or advancing. `readiness` reports the same status classification as `runa state` for the session scope, and selects the first non-exhausted ready step when the session has no current step. `next-protocol-context` verifies that the current step still satisfies readiness authority for its trigger and preconditions, and returns both the structured context and rendered prompt for the current step without advancing it. `advance` verifies that the current step still satisfies readiness authority for its trigger and preconditions, enforces postconditions for the current step, uses staged execution metadata to select and validate the next ready step, and only then persists that metadata and advances the session. Any driver verb that changes the current step emits `notifications/tools/list_changed` so caching MCP clients can rediscover the current step's output tools. Output tools validate and write artifacts exactly as in fixed-protocol mode; recording an output does not advance the session.
 
 `runa step` currently continues to use fixed-protocol mode. `runa go` uses
 session mode. Neither command spawns `runa-mcp` directly. Before launching the

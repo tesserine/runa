@@ -964,9 +964,19 @@ fn go_ticket_invalid_reference_is_usage_error_without_agent() {
 }
 
 #[test]
-fn go_requires_work_unit_or_ticket() {
-    let output = runa_bin().arg("go").output().unwrap();
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
+fn go_without_selector_reaches_unscoped_evaluation() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_entry_project(dir.path());
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("go")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No READY protocols."), "stdout: {stdout}");
 }
 
 #[test]

@@ -92,6 +92,41 @@ fi
     );
 }
 
+fn drive_unscoped_session_mcp_once(project_dir: &Path, runa_mcp_path: &Path, log_path: &Path) {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(
+            r#"
+set -eu
+{
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"go-unscoped-parity-test","version":"1.0.0"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"next-protocol-context","arguments":{}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"requirements","arguments":{"instance_id":"requirements-1","scope":"prose entry survey","functional_requirements":["advance survey through unscoped session"]}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"advance","arguments":{}}}'
+    sleep 1
+} | "$1" --session > "$2"
+if grep -q '"error"' "$2"; then
+    cat "$2" >&2
+    exit 23
+fi
+"#,
+        )
+        .arg("drive-unscoped-session")
+        .arg(runa_mcp_path)
+        .arg(log_path)
+        .current_dir(project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "direct unscoped session MCP tick failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn write_go_session_agent(agent_path: &Path) {
     write_executable(
         agent_path,
@@ -106,6 +141,28 @@ cat > "$1"
     printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"advance","arguments":{}}}'
     sleep 1
 } | "$2" --session --work-unit work-unit-168 > "$3"
+if grep -q '"error"' "$3"; then
+    cat "$3" >&2
+    exit 23
+fi
+"#,
+    );
+}
+
+fn write_go_unscoped_session_agent(agent_path: &Path) {
+    write_executable(
+        agent_path,
+        r#"#!/bin/sh
+set -eu
+cat > "$1"
+{
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"go-unscoped-test","version":"1.0.0"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"next-protocol-context","arguments":{}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"requirements","arguments":{"instance_id":"requirements-1","scope":"prose entry survey","functional_requirements":["advance survey through unscoped session"]}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"advance","arguments":{}}}'
+    sleep 1
+} | "$2" --session > "$3"
 if grep -q '"error"' "$3"; then
     cat "$3" >&2
     exit 23
@@ -136,6 +193,51 @@ fn setup_ready_scoped_project(dir: &Path) -> PathBuf {
     project_dir
 }
 
+fn setup_ready_unscoped_project(dir: &Path) -> PathBuf {
+    let manifest_path = common::write_methodology(
+        dir,
+        r#"
+name = "groundwork"
+
+[[artifact_types]]
+name = "intent"
+
+[[artifact_types]]
+name = "requirements"
+
+[[protocols]]
+name = "survey"
+requires = ["intent"]
+produces = ["requirements"]
+trigger = { type = "on_artifact", name = "intent" }
+"#,
+        &[
+            (
+                "intent",
+                r#"{"type":"object","required":["statement","source"],"properties":{"statement":{"type":"string"},"source":{"type":"string"}}}"#,
+            ),
+            (
+                "requirements",
+                r#"{"type":"object","required":["scope","functional_requirements"],"properties":{"scope":{"type":"string"},"functional_requirements":{"type":"array","items":{"type":"string"}}}}"#,
+            ),
+        ],
+        &["survey"],
+    );
+    let project_dir = dir.join("project");
+    fs::create_dir(&project_dir).unwrap();
+    init_project(&project_dir, &manifest_path);
+
+    let workspace = project_dir.join(".runa/workspace");
+    fs::create_dir_all(workspace.join("intent")).unwrap();
+    fs::write(
+        workspace.join("intent/intent-1.json"),
+        r#"{"statement":"Assess prose route","source":"operator"}"#,
+    )
+    .unwrap();
+
+    project_dir
+}
+
 fn scoped_state_json(project_dir: &Path) -> serde_json::Value {
     let output = runa_bin()
         .arg("state")
@@ -158,9 +260,33 @@ fn scoped_state_json(project_dir: &Path) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+fn unscoped_state_json(project_dir: &Path) -> serde_json::Value {
+    let output = runa_bin()
+        .arg("state")
+        .arg("--json")
+        .current_dir(project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "state failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
 fn workspace_claim_json(project_dir: &Path) -> serde_json::Value {
     serde_json::from_str(
         &fs::read_to_string(project_dir.join(".runa/workspace/claim/claim-1.json")).unwrap(),
+    )
+    .unwrap()
+}
+
+fn workspace_requirements_json(project_dir: &Path) -> serde_json::Value {
+    serde_json::from_str(
+        &fs::read_to_string(project_dir.join(".runa/workspace/requirements/requirements-1.json"))
+            .unwrap(),
     )
     .unwrap()
 }
@@ -273,6 +399,105 @@ fi
 }
 
 #[test]
+fn mcp_session_without_selector_advances_unscoped_survey() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_ready_unscoped_project(dir.path());
+    let runa_mcp_path = runa_mcp_bin_path();
+    let mcp_log_path = dir.path().join("mcp.log");
+
+    drive_unscoped_session_mcp_once(&project_dir, &runa_mcp_path, &mcp_log_path);
+
+    let transcript = fs::read_to_string(&mcp_log_path).unwrap();
+    assert!(
+        transcript.contains("\"protocol\":\"survey\"")
+            || transcript.contains("\\\"protocol\\\": \\\"survey\\\""),
+        "{transcript}"
+    );
+    assert!(
+        transcript.contains("\"work_unit\":null") || transcript.contains("\\\"work_unit\\\": null"),
+        "{transcript}"
+    );
+    assert_eq!(
+        workspace_requirements_json(&project_dir)["functional_requirements"],
+        serde_json::json!(["advance survey through unscoped session"])
+    );
+    let records = execution_records_json(&project_dir);
+    assert_eq!(records["records"][0]["protocol"], "survey");
+    assert!(records["records"][0]["work_unit"].is_null());
+}
+
+#[test]
+fn go_without_selector_launches_unscoped_session_mcp_config_for_one_tick() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_ready_unscoped_project(dir.path());
+    let agent_path = dir.path().join("agent.sh");
+    let prompt_path = dir.path().join("prompt.txt");
+    let config_path = dir.path().join("mcp-config.json");
+    let mcp_log_path = dir.path().join("mcp.log");
+    write_executable(
+        &agent_path,
+        r#"#!/bin/sh
+set -eu
+cat > "$1"
+printf '%s' "$RUNA_MCP_CONFIG" > "$2"
+{
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"go-unscoped-test","version":"1.0.0"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"next-protocol-context","arguments":{}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"requirements","arguments":{"instance_id":"requirements-1","scope":"prose entry survey","functional_requirements":["advance survey through unscoped session"]}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"advance","arguments":{}}}'
+    sleep 1
+} | "$3" --session > "$4"
+if grep -q '"error"' "$4"; then
+    cat "$4" >&2
+    exit 23
+fi
+"#,
+    );
+    let runa_mcp_path = runa_mcp_bin_path();
+    append_agent_command_config(
+        &project_dir,
+        &[
+            &agent_path,
+            &prompt_path,
+            &config_path,
+            &runa_mcp_path,
+            &mcp_log_path,
+        ],
+    );
+
+    let output = runa_bin()
+        .arg("go")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}\nmcp log: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+        fs::read_to_string(&mcp_log_path).unwrap_or_else(|_| "<missing>".to_string())
+    );
+
+    let config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
+    assert_eq!(config["args"], serde_json::json!(["--session"]));
+    assert!(config["command"].as_str().unwrap().contains("runa-mcp"));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Advanced one session step (unscoped)"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        project_dir
+            .join(".runa/workspace/requirements/requirements-1.json")
+            .is_file()
+    );
+}
+
+#[test]
 fn go_fails_when_agent_exits_without_advancing_the_session_step() {
     let dir = tempfile::tempdir().unwrap();
     let project_dir = setup_ready_scoped_project(dir.path());
@@ -301,6 +526,60 @@ fn go_fails_when_agent_exits_without_advancing_the_session_step() {
     assert!(
         stderr.contains("did not advance"),
         "stderr should explain the missing advance: {stderr}"
+    );
+}
+
+#[test]
+fn go_matches_direct_session_surface_for_unscoped_prose_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let go_dir = dir.path().join("go");
+    let direct_dir = dir.path().join("direct");
+    fs::create_dir(&go_dir).unwrap();
+    fs::create_dir(&direct_dir).unwrap();
+    let go_project_dir = setup_ready_unscoped_project(&go_dir);
+    let direct_project_dir = setup_ready_unscoped_project(&direct_dir);
+    let runa_mcp_path = runa_mcp_bin_path();
+
+    let agent_path = dir.path().join("agent.sh");
+    let prompt_path = dir.path().join("prompt.txt");
+    let go_log_path = dir.path().join("go-mcp.log");
+    write_go_unscoped_session_agent(&agent_path);
+    append_agent_command_config(
+        &go_project_dir,
+        &[&agent_path, &prompt_path, &runa_mcp_path, &go_log_path],
+    );
+
+    let go_output = runa_bin()
+        .arg("go")
+        .current_dir(&go_project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        go_output.status.success(),
+        "go failed\nstdout: {}\nstderr: {}\nmcp log: {}",
+        String::from_utf8_lossy(&go_output.stdout),
+        String::from_utf8_lossy(&go_output.stderr),
+        fs::read_to_string(&go_log_path).unwrap_or_else(|_| "<missing>".to_string())
+    );
+
+    drive_unscoped_session_mcp_once(
+        &direct_project_dir,
+        &runa_mcp_path,
+        &dir.path().join("direct-mcp.log"),
+    );
+
+    assert_eq!(
+        workspace_requirements_json(&go_project_dir),
+        workspace_requirements_json(&direct_project_dir)
+    );
+    assert_eq!(
+        execution_records_json(&go_project_dir),
+        execution_records_json(&direct_project_dir)
+    );
+    assert_eq!(
+        unscoped_state_json(&go_project_dir),
+        unscoped_state_json(&direct_project_dir)
     );
 }
 

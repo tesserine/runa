@@ -126,6 +126,9 @@ Semantic Versioning.
   alongside the current step's output artifact tools.
 - `runa go --work-unit <ID>` now advances one interactive session tick by
   launching the configured agent against the unified session MCP surface.
+- `runa go` and `runa-mcp --session` now support no selector, advancing the
+  ordinary unscoped planning path through the same session surface without a
+  work-unit, ticket reference, or forge lookup.
 
 ### Fixed
 

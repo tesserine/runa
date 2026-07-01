@@ -134,6 +134,10 @@ reads through its own mechanics. During entry, runa exports `RUNA_ENTRY_TICKET`
 (the ticket number) alongside the `RUNA_FORGE_*` atoms so those mechanics can
 resolve the ticket.
 
+`runa go` may also be opened with no selector. That is not ticket entry: it
+evaluates the ordinary unscoped protocol set, injects no `work_unit`, and
+performs no forge reference parsing or promise binding.
+
 The acquisition surface runa serves is the single unscoped protocol whose
 declared outputs (`produces`, `may_produce`, or required output choice members)
 include the `work-unit` artifact type. A manifest with zero or more than one
