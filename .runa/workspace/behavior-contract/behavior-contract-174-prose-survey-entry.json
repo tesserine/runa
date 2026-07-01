@@ -1,0 +1,42 @@
+{
+  "behavior_form": "scenario",
+  "scenarios": [
+    {
+      "criterion": "On a tick against a project store carrying a prose intent that resolves to no referent, go advances a READY unscoped survey protocol and produces a validated requirements artifact through the methodology output tool, with no work-unit id supplied.",
+      "given": "A runa project has a valid intent artifact with a prose statement, no resolvable target/referent, no recorded work-unit for that intent, and survey is READY in EvaluationScope::Unscoped.",
+      "name": "go_advances_survey_for_prose_intent_without_a_work_unit",
+      "then": "The completed step is survey with work_unit null, a schema-valid requirements artifact is written through the requirements MCP output tool, and the session advances using the same postcondition-gated artifact recording path as other go ticks.",
+      "when": "The operator runs the single-tick go entry with no work-unit or ticket selector and the agent completes the served current step."
+    },
+    {
+      "criterion": "The prose-entry tick reaches the same validated cascade (assess -> select -> context -> output recording -> postcondition-gated commit) as scoped and acquisition ticks; the route is derived from assessed state at the entry boundary, not a new verb or third mode.",
+      "given": "A runa-mcp session is opened without --work-unit and without --ticket for a project where unscoped survey is the next ready protocol from the existing readiness evaluator.",
+      "name": "no_selector_session_serves_the_unscoped_survey_step",
+      "then": "The served context names protocol survey with work_unit null, the advertised output tool set is derived from survey, and advance enforces survey preconditions and postconditions before recording completion.",
+      "when": "A client calls next-protocol-context, produces the required output, and calls advance."
+    },
+    {
+      "criterion": "A parity check: the prose-entry interactive tick and the autonomous path produce identical recorded artifacts / execution metadata for the same survey step.",
+      "given": "Two fresh equivalent workspaces contain the same prose intent and use the same deterministic agent behavior to complete survey.",
+      "name": "interactive_and_autonomous_survey_ticks_record_equivalent_completion",
+      "then": "The requirements artifact payloads and the successful execution record for (survey, None) match in the behaviorally relevant fields: input modes, input content hashes, output protocol identity, and work_unit absence.",
+      "when": "One workspace completes survey through the prose-entry interactive go tick and the other through the existing autonomous unscoped execution path."
+    },
+    {
+      "criterion": "The go --work-unit and go --ticket contracts and their exit-code semantics are unchanged.",
+      "given": "Existing fixtures cover a recorded scoped work-unit, a cold-start ticket entry, and their blocked/error cases.",
+      "name": "existing_bound_and_ticket_go_entries_keep_their_contracts",
+      "then": "The selected protocols, work_unit values, user-visible errors, and exit outcomes for --work-unit and --ticket are unchanged; the new prose path is selected only when no selector is supplied.",
+      "when": "Those fixtures run after adding the prose-entry path."
+    },
+    {
+      "criterion": "No new SessionScope variant is introduced: the prose-entry session evaluates through the existing EvaluationScope::Unscoped path.",
+      "given": "The implementation diff is inspected alongside libagent session readiness, context, and advance authority.",
+      "name": "prose_entry_reuses_unscoped_evaluation_without_a_new_session_scope_variant",
+      "then": "SessionScope still has only Bound and Promised variants, prose entry uses the existing unscoped evaluation mapping and shared select/context/advance code, and no parallel readiness, context-delivery, or transition-authority implementation is added.",
+      "when": "The prose-entry path is traced from CLI go through runa-mcp session opening to SessionState readiness and advance."
+    }
+  ],
+  "title": "runa go drives prose intent into unscoped survey",
+  "work_unit": "work-unit-c39f7efff58a77480079647102aabfd0ec2657898da7b0792ef5872e6a41e35b"
+}
