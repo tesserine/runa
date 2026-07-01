@@ -28,8 +28,10 @@
 //! - **Ticket-promised scope admits exactly one step.** A session opened from a
 //!   ticket reference (`SessionScope::Promised { ticket: Some(..) }`) can only
 //!   run the methodology's acquisition surface until the work-unit materializes
-//!   and the scope binds. A session opened with no selector uses the same
-//!   unscoped evaluation path without ticket promise binding.
+//!   and the scope binds. A session opened with no selector and exactly one
+//!   seed `intent.target` opens the same promised ticket-entry scope as
+//!   `--ticket`; a no-selector session with no seed target remains on the unscoped
+//!   evaluation path without ticket promise binding.
 //!
 //! [`docs/session-surface-contract.md`]: https://github.com/tesserine/runa/blob/main/docs/session-surface-contract.md
 
