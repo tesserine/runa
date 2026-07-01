@@ -139,7 +139,12 @@ modes: the operator still issues the single outer verb, and mode remains which
 cadence issues that verb (ADR-0015). Autonomous and interactive clients open
 the same surface with the same meaning.
 
-A promised scope is opened with `--ticket <REF>`.
+A promised scope is opened either with `--ticket <REF>` or by a no-selector
+session whose assessed state contains exactly one seed `intent.target`. In the
+seed-target case, the target is read from assessed state and resolved through
+the same promised/ticket route as the flag; per ADR-0001 D1, scope is derived
+at the entry boundary, and the seed-target route obtains its reference from
+assessed state rather than a flag.
 
 While the scope is promised, the select stage admits exactly one step: the
 methodology's acquisition surface — the single unscoped protocol that produces
