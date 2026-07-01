@@ -18,7 +18,7 @@ An artifact type is a named category of work product with a machine-checkable co
 
 An artifact type declaration:
 
-- **name** — unique identifier within the methodology (e.g., `constraints`, `behavior-contract`, `test-evidence`)
+- **name** — unique identifier within the methodology (e.g., `constraints`, `contract`, `test-evidence`)
 - Artifact type names must be safe single path components because runa derives schema paths from them. Names must not contain `/`, `\`, or `..`.
 - **schema** — JSON Schema defining what a valid instance contains. This schema is the artifact's contract. There is no separate contract mechanism. The schema is not declared in the manifest — runa derives its location from the methodology layout convention (see below).
 
