@@ -489,9 +489,11 @@ pub fn run(
 
     if work_unit.is_none() {
         let identity = libagent::resolve_forge_identity(&loaded.config.forge);
-        if let Some(seed) = libagent::resolve_seed_ticket_reference(&loaded.store, &identity)
-            .map_err(StepError::TicketReference)
-            .map_err(RunError::from)?
+        let partially_scanned = entry::partially_scanned_set(&scan_result);
+        if let Some(seed) =
+            libagent::resolve_seed_ticket_reference(&loaded.store, &identity, &partially_scanned)
+                .map_err(StepError::TicketReference)
+                .map_err(RunError::from)?
         {
             return run_resolved_entry(
                 working_dir,

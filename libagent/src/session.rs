@@ -309,8 +309,11 @@ impl SessionState {
         F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
     {
         if work_unit.is_none() {
-            crate::scan(&loaded.workspace_dir, &mut loaded.store)?;
-            if let Some(seed) = crate::resolve_seed_ticket_reference(&loaded.store, &identity)? {
+            let scan_result = crate::scan(&loaded.workspace_dir, &mut loaded.store)?;
+            let partially_scanned = partially_scanned_set(&scan_result);
+            if let Some(seed) =
+                crate::resolve_seed_ticket_reference(&loaded.store, &identity, &partially_scanned)?
+            {
                 return Self::open_entry_loaded(
                     working_dir,
                     loaded,

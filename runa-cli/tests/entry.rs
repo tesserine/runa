@@ -168,10 +168,14 @@ fn setup_entry_project(dir: &Path) -> PathBuf {
 }
 
 fn write_intent_target(project_dir: &Path, target: &str) {
+    write_intent_target_instance(project_dir, "intent-1", target);
+}
+
+fn write_intent_target_instance(project_dir: &Path, instance_id: &str, target: &str) {
     let intent_dir = project_dir.join(".runa/workspace/intent");
     fs::create_dir_all(&intent_dir).unwrap();
     fs::write(
-        intent_dir.join("intent-1.json"),
+        intent_dir.join(format!("{instance_id}.json")),
         format!(r#"{{"statement":"Start ticket work","source":"operator","target":"{target}"}}"#),
     )
     .unwrap();
@@ -381,6 +385,50 @@ fn run_intent_target_dry_run_projects_same_entry_as_ticket() {
     assert_eq!(plan[1]["protocol"], "take");
     assert_eq!(plan[1]["projection"], "projected");
     assert_eq!(plan[1]["work_unit"], "work-unit-14");
+}
+
+#[test]
+fn run_intent_target_partial_scan_blocks_instead_of_routing_visible_sibling() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_entry_project(dir.path());
+    write_intent_target_instance(&project_dir, "intent-14", "#14");
+    write_intent_target_instance(&project_dir, "intent-99", "#99");
+
+    let scan = clear_forge_env(&mut runa_bin())
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        scan.status.success(),
+        "scan stderr: {}",
+        String::from_utf8_lossy(&scan.stderr)
+    );
+    fs::set_permissions(
+        project_dir.join(".runa/workspace/intent/intent-14.json"),
+        fs::Permissions::from_mode(0o000),
+    )
+    .unwrap();
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "must not emit a routed JSON plan: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("entry input artifact type(s) intent were only partially scanned"),
+        "stderr: {stderr}"
+    );
 }
 
 #[test]

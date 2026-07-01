@@ -89,6 +89,8 @@ pub enum EntryError {
     UnsupportedForge { forge_type: String },
     /// More than one valid unscoped `intent` artifact carries a target.
     AmbiguousSeedTargets { candidates: Vec<String> },
+    /// Seed-target routing cannot prove intent state because scan was incomplete.
+    ScanIncomplete { types: Vec<String> },
     /// Acquisition completed its contract but materialized no matching work-unit.
     Unresolved { reference: String },
 }
@@ -139,6 +141,11 @@ impl fmt::Display for EntryError {
                 "more than one valid unscoped '{INTENT_ARTIFACT_TYPE}' artifact carries a target ({}); entry requires exactly one seed target",
                 candidates.join(", ")
             ),
+            EntryError::ScanIncomplete { types } => write!(
+                f,
+                "entry input artifact type(s) {} were only partially scanned",
+                types.join(", ")
+            ),
             EntryError::Unresolved { reference } => write!(
                 f,
                 "acquisition from ticket {reference} completed but produced no '{WORK_UNIT_ARTIFACT_TYPE}' matching the reference"
@@ -171,7 +178,14 @@ pub fn resolve_ticket_reference(
 pub fn resolve_seed_ticket_reference(
     store: &ArtifactStore,
     identity: &ResolvedForgeIdentity,
+    partially_scanned_types: &HashSet<String>,
 ) -> Result<Option<SeedTicketRef>, EntryError> {
+    if partially_scanned_types.contains(INTENT_ARTIFACT_TYPE) {
+        return Err(EntryError::ScanIncomplete {
+            types: vec![INTENT_ARTIFACT_TYPE.to_string()],
+        });
+    }
+
     let mut targets = Vec::new();
     for (instance_id, state) in store.instances_of(INTENT_ARTIFACT_TYPE, None) {
         if state.work_unit.is_some() || !matches!(state.status, crate::ValidationStatus::Valid) {
@@ -618,6 +632,36 @@ mod tests {
                 "expected '{raw}' to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn resolve_seed_ticket_reference_blocks_when_intent_type_partially_scanned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = crate::test_helpers::make_store(&tmp.path().join("store"), vec!["intent"]);
+        let visible = serde_json::json!({
+            "statement": "Visible seed",
+            "source": "operator",
+            "target": "#99"
+        });
+        let visible_path = tmp.path().join("intent-visible.json");
+        std::fs::write(&visible_path, visible.to_string()).unwrap();
+        store
+            .record_with_timestamp("intent", "visible", &visible_path, &visible, 1)
+            .unwrap();
+        // An unreadable sibling can hide another seed target. Routing to the
+        // visible target would prove only "one readable target", not one target.
+        store.mark_instance_scan_gap("intent", "hidden");
+
+        let partials = HashSet::from(["intent".to_string()]);
+
+        assert!(matches!(
+            resolve_seed_ticket_reference(
+                &store,
+                &github_identity("tesserine", "runa"),
+                &partials
+            ),
+            Err(EntryError::ScanIncomplete { types }) if types == vec!["intent".to_string()]
+        ));
     }
 
     fn acquisition_protocol(requires: &[&str]) -> ProtocolDeclaration {

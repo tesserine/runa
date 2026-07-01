@@ -76,8 +76,10 @@ fn run_unscoped(
 ) -> Result<StepOutcome, StepError> {
     let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
     let identity = libagent::resolve_forge_identity(&loaded.config.forge);
-    if let Some(seed) = libagent::resolve_seed_ticket_reference(&loaded.store, &identity)
-        .map_err(StepError::TicketReference)?
+    let partially_scanned = entry::partially_scanned_set(&scan_result);
+    if let Some(seed) =
+        libagent::resolve_seed_ticket_reference(&loaded.store, &identity, &partially_scanned)
+            .map_err(StepError::TicketReference)?
     {
         return run_ticket_resolved(
             working_dir,
