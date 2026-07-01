@@ -79,6 +79,11 @@ Semantic Versioning.
   indistinguishable. `runa run --ticket --dry-run` projects the entry cascade and
   emits a version `3` JSON envelope with a top-level `entry` object.
   `runa-mcp --session --ticket <ref>` serves the same entry session surface.
+- No-selector entry can now derive that same ticket-entry route from a valid
+  unscoped `intent.target`. `runa run`, `runa go`, and `runa-mcp --session`
+  resolve a single non-empty target through the existing ticket parser and
+  deployment checks; intents without a target keep the ordinary unscoped prose
+  route.
 
 ### Changed
 

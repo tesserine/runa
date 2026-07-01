@@ -212,7 +212,9 @@ impl StepError {
                 libagent::EntryError::InvalidReference { .. }
                 | libagent::EntryError::MissingDeploymentIdentity { .. }
                 | libagent::EntryError::DeploymentDisagreement { .. }
-                | libagent::EntryError::UnsupportedForge { .. } => ExitCode::UsageError,
+                | libagent::EntryError::UnsupportedForge { .. }
+                | libagent::EntryError::AmbiguousSeedTargets { .. } => ExitCode::UsageError,
+                libagent::EntryError::ScanIncomplete { .. } => ExitCode::Blocked,
                 libagent::EntryError::Unresolved { .. } => ExitCode::WorkFailed,
                 libagent::EntryError::NoAcquisitionSurface { .. }
                 | libagent::EntryError::AmbiguousAcquisitionSurface { .. } => {

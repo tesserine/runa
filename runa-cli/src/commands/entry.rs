@@ -26,14 +26,19 @@ pub(crate) fn acquisition_block_reason(
     acquisition: &ProtocolDeclaration,
     scan_result: &ScanResult,
 ) -> Option<String> {
-    let partially_scanned: HashSet<String> = scan_result
-        .partially_scanned_types
-        .iter()
-        .map(|partial| partial.artifact_type.clone())
-        .collect();
+    let partially_scanned = partially_scanned_set(scan_result);
     libagent::check_acquisition_admissible(acquisition, &loaded.store, &partially_scanned)
         .err()
         .map(|block| block.to_string())
+}
+
+/// The set of artifact type names that were only partially scanned.
+pub(crate) fn partially_scanned_set(scan_result: &ScanResult) -> HashSet<String> {
+    scan_result
+        .partially_scanned_types
+        .iter()
+        .map(|partial| partial.artifact_type.clone())
+        .collect()
 }
 
 /// Parse and resolve a ticket reference against the project's forge deployment.

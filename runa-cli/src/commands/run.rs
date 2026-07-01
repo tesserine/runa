@@ -466,80 +466,48 @@ pub fn run(
         return Err(RunError::from(StepError::JsonRequiresDryRun));
     }
 
-    let (mut loaded, scan_result) = super::load_and_scan(working_dir, config_override)
+    let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)
         .map_err(StepError::from)
         .map_err(RunError::from)?;
 
     if let Some(raw) = ticket {
         let (ticket_ref, identity) =
             entry::resolve_reference(&loaded, raw).map_err(RunError::from)?;
-
-        // Re-entry: the work-unit already exists — behave as `--work-unit <id>`.
-        if let Some(work_unit) =
-            entry::resolve_existing(&loaded, &identity, &ticket_ref).map_err(RunError::from)?
-        {
-            return run_with_scope(
-                working_dir,
-                config_override,
-                dry_run,
-                json_output,
-                loaded,
-                scan_result,
-                Some(work_unit),
-                false,
-                cli_agent_command_present,
-                cli_agent_command_argv,
-            );
-        }
-
-        // Cold: project the entry cascade, or execute acquisition then cascade.
-        if dry_run {
-            return run_ticket_dry_run(
-                &loaded,
-                working_dir,
-                config_override,
-                &scan_result,
-                &ticket_ref,
-                json_output,
-            );
-        }
-        // Entry substitutes only the trigger; the acquisition's preconditions
-        // and scan trust still gate. Block before launching the agent when unmet.
-        let acquisition = entry::acquisition_surface(&loaded).map_err(RunError::from)?;
-        if let Some(reason) = entry::acquisition_block_reason(&loaded, &acquisition, &scan_result) {
-            println!("Run outcome: {}", RunOutcome::QuiescentBlocked.label());
-            println!("{reason}");
-            return Ok(RunOutcome::QuiescentBlocked);
-        }
-        let agent_command = resolve_agent_command(
-            working_dir,
-            config_override,
-            cli_agent_command_present,
-            cli_agent_command_argv,
-        )?;
-        let (work_unit, scan_result) = acquire_ticket(
-            working_dir,
-            config_override,
-            &mut loaded,
-            &scan_result,
-            &ticket_ref,
-            &identity,
-            &agent_command,
-        )?;
-        // Acquisition already executed; carry that into the downstream outcome
-        // so a quiescent post-acquisition scope reports success, not nothing-ready.
-        return run_with_scope(
+        return run_resolved_entry(
             working_dir,
             config_override,
             dry_run,
             json_output,
             loaded,
             scan_result,
-            Some(work_unit),
-            true,
+            ticket_ref,
+            identity,
             cli_agent_command_present,
             cli_agent_command_argv,
         );
+    }
+
+    if work_unit.is_none() {
+        let identity = libagent::resolve_forge_identity(&loaded.config.forge);
+        let partially_scanned = entry::partially_scanned_set(&scan_result);
+        if let Some(seed) =
+            libagent::resolve_seed_ticket_reference(&loaded.store, &identity, &partially_scanned)
+                .map_err(StepError::TicketReference)
+                .map_err(RunError::from)?
+        {
+            return run_resolved_entry(
+                working_dir,
+                config_override,
+                dry_run,
+                json_output,
+                loaded,
+                scan_result,
+                seed.ticket,
+                identity,
+                cli_agent_command_present,
+                cli_agent_command_argv,
+            );
+        }
     }
 
     run_with_scope(
@@ -551,6 +519,88 @@ pub fn run(
         scan_result,
         work_unit.map(str::to_owned),
         false,
+        cli_agent_command_present,
+        cli_agent_command_argv,
+    )
+}
+
+/// Execute or project an already-resolved ticket entry route.
+#[allow(clippy::too_many_arguments)]
+fn run_resolved_entry(
+    working_dir: &Path,
+    config_override: Option<&Path>,
+    dry_run: bool,
+    json_output: bool,
+    mut loaded: crate::project::LoadedProject,
+    scan_result: libagent::ScanResult,
+    ticket_ref: libagent::TicketRef,
+    identity: libagent::ResolvedForgeIdentity,
+    cli_agent_command_present: bool,
+    cli_agent_command_argv: &[String],
+) -> Result<RunOutcome, RunError> {
+    // Re-entry: the work-unit already exists — behave as `--work-unit <id>`.
+    if let Some(work_unit) =
+        entry::resolve_existing(&loaded, &identity, &ticket_ref).map_err(RunError::from)?
+    {
+        return run_with_scope(
+            working_dir,
+            config_override,
+            dry_run,
+            json_output,
+            loaded,
+            scan_result,
+            Some(work_unit),
+            false,
+            cli_agent_command_present,
+            cli_agent_command_argv,
+        );
+    }
+
+    // Cold: project the entry cascade, or execute acquisition then cascade.
+    if dry_run {
+        return run_ticket_dry_run(
+            &loaded,
+            working_dir,
+            config_override,
+            &scan_result,
+            &ticket_ref,
+            json_output,
+        );
+    }
+    // Entry substitutes only the trigger; the acquisition's preconditions
+    // and scan trust still gate. Block before launching the agent when unmet.
+    let acquisition = entry::acquisition_surface(&loaded).map_err(RunError::from)?;
+    if let Some(reason) = entry::acquisition_block_reason(&loaded, &acquisition, &scan_result) {
+        println!("Run outcome: {}", RunOutcome::QuiescentBlocked.label());
+        println!("{reason}");
+        return Ok(RunOutcome::QuiescentBlocked);
+    }
+    let agent_command = resolve_agent_command(
+        working_dir,
+        config_override,
+        cli_agent_command_present,
+        cli_agent_command_argv,
+    )?;
+    let (work_unit, scan_result) = acquire_ticket(
+        working_dir,
+        config_override,
+        &mut loaded,
+        &scan_result,
+        &ticket_ref,
+        &identity,
+        &agent_command,
+    )?;
+    // Acquisition already executed; carry that into the downstream outcome
+    // so a quiescent post-acquisition scope reports success, not nothing-ready.
+    run_with_scope(
+        working_dir,
+        config_override,
+        dry_run,
+        json_output,
+        loaded,
+        scan_result,
+        Some(work_unit),
+        true,
         cli_agent_command_present,
         cli_agent_command_argv,
     )

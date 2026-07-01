@@ -75,6 +75,23 @@ fn run_unscoped(
     config_override: Option<&Path>,
 ) -> Result<StepOutcome, StepError> {
     let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
+    let identity = libagent::resolve_forge_identity(&loaded.config.forge);
+    let partially_scanned = entry::partially_scanned_set(&scan_result);
+    if let Some(seed) =
+        libagent::resolve_seed_ticket_reference(&loaded.store, &identity, &partially_scanned)
+            .map_err(StepError::TicketReference)?
+    {
+        return run_ticket_resolved(
+            working_dir,
+            config_override,
+            &seed.raw,
+            seed.ticket,
+            identity,
+            loaded,
+            scan_result,
+        );
+    }
+
     let scope = libagent::EvaluationScope::Unscoped;
     let state =
         crate::commands::step::evaluate_execution_state(&loaded, working_dir, &scan_result, scope);
@@ -210,7 +227,27 @@ fn run_ticket(
 ) -> Result<StepOutcome, StepError> {
     let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
     let (ticket_ref, identity) = entry::resolve_reference(&loaded, ticket)?;
+    run_ticket_resolved(
+        working_dir,
+        config_override,
+        ticket,
+        ticket_ref,
+        identity,
+        loaded,
+        scan_result,
+    )
+}
 
+#[allow(clippy::too_many_arguments)]
+fn run_ticket_resolved(
+    working_dir: &Path,
+    config_override: Option<&Path>,
+    ticket_arg: &str,
+    ticket_ref: libagent::TicketRef,
+    identity: libagent::ResolvedForgeIdentity,
+    loaded: crate::project::LoadedProject,
+    scan_result: libagent::ScanResult,
+) -> Result<StepOutcome, StepError> {
     // Re-entry (the work-unit already exists) degrades to a bound session and
     // needs no acquisition surface — resolve before discovering it.
     if let Some(work_unit) = entry::resolve_existing(&loaded, &identity, &ticket_ref)? {
@@ -254,7 +291,7 @@ fn run_ticket(
         &mcp_binary.to_string_lossy(),
         working_dir,
         &config_path,
-        ticket,
+        ticket_arg,
         &runtime_env,
     );
     mcp_config.env.insert(

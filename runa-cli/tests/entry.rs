@@ -32,6 +32,9 @@ const ENTRY_MANIFEST: &str = r#"
 name = "groundwork"
 
 [[artifact_types]]
+name = "intent"
+
+[[artifact_types]]
 name = "work-unit"
 
 [[artifact_types]]
@@ -140,6 +143,10 @@ fn setup_partial_scan_entry_project(dir: &Path) -> PathBuf {
 fn entry_schemas() -> &'static [(&'static str, &'static str)] {
     &[
         (
+            "intent",
+            r#"{"type":"object","required":["statement","source"],"properties":{"statement":{"type":"string"},"source":{"type":"string"},"target":{"type":"string"}}}"#,
+        ),
+        (
             "work-unit",
             r#"{"type":"object","required":["title","handle"],"properties":{"title":{"type":"string"},"handle":{"type":"object"}}}"#,
         ),
@@ -158,6 +165,20 @@ fn setup_entry_project(dir: &Path) -> PathBuf {
     init_project(&project_dir, &manifest_path);
     common::append_github_forge_config(&project_dir, "tesserine", "runa");
     project_dir
+}
+
+fn write_intent_target(project_dir: &Path, target: &str) {
+    write_intent_target_instance(project_dir, "intent-1", target);
+}
+
+fn write_intent_target_instance(project_dir: &Path, instance_id: &str, target: &str) {
+    let intent_dir = project_dir.join(".runa/workspace/intent");
+    fs::create_dir_all(&intent_dir).unwrap();
+    fs::write(
+        intent_dir.join(format!("{instance_id}.json")),
+        format!(r#"{{"statement":"Start ticket work","source":"operator","target":"{target}"}}"#),
+    )
+    .unwrap();
 }
 
 /// Like `ENTRY_MANIFEST`, but the acquisition declares `work-unit` via
@@ -326,6 +347,127 @@ fn run_ticket_dry_run_projects_acquisition_then_take() {
     assert_eq!(plan[1]["protocol"], "take");
     assert_eq!(plan[1]["projection"], "projected");
     assert_eq!(plan[1]["work_unit"], "work-unit-14");
+}
+
+#[test]
+fn run_intent_target_dry_run_projects_same_entry_as_ticket() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["version"], 3, "{value:#}");
+    assert_eq!(value["entry"]["reference"], "github:tesserine/runa#14");
+    assert_eq!(value["entry"]["ticket_number"], 14);
+    assert_eq!(value["entry"]["acquisition_protocol"], "decompose");
+
+    let plan = value["execution_plan"].as_array().unwrap();
+    assert_eq!(plan.len(), 2, "{value:#}");
+    assert_eq!(plan[0]["protocol"], "decompose");
+    assert_eq!(plan[0]["projection"], "current");
+    assert_eq!(
+        plan[0]["context"]["entry"]["reference"],
+        "github:tesserine/runa#14"
+    );
+    assert_eq!(plan[1]["protocol"], "take");
+    assert_eq!(plan[1]["projection"], "projected");
+    assert_eq!(plan[1]["work_unit"], "work-unit-14");
+}
+
+#[test]
+fn run_intent_target_partial_scan_blocks_instead_of_routing_visible_sibling() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_entry_project(dir.path());
+    write_intent_target_instance(&project_dir, "intent-14", "#14");
+    write_intent_target_instance(&project_dir, "intent-99", "#99");
+
+    let scan = clear_forge_env(&mut runa_bin())
+        .arg("scan")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+    assert!(
+        scan.status.success(),
+        "scan stderr: {}",
+        String::from_utf8_lossy(&scan.stderr)
+    );
+    fs::set_permissions(
+        project_dir.join(".runa/workspace/intent/intent-14.json"),
+        fs::Permissions::from_mode(0o000),
+    )
+    .unwrap();
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("run")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "must not emit a routed JSON plan: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("entry input artifact type(s) intent were only partially scanned"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn run_intent_target_invalid_reference_is_usage_error_without_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_entry_project(dir.path());
+    write_intent_target(&project_dir, "not-a-ticket");
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("run")
+        .arg("--dry-run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not a recognized forge ticket reference"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn run_intent_target_rejects_foreign_deployment_reference() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_entry_project(dir.path());
+    write_intent_target(&project_dir, "tesserine/groundwork#14");
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("run")
+        .arg("--dry-run")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("disagrees"), "stderr: {stderr}");
 }
 
 #[test]
@@ -937,6 +1079,141 @@ fi
         project_dir
             .join(".runa/workspace/work-unit/work-unit-14-cold-start.json")
             .is_file()
+    );
+}
+
+#[test]
+fn mcp_session_intent_target_materializes_work_unit_and_binds_to_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
+    let runa_mcp_path = runa_mcp_bin_path();
+    let log_path = dir.path().join("session.out");
+
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(
+            r####"
+set -eu
+{
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"entry-test","version":"1.0.0"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"next-protocol-context","arguments":{}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"work-unit","arguments":{"instance_id":"work-unit-14-cold-start","title":"Cold start","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/14","number":14}}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"advance","arguments":{}}}'
+    sleep 1
+} | "$1" --session > "$2"
+if grep -q '"error"' "$2"; then
+    cat "$2" >&2
+    exit 23
+fi
+"####,
+        )
+        .arg("drive-entry")
+        .arg(&runa_mcp_path)
+        .arg(&log_path)
+        .env_remove("RUNA_FORGE_TYPE")
+        .env_remove("RUNA_FORGE_OWNER")
+        .env_remove("RUNA_FORGE_NAME")
+        .env_remove("RUNA_FORGE_TRACKER_ID")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "entry session failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let transcript = fs::read_to_string(&log_path).unwrap();
+    assert!(transcript.contains("## Session entry"), "{transcript}");
+    assert!(
+        transcript.contains("github:tesserine/runa#14"),
+        "{transcript}"
+    );
+    assert!(transcript.contains("next_step"), "{transcript}");
+    assert!(transcript.contains("take"), "{transcript}");
+    assert!(
+        project_dir
+            .join(".runa/workspace/work-unit/work-unit-14-cold-start.json")
+            .is_file()
+    );
+}
+
+#[test]
+fn go_intent_target_materializes_work_unit_and_binds_to_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = setup_entry_project(dir.path());
+    write_intent_target(&project_dir, "#14");
+    let agent_path = dir.path().join("go-entry-agent.sh");
+    let prompt_path = dir.path().join("prompt.txt");
+    let config_path = dir.path().join("mcp-config.json");
+    let runa_mcp_path = runa_mcp_bin_path();
+    let mcp_log_path = dir.path().join("mcp.log");
+    fs::write(
+        &agent_path,
+        r####"#!/bin/sh
+set -eu
+cat > "$1"
+printf '%s' "$RUNA_MCP_CONFIG" > "$2"
+{
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"go-entry-test","version":"1.0.0"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"next-protocol-context","arguments":{}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"work-unit","arguments":{"instance_id":"work-unit-14-cold-start","title":"Cold start","handle":{"forge_tag":"github","url":"https://github.com/tesserine/runa/issues/14","number":14}}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"advance","arguments":{}}}'
+    sleep 1
+} | "$3" --session --ticket '#14' > "$4"
+if grep -q '"error"' "$4"; then
+    cat "$4" >&2
+    exit 23
+fi
+"####,
+    )
+    .unwrap();
+    fs::set_permissions(&agent_path, fs::Permissions::from_mode(0o755)).unwrap();
+    append_agent_command_config(
+        &project_dir,
+        &[
+            agent_path.as_path(),
+            prompt_path.as_path(),
+            config_path.as_path(),
+            runa_mcp_path.as_path(),
+            mcp_log_path.as_path(),
+        ],
+    );
+
+    let output = clear_forge_env(&mut runa_bin())
+        .arg("go")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}\nmcp log: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+        fs::read_to_string(&mcp_log_path).unwrap_or_else(|_| "<missing>".to_string())
+    );
+
+    let config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
+    assert_eq!(
+        config["args"],
+        serde_json::json!(["--session", "--ticket", "#14"])
+    );
+    assert!(
+        project_dir
+            .join(".runa/workspace/work-unit/work-unit-14-cold-start.json")
+            .is_file()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Acquired work-unit work-unit-14-cold-start"),
+        "stdout: {stdout}"
     );
 }
 
