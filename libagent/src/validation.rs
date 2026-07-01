@@ -4,11 +4,13 @@
 //! [`ArtifactType`], collecting all violations rather
 //! than short-circuiting on the first.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde_json::Value;
 
 use crate::model::ArtifactType;
+use crate::store::{ArtifactStore, ValidationStatus};
 
 /// A single schema violation found during artifact validation.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -102,6 +104,161 @@ pub fn validate_artifact(
             artifact_type: artifact_type.name.clone(),
             violations,
         })
+    }
+}
+
+/// Validate artifact data for a runtime persist path.
+///
+/// This first applies the artifact's JSON Schema, then applies runtime checks
+/// that require sibling artifact context and therefore cannot live in the
+/// schema document itself.
+pub fn validate_artifact_for_persist(
+    artifact_data: &Value,
+    artifact_type: &ArtifactType,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+) -> Result<(), ValidationError> {
+    validate_artifact(artifact_data, artifact_type)?;
+
+    let violations = semantic_violations(artifact_data, artifact_type, store, work_unit);
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(ValidationError::InvalidArtifact {
+            artifact_type: artifact_type.name.clone(),
+            violations,
+        })
+    }
+}
+
+fn semantic_violations(
+    artifact_data: &Value,
+    artifact_type: &ArtifactType,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+) -> Vec<Violation> {
+    if artifact_type.name != "completion-evidence" {
+        return Vec::new();
+    }
+    contract_evidence_violations(artifact_data, artifact_type, store, work_unit)
+}
+
+fn contract_evidence_violations(
+    evidence: &Value,
+    artifact_type: &ArtifactType,
+    store: &ArtifactStore,
+    work_unit: Option<&str>,
+) -> Vec<Violation> {
+    let Some(contract) = latest_valid_contract(store, work_unit) else {
+        return vec![violation(
+            artifact_type,
+            "",
+            "completion-evidence requires a valid contract artifact for this work unit",
+        )];
+    };
+
+    let criteria = contract
+        .get("criteria")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|criterion| {
+            let id = criterion.get("id").and_then(Value::as_str)?;
+            Some((id.to_string(), criterion))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut violations = Vec::new();
+    let mut result_ids = BTreeSet::new();
+    for (index, result) in evidence
+        .get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let Some(criterion_id) = result.get("criterion_id").and_then(Value::as_str) else {
+            continue;
+        };
+        if !result_ids.insert(criterion_id.to_string()) {
+            violations.push(violation(
+                artifact_type,
+                &format!("/results/{index}/criterion_id"),
+                format!("duplicate criterion result '{criterion_id}'"),
+            ));
+        }
+        let Some(criterion) = criteria.get(criterion_id) else {
+            violations.push(violation(
+                artifact_type,
+                &format!("/results/{index}/criterion_id"),
+                format!("unknown contract criterion '{criterion_id}'"),
+            ));
+            continue;
+        };
+        let evidence = result.get("evidence");
+        let check_kind = criterion.get("check_kind").and_then(Value::as_str);
+        let has_executable_evidence = evidence
+            .and_then(Value::as_object)
+            .is_some_and(|object| object.contains_key("run") || object.contains_key("artifact"));
+        let has_attestation = evidence
+            .and_then(Value::as_object)
+            .is_some_and(|object| object.contains_key("attestation"));
+        if check_kind == Some("executable") && !has_executable_evidence {
+            violations.push(violation(
+                artifact_type,
+                &format!("/results/{index}/evidence"),
+                "executable criterion requires run or artifact evidence",
+            ));
+        }
+        if check_kind == Some("attested") && !has_attestation {
+            violations.push(violation(
+                artifact_type,
+                &format!("/results/{index}/evidence"),
+                "attested criterion requires reviewer attestation",
+            ));
+        }
+    }
+
+    for criterion_id in criteria.keys() {
+        if !result_ids.contains(criterion_id) {
+            violations.push(violation(
+                artifact_type,
+                "/results",
+                format!("contract criterion '{criterion_id}' has no completion evidence"),
+            ));
+        }
+    }
+
+    violations
+}
+
+fn latest_valid_contract(store: &ArtifactStore, work_unit: Option<&str>) -> Option<Value> {
+    let mut candidates = store
+        .instances_of("contract", work_unit)
+        .into_iter()
+        .filter(|(_, state)| matches!(state.status, ValidationStatus::Valid))
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        left.1
+            .last_modified_ms
+            .cmp(&right.1.last_modified_ms)
+            .then_with(|| left.0.cmp(right.0))
+    });
+    let (_, state) = candidates.pop()?;
+    let content = std::fs::read_to_string(&state.path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn violation(
+    artifact_type: &ArtifactType,
+    instance_path: &str,
+    description: impl Into<String>,
+) -> Violation {
+    Violation {
+        artifact_type: artifact_type.name.clone(),
+        description: description.into(),
+        schema_path: "semantic/contract-evidence".to_string(),
+        instance_path: instance_path.to_string(),
     }
 }
 

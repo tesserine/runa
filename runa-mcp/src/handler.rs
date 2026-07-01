@@ -10,7 +10,7 @@ use serde_json::Value;
 use tracing::{info, warn};
 
 use libagent::context::ContextInjectionView;
-use libagent::validation::validate_artifact;
+use libagent::validation::validate_artifact_for_persist;
 use libagent::{
     ArtifactStore, ArtifactType, ProtocolDeclaration, SessionState, validate_output_scope,
 };
@@ -454,7 +454,12 @@ impl RunaHandler {
             data_map.insert("work_unit".to_string(), Value::String(wu.clone()));
         }
 
-        if let Err(e) = validate_artifact(&data, &at) {
+        if let Err(e) = validate_artifact_for_persist(
+            &data,
+            &at,
+            session.store(),
+            current_step.work_unit.as_deref(),
+        ) {
             let msg = validation_message(e);
             append_tool_event(
                 "tool_result",
@@ -1058,7 +1063,15 @@ impl ServerHandler for RunaHandler {
         }
 
         // Validate against the full schema (including work_unit).
-        if let Err(e) = validate_artifact(&data, &at) {
+        if let Err(e) = {
+            let state = self
+                .state
+                .as_ref()
+                .expect("fixed protocol handler must have state")
+                .lock()
+                .unwrap();
+            validate_artifact_for_persist(&data, &at, &state.store, self.work_unit.as_deref())
+        } {
             let msg = match e {
                 libagent::ValidationError::InvalidArtifact { violations, .. } => violations
                     .iter()
