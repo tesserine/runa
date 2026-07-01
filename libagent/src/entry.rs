@@ -26,6 +26,9 @@ use crate::store::ArtifactStore;
 /// surface is the sole unscoped protocol that produces this type.
 pub const WORK_UNIT_ARTIFACT_TYPE: &str = "work-unit";
 
+/// Unscoped artifact type that may carry an operator-provided ticket target.
+pub const INTENT_ARTIFACT_TYPE: &str = "intent";
+
 /// Environment atom carrying the entry ticket number to acquisition mechanics.
 pub const RUNA_ENTRY_TICKET: &str = "RUNA_ENTRY_TICKET";
 
@@ -39,6 +42,13 @@ pub struct TicketRef {
     pub number: u64,
     pub tracker_identity: String,
     pub display: String,
+}
+
+/// A ticket reference discovered from an unscoped `intent.target`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeedTicketRef {
+    pub raw: String,
+    pub ticket: TicketRef,
 }
 
 /// What the operator asserted in the reference, before deployment resolution.
@@ -77,6 +87,8 @@ pub enum EntryError {
     /// A bare reference cannot inherit an active forge type that is neither
     /// `github` nor `sourcehut`.
     UnsupportedForge { forge_type: String },
+    /// More than one valid unscoped `intent` artifact carries a target.
+    AmbiguousSeedTargets { candidates: Vec<String> },
     /// Acquisition completed its contract but materialized no matching work-unit.
     Unresolved { reference: String },
 }
@@ -122,6 +134,11 @@ impl fmt::Display for EntryError {
                 f,
                 "active forge type '{forge_type}' is not supported for a bare ticket reference; use an explicit 'owner/repo#N' (github) or 'sourcehut:<tracker_id>#N' form, or set a supported RUNA_FORGE_TYPE"
             ),
+            EntryError::AmbiguousSeedTargets { candidates } => write!(
+                f,
+                "more than one valid unscoped '{INTENT_ARTIFACT_TYPE}' artifact carries a target ({}); entry requires exactly one seed target",
+                candidates.join(", ")
+            ),
             EntryError::Unresolved { reference } => write!(
                 f,
                 "acquisition from ticket {reference} completed but produced no '{WORK_UNIT_ARTIFACT_TYPE}' matching the reference"
@@ -144,6 +161,47 @@ pub fn resolve_ticket_reference(
 ) -> Result<TicketRef, EntryError> {
     let parsed = parse_ticket_reference(raw)?;
     bind_reference_identity(&parsed, identity)
+}
+
+/// Resolve a ticket target from valid unscoped `intent` artifacts, if present.
+///
+/// Only valid, unscoped intent artifacts participate. Empty or absent `target`
+/// fields mean prose entry remains in control. More than one target is
+/// ambiguous and therefore rejected rather than selected by filename order.
+pub fn resolve_seed_ticket_reference(
+    store: &ArtifactStore,
+    identity: &ResolvedForgeIdentity,
+) -> Result<Option<SeedTicketRef>, EntryError> {
+    let mut targets = Vec::new();
+    for (instance_id, state) in store.instances_of(INTENT_ARTIFACT_TYPE, None) {
+        if state.work_unit.is_some() || !matches!(state.status, crate::ValidationStatus::Valid) {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&state.path) else {
+            continue;
+        };
+        let Ok(data) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        let Some(target) = data.get("target").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let target = target.trim();
+        if !target.is_empty() {
+            targets.push((instance_id.to_string(), target.to_string()));
+        }
+    }
+
+    match targets.as_slice() {
+        [] => Ok(None),
+        [(_, raw)] => Ok(Some(SeedTicketRef {
+            raw: raw.clone(),
+            ticket: resolve_ticket_reference(raw, identity)?,
+        })),
+        many => Err(EntryError::AmbiguousSeedTargets {
+            candidates: many.iter().map(|(id, _)| id.clone()).collect(),
+        }),
+    }
 }
 
 fn parse_ticket_reference(raw: &str) -> Result<ParsedReference, EntryError> {

@@ -44,8 +44,9 @@ pub use enforcement::{
     enforce_preconditions,
 };
 pub use entry::{
-    AcquisitionBlock, EntryError, RUNA_ENTRY_TICKET, TicketRef, check_acquisition_admissible,
-    discover_acquisition_surface, resolve_promise, resolve_ticket_reference,
+    AcquisitionBlock, EntryError, RUNA_ENTRY_TICKET, SeedTicketRef, TicketRef,
+    check_acquisition_admissible, discover_acquisition_surface, resolve_promise,
+    resolve_seed_ticket_reference, resolve_ticket_reference,
 };
 pub use graph::{CycleError, DependencyGraph, GraphError};
 pub use logging::{LoggingError, ResolvedLoggingConfig, configure_tracing, resolve_logging_config};

@@ -300,7 +300,7 @@ impl SessionState {
 
     fn open_loaded_with_validator<F>(
         working_dir: PathBuf,
-        loaded: crate::LoadedProject,
+        mut loaded: crate::LoadedProject,
         work_unit: Option<String>,
         identity: crate::ResolvedForgeIdentity,
         validate_step: F,
@@ -308,6 +308,19 @@ impl SessionState {
     where
         F: FnOnce(Option<&crate::ProtocolDeclaration>, &crate::ArtifactStore) -> Result<(), String>,
     {
+        if work_unit.is_none() {
+            crate::scan(&loaded.workspace_dir, &mut loaded.store)?;
+            if let Some(seed) = crate::resolve_seed_ticket_reference(&loaded.store, &identity)? {
+                return Self::open_entry_loaded(
+                    working_dir,
+                    loaded,
+                    seed.ticket,
+                    identity,
+                    validate_step,
+                );
+            }
+        }
+
         let mut session = Self {
             working_dir,
             loaded,
@@ -1192,6 +1205,16 @@ trigger = { type = "on_artifact", name = "work-unit" }
         .unwrap();
     }
 
+    fn write_intent_target(project_dir: &Path, target: &str) {
+        let intent_dir = project_dir.join(".runa/workspace/intent");
+        fs::create_dir_all(&intent_dir).unwrap();
+        fs::write(
+            intent_dir.join("intent-1.json"),
+            format!(r#"{{"title":"Seed target","target":"{target}"}}"#),
+        )
+        .unwrap();
+    }
+
     fn ticket_14() -> crate::TicketRef {
         crate::TicketRef {
             number: 14,
@@ -1237,6 +1260,26 @@ trigger = { type = "on_artifact", name = "work-unit" }
         assert!(matches!(
             session.scope,
             SessionScope::Promised { ticket: None }
+        ));
+    }
+
+    #[test]
+    fn open_without_work_unit_uses_intent_target_entry_route() {
+        let _env = unset_forge_env();
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = write_entry_project(dir.path(), false);
+        write_intent_target(&project_dir, "#14");
+
+        let session = SessionState::open(project_dir, None, None).unwrap();
+
+        let step = session.current_step().expect("acquisition step pinned");
+        assert_eq!(step.protocol, "decompose");
+        assert_eq!(step.work_unit, None);
+        assert!(matches!(
+            session.scope,
+            SessionScope::Promised {
+                ticket: Some(crate::TicketRef { number: 14, .. })
+            }
         ));
     }
 
