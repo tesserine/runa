@@ -127,15 +127,19 @@ pause is explicitly requested — so that automation is the path and any
 human-in-the-cascade interruption is the deliberate exception. No such pause is
 specified now, and none is required.
 
-## Session Entry: the Promised Scope
+## Session Entry
 
-A session's scope is either **bound** — a recorded `work-unit` instance id — or
-**promised** — a forge ticket reference standing for a work-unit that does not
-yet exist. A promised scope is opened with `--ticket <REF>`. It is not a new
-verb and not a third mode: the operator still issues the single outer verb, and
-mode remains which cadence issues that verb (ADR-0015). Autonomous and
-interactive clients open a promised scope through the same surface with the same
-meaning.
+A session can be opened unscoped, bound, or promised. With no selector, the
+session evaluates the ordinary unscoped readiness path and injects no
+`work_unit`; this is how existing prose planning entries such as intent-to-survey
+advance through the session surface. A bound session uses a recorded `work-unit`
+instance id. A promised session uses a forge ticket reference standing for a
+work-unit that does not yet exist. These are not new verbs and not separate
+modes: the operator still issues the single outer verb, and mode remains which
+cadence issues that verb (ADR-0015). Autonomous and interactive clients open
+the same surface with the same meaning.
+
+A promised scope is opened with `--ticket <REF>`.
 
 While the scope is promised, the select stage admits exactly one step: the
 methodology's acquisition surface — the single unscoped protocol that produces

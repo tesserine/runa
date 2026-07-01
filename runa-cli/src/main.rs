@@ -62,10 +62,10 @@ enum Commands {
     },
     /// Cascade through ready protocols until quiescence
     Run(RunArgs),
-    /// Advance a scoped interactive session by one operator tick
+    /// Advance an interactive session by one operator tick
     Go {
         /// Delegated work unit to advance
-        #[arg(long, required_unless_present = "ticket", conflicts_with = "ticket")]
+        #[arg(long, conflicts_with = "ticket")]
         work_unit: Option<String>,
 
         /// Open the session from a forge ticket reference (cold-start entry)

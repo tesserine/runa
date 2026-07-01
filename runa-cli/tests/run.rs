@@ -445,9 +445,18 @@ trigger = { type = "on_artifact", name = "implementation" }
     assert_eq!(scoped_plan[0]["work_unit"], "wu-a");
     assert_eq!(scoped_plan[1]["protocol"], "verify");
     assert_eq!(scoped_plan[1]["work_unit"], "wu-a");
-    let plan_text = serde_json::to_string(scoped_plan).unwrap();
-    assert!(!plan_text.contains("wu-b"), "{plan_text}");
-    assert!(!plan_text.contains("ground"), "{plan_text}");
+    assert!(
+        scoped_plan
+            .iter()
+            .all(|entry| entry["work_unit"].as_str() != Some("wu-b")),
+        "{scoped_plan:?}"
+    );
+    assert!(
+        scoped_plan
+            .iter()
+            .all(|entry| entry["protocol"].as_str() != Some("ground")),
+        "{scoped_plan:?}"
+    );
 }
 
 fn append_agent_command_config(project_dir: &Path, command: &[&Path]) {
