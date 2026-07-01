@@ -372,6 +372,27 @@ fn setup_project() -> tempfile::TempDir {
     dir
 }
 
+#[test]
+fn session_ticket_flag_is_rejected() {
+    let dir = setup_project();
+    let project_dir = dir.path().join("project");
+
+    let output = StdCommand::new(env!("CARGO_BIN_EXE_runa-mcp"))
+        .arg("--session")
+        .arg("--ticket")
+        .arg("#14")
+        .current_dir(&project_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unexpected argument '--ticket'"),
+        "stderr: {stderr}"
+    );
+}
+
 fn tool_result_text(result: &CallToolResult) -> String {
     result.content[0]
         .as_text()

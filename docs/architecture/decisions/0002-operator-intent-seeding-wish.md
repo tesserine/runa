@@ -12,8 +12,8 @@ has no remaining reason to exist as a runa decision once that falls.
 **Why Decision A is void.** `runa`'s entire command surface (`Init`, `List`,
 `Doctor`, `Scan`, `State`, `Step`, `Run`, `Go`) operates only on artifacts that
 *already exist*: it scans, validates, computes readiness, and advances. It carries
-no model and authors no content; even its cold-start path (`go --ticket`) performs
-no forge read of its own and hands materialization to the methodology. A verb that
+no model and authors no content; even its cold-start path performs no forge read
+of its own and hands materialization to the methodology. A verb that
 greets an operator, elicits prose intent, and authors a `{description, source}`
 seed is the one capability runa's architecture defines it as *not* having. This
 ADR's own Context conceded runa "validates artifacts, it doesn't author intent" —
@@ -61,7 +61,7 @@ realizes and does not restate it (Single Home).
 ADR-0001 settled, in Decision 3, that the operator surface is one verb (`go`)
 and that *"seeding is data; `go` is the verb. They are not two operator
 operations."* Seed-supply affordances were named as "a `request` artifact in the
-workspace, or a reference (carried by `--ticket`)."
+workspace, or a reference" supplied through the then-current ticket flag.
 
 That position is architecturally clean and operationally incomplete. "A
 `request` artifact in the workspace" is not a supply *affordance* — in practice
@@ -79,14 +79,14 @@ an operator surface too rudimentary to accept. The dogfood that validated
 ADR-0001's routing decisions is the same dogfood that outgrew its seeding
 decision.
 
-`--ticket` already demonstrates the resolution. The contract classifies it as
-*seed delivery — "not a new verb and not a third mode"* — a sanctioned affordance
-for supplying a **reference** seed. What is missing is the symmetric affordance
-for the **prose** seed: a sanctioned way to author the `description`/`source`
-seed that the prose entry route consumes. Supplying that affordance does not
-reintroduce operator-named scope (ADR-0001 Decision 1 stands — scope is read from
-the seed, never named); it makes seed-supply ergonomic where today it is a
-filesystem chore.
+The former ticket flag already demonstrated the resolution. The contract
+classifies reference delivery as *seed delivery — "not a new verb and not a
+third mode"* — a sanctioned affordance for supplying a **reference** seed. What
+is missing is the symmetric affordance for the **prose** seed: a sanctioned way
+to author the `description`/`source` seed that the prose entry route consumes.
+Supplying that affordance does not reintroduce operator-named scope (ADR-0001
+Decision 1 stands — scope is read from the seed, never named); it makes
+seed-supply ergonomic where today it is a filesystem chore.
 
 ## Decision A — The operator surface is seed-authoring plus advance
 
@@ -95,8 +95,8 @@ The operator-facing surface is **two verbs with one clean division**:
 - **`wish`** — author the seed. `runa wish` materializes the canonical entry
   artifact (correctly shaped, correctly placed, instance-id assigned by the
   command, validated on creation), from operator-supplied intent. It is the
-  prose-seed delivery affordance, symmetric to `--ticket`'s reference-seed
-  delivery — *seed delivery, not a control verb and not a mode.*
+  prose-seed delivery affordance, symmetric to reference-seed delivery —
+  *seed delivery, not a control verb and not a mode.*
 - **`go`** — advance. Unchanged from ADR-0001 Decision 3: `go` reads the seed,
   derives scope and route (Decisions 1, 2), and advances the operation at the
   operator's chosen cadence.

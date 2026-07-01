@@ -458,7 +458,6 @@ pub fn run(
     dry_run: bool,
     json_output: bool,
     work_unit: Option<&str>,
-    ticket: Option<&str>,
     cli_agent_command_present: bool,
     cli_agent_command_argv: &[String],
 ) -> Result<RunOutcome, RunError> {
@@ -469,23 +468,6 @@ pub fn run(
     let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)
         .map_err(StepError::from)
         .map_err(RunError::from)?;
-
-    if let Some(raw) = ticket {
-        let (ticket_ref, identity) =
-            entry::resolve_reference(&loaded, raw).map_err(RunError::from)?;
-        return run_resolved_entry(
-            working_dir,
-            config_override,
-            dry_run,
-            json_output,
-            loaded,
-            scan_result,
-            ticket_ref,
-            identity,
-            cli_agent_command_present,
-            cli_agent_command_argv,
-        );
-    }
 
     if work_unit.is_none() {
         let identity = libagent::resolve_forge_identity(&loaded.config.forge);
@@ -524,7 +506,7 @@ pub fn run(
     )
 }
 
-/// Execute or project an already-resolved ticket entry route.
+/// Execute or project an already-resolved seed-target entry route.
 #[allow(clippy::too_many_arguments)]
 fn run_resolved_entry(
     working_dir: &Path,
@@ -807,7 +789,7 @@ fn run_with_scope(
     }
 }
 
-/// Project the cold-start ticket entry cascade without executing any agent.
+/// Project the cold-start seed-target entry cascade without executing any agent.
 ///
 /// The acquisition step is `current`; the work-unit it would produce seeds the
 /// projection so `take` appears next on the acquired work-unit.

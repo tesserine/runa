@@ -53,14 +53,14 @@ aliases such as ticket numbers or partial ids are rejected and the diagnostic
 lists the available canonical ids. If no `work-unit` artifacts are recorded,
 scoped evaluation remains inert and accepts the caller-supplied id as before.
 
-To start scoped work from nothing but a tracker ticket, `runa run --ticket <REF>`
-and `runa go --ticket <REF>` open a cold-start session from a forge ticket
-reference (a bare number, `#<N>`, `owner/repo#<N>`, an issue URL, or
-`sourcehut:<tracker_id>#<N>`). The runtime resolves the reference to an identity
-and serves the methodology's acquisition surface; the methodology reads the
-ticket and materializes the `work-unit`, after which the session is
-indistinguishable from one opened on a recorded work-unit. The runtime performs
-no forge read of its own.
+To start scoped work from a tracker ticket, seed a valid unscoped `intent`
+artifact whose optional `target` field is a forge ticket reference (a bare
+number, `#<N>`, `owner/repo#<N>`, an issue URL, or
+`sourcehut:<tracker_id>#<N>`), then run `runa run` or `runa go` with no selector.
+The runtime resolves the reference to an identity and serves the methodology's
+acquisition surface; the methodology reads the ticket and materializes the
+`work-unit`, after which the session is indistinguishable from one opened on a
+recorded work-unit. The runtime performs no forge read of its own.
 
 ## Quick Start
 

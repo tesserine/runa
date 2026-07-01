@@ -5,8 +5,7 @@ use std::path::Path;
 
 use crate::commands::step::{
     ExecutionOptions, PlanEntry, StepError, StepOutcome, build_session_mcp_config,
-    build_session_ticket_mcp_config, build_session_unscoped_mcp_config, execute_entry,
-    locate_runa_mcp,
+    build_session_unscoped_mcp_config, execute_entry, locate_runa_mcp,
 };
 use crate::commands::{CommandError, entry, protocol_eval};
 
@@ -61,12 +60,10 @@ pub fn run(
     working_dir: &Path,
     config_override: Option<&Path>,
     work_unit: Option<&str>,
-    ticket: Option<&str>,
 ) -> Result<StepOutcome, StepError> {
-    match (work_unit, ticket) {
-        (Some(work_unit), _) => run_bound(working_dir, config_override, work_unit),
-        (None, Some(ticket)) => run_ticket(working_dir, config_override, ticket),
-        (None, None) => run_unscoped(working_dir, config_override),
+    match work_unit {
+        Some(work_unit) => run_bound(working_dir, config_override, work_unit),
+        None => run_unscoped(working_dir, config_override),
     }
 }
 
@@ -84,7 +81,6 @@ fn run_unscoped(
         return run_ticket_resolved(
             working_dir,
             config_override,
-            &seed.raw,
             seed.ticket,
             identity,
             loaded,
@@ -214,35 +210,10 @@ fn run_unscoped(
     Ok(StepOutcome::Success)
 }
 
-/// Advance a session opened from a forge ticket reference by one tick.
-///
-/// Re-entry (the work-unit already exists) degrades to a normal bound tick.
-/// Otherwise this tick is the acquisition step: the runtime serves the
-/// methodology's acquisition surface, the agent materializes the work-unit, and
-/// the session binds — leaving `take` ready on the acquired work-unit.
-fn run_ticket(
-    working_dir: &Path,
-    config_override: Option<&Path>,
-    ticket: &str,
-) -> Result<StepOutcome, StepError> {
-    let (loaded, scan_result) = super::load_and_scan(working_dir, config_override)?;
-    let (ticket_ref, identity) = entry::resolve_reference(&loaded, ticket)?;
-    run_ticket_resolved(
-        working_dir,
-        config_override,
-        ticket,
-        ticket_ref,
-        identity,
-        loaded,
-        scan_result,
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
 fn run_ticket_resolved(
     working_dir: &Path,
     config_override: Option<&Path>,
-    ticket_arg: &str,
     ticket_ref: libagent::TicketRef,
     identity: libagent::ResolvedForgeIdentity,
     loaded: crate::project::LoadedProject,
@@ -287,11 +258,10 @@ fn run_ticket_resolved(
         .map_err(|source| receipt_io_error("session_advance_receipt_create", source))?;
     let receipt_path = receipt_dir.path().join("advance.json");
     let receipt_path_env = receipt_path.to_string_lossy().into_owned();
-    let mut mcp_config = build_session_ticket_mcp_config(
+    let mut mcp_config = build_session_unscoped_mcp_config(
         &mcp_binary.to_string_lossy(),
         working_dir,
         &config_path,
-        ticket_arg,
         &runtime_env,
     );
     mcp_config.env.insert(

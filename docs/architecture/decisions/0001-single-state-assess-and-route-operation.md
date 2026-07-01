@@ -45,9 +45,15 @@ The operation is therefore already state-assessed, idempotent (execution-record
 suppression makes re-runs converge rather than accumulate), and recursive within
 a scope (each bead re-scans and re-selects). What is not yet intrinsic is the
 **selection of the scope itself**: today the caller supplies it — `--work-unit
-<ID>` selects `Scoped`, its absence `Unscoped`, and `--ticket <REF>`
-([#188](https://github.com/tesserine/runa/issues/188), landed) opens a third
-promised-scope entry. These are parallel affordances the caller chooses among.
+<ID>` selects `Scoped`, its absence `Unscoped`, and at the time of this ADR
+the former ticket delivery flag
+([#188](https://github.com/tesserine/runa/issues/188), landed) opened a third
+promised-scope entry. These were parallel affordances the caller chose among.
+
+**2026-07-01 amendment:** the ticket delivery flag is retired. Reference-seed
+delivery now comes from assessed seed state (`intent.target`), so promised scope
+entry is derived at the entry boundary instead of being selected by an operator
+flag.
 At the entry boundary specifically, a `request` artifact routes only to `survey`,
 and only because `survey`'s trigger is `on_artifact(request)`; nothing resolves
 what the request *refers to* and routes on it.
@@ -171,8 +177,8 @@ contract under decision 1:
   seed-derivation, is retired from the operator surface in favor of decision 1:
   scope is **read from the seed**, not named by the operator. Seed-supply
   affordances remain — a `request` artifact in the workspace, or a reference
-  (today carried by `--ticket <REF>`, which the contract already classifies as
-  seed delivery, "not a new verb and not a third mode").
+  carried by seed data, which the contract classifies as seed delivery, "not a
+  new verb and not a third mode".
 - There is no thin seed-vs-advance layer at the operator surface. Intent enters
   once at the seed (contract: "operator intent enters once at the session seed
   through the canonical commons request artifact"), and `go` advances. Seeding is

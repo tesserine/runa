@@ -91,40 +91,6 @@ impl RunaHandler {
         })
     }
 
-    pub fn new_session_entry(
-        working_dir: PathBuf,
-        config_override: Option<&Path>,
-        ticket: libagent::TicketRef,
-        identity: libagent::ResolvedForgeIdentity,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let session = SessionState::open_entry_with_identity(
-            working_dir.clone(),
-            config_override,
-            ticket,
-            identity.clone(),
-            validate_session_step_output_types,
-        )?;
-
-        let forge_runtime = runa_forge_compose::runtime_from_config_with_identity(
-            &session.loaded.config.forge,
-            &identity,
-        )
-        .map_err(|error| format!("failed to compose forge connector tools: {error}"))?;
-
-        Ok(Self {
-            protocol: None,
-            work_unit: session
-                .current_step()
-                .and_then(|step| step.work_unit.clone()),
-            state: None,
-            workspace_dir: session.workspace_dir().to_path_buf(),
-            tools: Vec::new(),
-            tool_schemas: HashMap::new(),
-            session: Some(Mutex::new(session)),
-            forge_runtime: forge_runtime.map(Arc::new),
-        })
-    }
-
     async fn call_forge_tool(
         &self,
         tool_name: &str,
